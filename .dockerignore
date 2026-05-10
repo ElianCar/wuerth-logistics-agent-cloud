@@ -1,0 +1,11 @@
+.venv
+__pycache__
+*.pyc
+.git
+.env
+logs
+database/tpch.duckdb
+*.duckdb
+.DS_Store
+.pytest_cache
+evaluation/evaluation_results.csv

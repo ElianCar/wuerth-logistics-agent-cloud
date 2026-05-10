@@ -1,0 +1,8 @@
+duckdb
+ollama
+psycopg[binary]
+python-dotenv
+PyYAML
+tabulate
+streamlit
+pandas

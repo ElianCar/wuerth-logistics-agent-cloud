@@ -1,0 +1,10 @@
+.DS_Store
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.duckdb
+database/tpch.duckdb
+evaluation/evaluation_results.csv
+

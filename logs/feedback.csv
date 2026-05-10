@@ -1,0 +1,1 @@
+timestamp,question,generated_sql,used_tables,validation_status,explain_status,execution_status,feedback_value,error_message
