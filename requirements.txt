@@ -1,8 +1,13 @@
 duckdb
+langchain
+langchain-community
+langchain-ollama
+langgraph
 ollama
+pandas
 psycopg[binary]
 python-dotenv
 PyYAML
 tabulate
 streamlit
-pandas
+sqlalchemy

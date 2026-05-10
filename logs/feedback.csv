@@ -1,1 +1,1 @@
-timestamp,question,generated_sql,used_tables,validation_status,explain_status,execution_status,feedback_value,error_message
+timestamp,user_question,final_answer,generated_sql,selected_model,fallback_used,user_rating,user_comment

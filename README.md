@@ -55,9 +55,7 @@ How many orders are there by order status?
 What is the monthly order volume?
 ```
 
-The LLM only generates SQL. The backend validates that the SQL is a single `SELECT` statement against the allowed TPC-H tables. PostgreSQL then validates the query with `EXPLAIN`. Only after validation and `EXPLAIN` pass is the SQL executed.
-
-This is intentionally not LangGraph yet. It is a simple first prototype for understanding the question-to-SQL loop before adding agent orchestration.
+The CLI LLM path only generates SQL. The backend validates that the SQL is a single `SELECT` statement against the allowed TPC-H tables. PostgreSQL then validates the query with `EXPLAIN`. Only after validation and `EXPLAIN` pass is the SQL executed.
 
 ## Run Streamlit frontend
 
@@ -92,7 +90,60 @@ How many orders are there by order status?
 What is the monthly order volume?
 ```
 
-The Streamlit frontend shows the user question, deterministic answer summary, result table, generated SQL, used tables, validation status, and simple feedback buttons. Feedback is stored locally in `logs/feedback.csv`.
+The Streamlit frontend shows the user question, deterministic answer summary, result table, generated SQL, used tables, selected model, attempt count, fallback status, graph trace steps, and feedback buttons. Feedback is stored locally in `logs/feedback.csv`.
+
+## Run LangGraph SQL agent workflow
+
+The Streamlit frontend runs a LangGraph SQL workflow with explicit nodes for loading schema context, SQL generation, validation, execution, SQL repair, fallback model switching, and final answer generation.
+
+The app first uses the local Ollama model configured by `PRIMARY_MODEL` and tries it at most `MAX_PRIMARY_ATTEMPTS` times. By default this is:
+
+```text
+PRIMARY_MODEL=llama3.2:3b
+MAX_PRIMARY_ATTEMPTS=2
+```
+
+If the primary model produces invalid SQL twice or execution fails twice, the graph switches to:
+
+```text
+FALLBACK_MODEL=qwen2.5-coder:7b
+```
+
+Pull both local models before running:
+
+```bash
+ollama pull llama3.2:3b
+ollama pull qwen2.5-coder:7b
+```
+
+Start Ollama:
+
+```bash
+ollama serve
+```
+
+Run the app:
+
+```bash
+streamlit run streamlit_app.py
+```
+
+Useful local environment variables:
+
+```text
+OLLAMA_HOST=http://localhost:11434
+PRIMARY_MODEL=llama3.2:3b
+FALLBACK_MODEL=qwen2.5-coder:7b
+MAX_PRIMARY_ATTEMPTS=2
+```
+
+Every SQL generation attempt is logged to `logs/query_log.csv`. Streamlit feedback is logged to `logs/feedback.csv`.
+
+The feedback controls support correction-driven reruns:
+
+- `Good answer` and `Bad answer` save feedback only.
+- `Retry with comment` sends the original question, previous SQL, previous answer, and your correction comment back through the LangGraph workflow.
+- `Use fallback model` reruns the question with `FALLBACK_MODEL` immediately, optionally using your correction comment.
 
 ## Evaluation and logging
 
