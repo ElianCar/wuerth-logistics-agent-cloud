@@ -21,8 +21,13 @@ services:
   app:
     build: .
     container_name: agentic_ai_streamlit
+    env_file:
+      - .env
     ports:
       - "8501:8501"
+    volumes:
+      - ./logs:/app/logs
+      - ./memory:/app/memory
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
@@ -31,9 +36,6 @@ services:
       POSTGRES_PASSWORD: postgres
       OLLAMA_HOST: http://host.docker.internal:11434
       OLLAMA_MODEL: llama3.2:3b
-      PRIMARY_MODEL: llama3.2:3b
-      FALLBACK_MODEL: llama3.2:3b
-      MAX_PRIMARY_ATTEMPTS: 2
     depends_on:
       postgres:
         condition: service_healthy

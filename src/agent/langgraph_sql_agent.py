@@ -2,23 +2,38 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from time import perf_counter
 from typing import Any, Callable, Literal, TypedDict
+
+import yaml
 
 from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 
 from src.agent.db import execute_read_only_sql, load_schema_context
-from src.agent.logging_utils import log_query_attempt
-from src.agent.ollama_client import generate_sql_with_ollama
+from src.agent.id_utils import generate_run_id
+from src.agent.logging_utils import infer_error_type, log_query_attempt, log_query_run
+from src.agent.memory_retriever import load_approved_solution_templates
 from src.agent.sql_validator import validate_generated_sql
+from src.llm.model_adapter import (
+    DEFAULT_GEMINI_BACKUP_MODEL,
+    DEFAULT_GEMINI_PRIMARY_MODEL,
+    DEFAULT_OLLAMA_BACKUP_MODEL,
+    DEFAULT_OLLAMA_MODEL,
+    get_provider,
+    invoke_model,
+)
 
 
 load_dotenv()
 
 
 class SQLAgentState(TypedDict, total=False):
+    run_id: str
     user_question: str
+    question: str
     selected_model: str
+    model_used: str
     attempt_number: int
     max_primary_attempts: int
     fallback_used: bool
@@ -28,9 +43,18 @@ class SQLAgentState(TypedDict, total=False):
     sql_error: str
     query_result: dict[str, Any]
     final_answer: str
+    answer: str
+    final_sql: str
+    model_primary: str
+    validation_success: bool
+    error_type: str
+    error_message: str
+    row_count: int
+    latency_seconds: float
     trace_steps: list[str]
     primary_model: str
     fallback_model: str
+    llm_provider: str
     ollama_host: str
     previous_failed_sql: str
     previous_final_answer: str
@@ -47,15 +71,26 @@ class SQLAgentConfig:
     primary_model: str
     fallback_model: str
     max_primary_attempts: int
+    llm_provider: str
     ollama_host: str
 
     @classmethod
     def from_env(cls) -> "SQLAgentConfig":
-        primary_model = os.getenv("PRIMARY_MODEL") or os.getenv("OLLAMA_MODEL") or "llama3.2:3b"
+        llm_provider = get_provider()
+        if llm_provider == "gemini":
+            primary_model = os.getenv("GEMINI_PRIMARY_MODEL", DEFAULT_GEMINI_PRIMARY_MODEL)
+            fallback_model = os.getenv("GEMINI_BACKUP_MODEL", DEFAULT_GEMINI_BACKUP_MODEL)
+            max_primary_attempts = 1
+        else:
+            primary_model = os.getenv("PRIMARY_MODEL") or os.getenv("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL
+            fallback_model = os.getenv("FALLBACK_MODEL", DEFAULT_OLLAMA_BACKUP_MODEL)
+            max_primary_attempts = int(os.getenv("MAX_PRIMARY_ATTEMPTS", "2"))
+
         return cls(
             primary_model=primary_model,
-            fallback_model=os.getenv("FALLBACK_MODEL", "qwen2.5-coder:7b"),
-            max_primary_attempts=int(os.getenv("MAX_PRIMARY_ATTEMPTS", "2")),
+            fallback_model=fallback_model,
+            max_primary_attempts=max_primary_attempts,
+            llm_provider=llm_provider,
             ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
         )
 
@@ -68,6 +103,45 @@ AttemptLogger = Callable[..., None]
 
 def append_trace(state: SQLAgentState, message: str) -> list[str]:
     return [*state.get("trace_steps", []), message]
+
+
+def format_approved_template_context(question: str) -> str:
+    try:
+        templates = load_approved_solution_templates(question, max_templates=3)
+    except Exception:
+        templates = []
+
+    if not templates:
+        return ""
+
+    formatted_templates = []
+    for index, template in enumerate(templates, start=1):
+        metric_definitions = yaml.safe_dump(
+            template.get("metric_definitions", {}),
+            sort_keys=False,
+        ).strip()
+        join_logic = yaml.safe_dump(template.get("join_logic", []), sort_keys=False).strip()
+        required_tables = ", ".join(str(table) for table in template.get("required_tables", []))
+        formatted_templates.append(
+            f"""Template {index}
+Intent: {template.get("intent", "")}
+Required tables: {required_tables}
+Metric definitions:
+{metric_definitions or "{}"}
+Join logic:
+{join_logic or "[]"}
+SQL skeleton:
+{template.get("sql_skeleton", "")}
+"""
+        )
+
+    return """
+Approved reusable solution templates:
+The following templates are approved and active. Use them only as guidance.
+They are not mandatory. The final SQL must match the current user question,
+must use only relevant templates, and must still pass validation.
+
+""" + "\n".join(formatted_templates)
 
 
 def build_sql_prompt(state: SQLAgentState) -> str:
@@ -101,6 +175,8 @@ User correction:
 {user_correction or "(none)"}
 """
 
+    approved_template_context = format_approved_template_context(state["user_question"])
+
     return f"""You are a PostgreSQL SQL generator.
 
 Return SQL only.
@@ -115,6 +191,7 @@ For revenue, use SUM(l_extendedprice * (1 - l_discount)) unless otherwise stated
 
 Database and semantic context:
 {state.get("schema_context", "")}
+{approved_template_context}
 {repair_context}
 {correction_context}
 User question:
@@ -125,14 +202,10 @@ User question:
 def default_sql_generator(
     prompt: str,
     model: str,
-    ollama_host: str,
+    _ollama_host: str,
     _node_name: str,
 ) -> str:
-    return generate_sql_with_ollama(
-        model=model,
-        ollama_host=ollama_host,
-        messages=[("user", prompt)],
-    )
+    return invoke_model(prompt, model_name=model).response_text
 
 
 def log_attempt_state(
@@ -143,15 +216,38 @@ def log_attempt_state(
     attempt_logger: AttemptLogger,
 ) -> None:
     attempt_logger(
+        run_id=state.get("run_id", ""),
         user_question=state.get("user_question", ""),
+        primary_model=state.get("primary_model", ""),
+        backup_model=state.get("fallback_model", ""),
+        model_used=state.get("selected_model", ""),
         selected_model=state.get("selected_model", ""),
         attempt_number=int(state.get("attempt_number", 0)),
         fallback_used=bool(state.get("fallback_used", False)),
+        sql_candidate=state.get("generated_sql", ""),
         generated_sql=state.get("generated_sql", ""),
         sql_valid=bool(state.get("sql_valid", False)),
+        error_message=state.get("sql_error", ""),
         sql_error=state.get("sql_error", ""),
+        success=execution_success,
         execution_success=execution_success,
         row_count=row_count,
+        source_tables=state.get("source_tables", []),
+    )
+
+
+def derive_error_type(state: SQLAgentState) -> str:
+    error_message = state.get("sql_error", "")
+    if not error_message:
+        return ""
+    if state.get("schema_load_failed"):
+        return "schema_load_error"
+    if not state.get("generated_sql"):
+        return "generation_error"
+    return infer_error_type(
+        validation_success=bool(state.get("sql_valid", False)),
+        execution_success=bool(state.get("execution_success", False)),
+        error_message=error_message,
     )
 
 
@@ -216,6 +312,24 @@ def build_sql_agent_graph(
         }
 
     def validate_sql(state: SQLAgentState) -> dict[str, Any]:
+        if state.get("sql_error") and not state.get("generated_sql"):
+            update: dict[str, Any] = {
+                "sql_valid": False,
+                "source_tables": [],
+                "trace_steps": append_trace(
+                    state,
+                    f"validate_sql skipped because generation failed: {state.get('sql_error', '')}",
+                ),
+            }
+            state_for_log: SQLAgentState = {**state, **update}
+            log_attempt_state(
+                state_for_log,
+                execution_success=False,
+                row_count=0,
+                attempt_logger=attempt_logger,
+            )
+            return update
+
         validation = validate_generated_sql(
             state.get("generated_sql", ""),
             state.get("schema_context", ""),
@@ -408,6 +522,8 @@ def run_sql_agent(
 ) -> SQLAgentState:
     agent_config = config or SQLAgentConfig.from_env()
     selected_model = agent_config.fallback_model if force_fallback else agent_config.primary_model
+    run_id = generate_run_id()
+    started_at = perf_counter()
     graph = build_sql_agent_graph(
         schema_loader=schema_loader,
         sql_generator=sql_generator,
@@ -415,8 +531,11 @@ def run_sql_agent(
         attempt_logger=attempt_logger,
     )
     initial_state: SQLAgentState = {
+        "run_id": run_id,
         "user_question": user_question,
+        "question": user_question,
         "selected_model": selected_model,
+        "model_used": selected_model,
         "attempt_number": 0,
         "max_primary_attempts": agent_config.max_primary_attempts,
         "fallback_used": force_fallback,
@@ -426,9 +545,18 @@ def run_sql_agent(
         "sql_error": previous_sql_error,
         "query_result": {},
         "final_answer": "",
+        "answer": "",
+        "final_sql": "",
+        "model_primary": agent_config.primary_model,
+        "validation_success": False,
+        "error_type": "",
+        "error_message": previous_sql_error,
+        "row_count": 0,
+        "latency_seconds": 0.0,
         "trace_steps": [],
         "primary_model": agent_config.primary_model,
         "fallback_model": agent_config.fallback_model,
+        "llm_provider": agent_config.llm_provider,
         "ollama_host": agent_config.ollama_host,
         "previous_failed_sql": previous_failed_sql,
         "previous_final_answer": previous_final_answer,
@@ -439,4 +567,49 @@ def run_sql_agent(
         "result_status": "",
         "schema_load_failed": False,
     }
-    return graph.invoke(initial_state, {"recursion_limit": 30})
+    final_state: SQLAgentState = graph.invoke(initial_state, {"recursion_limit": 30})
+    latency_seconds = perf_counter() - started_at
+    query_result = final_state.get("query_result", {})
+    generated_sql = final_state.get("generated_sql", "")
+    execution_success = bool(final_state.get("execution_success", False))
+    validation_success = bool(final_state.get("sql_valid", False))
+    final_sql = str(query_result.get("executed_sql") or (generated_sql if execution_success else ""))
+    row_count = int(query_result.get("row_count", 0) or 0)
+    error_message = final_state.get("sql_error", "")
+    error_type = derive_error_type(final_state)
+
+    final_state.update(
+        {
+            "run_id": run_id,
+            "question": user_question,
+            "answer": final_state.get("final_answer", ""),
+            "final_sql": final_sql,
+            "model_primary": agent_config.primary_model,
+            "model_used": final_state.get("selected_model", ""),
+            "validation_success": validation_success,
+            "execution_success": execution_success,
+            "error_type": error_type,
+            "error_message": error_message,
+            "row_count": row_count,
+            "latency_seconds": latency_seconds,
+        }
+    )
+
+    log_query_run(
+        run_id=run_id,
+        question=user_question,
+        generated_sql=generated_sql,
+        final_sql=final_sql,
+        model_primary=agent_config.primary_model,
+        model_used=final_state.get("selected_model", ""),
+        fallback_used=bool(final_state.get("fallback_used", False)),
+        validation_success=validation_success,
+        execution_success=execution_success,
+        error_type=error_type,
+        error_message=error_message,
+        source_tables=final_state.get("source_tables", []),
+        row_count=row_count,
+        latency_seconds=latency_seconds,
+        answer=final_state.get("final_answer", ""),
+    )
+    return final_state

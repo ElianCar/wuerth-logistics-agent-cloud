@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.agent.langgraph_sql_agent import SQLAgentConfig, run_sql_agent
 from src.agent.logging_utils import log_query_attempt
 from src.agent.sql_validator import validate_generated_sql
+from src.llm.model_adapter import GeminiConfigurationError, gemini_api_key_is_placeholder, get_llm
 
 
 def fake_schema_loader() -> str:
@@ -31,7 +32,7 @@ def build_fake_sql_generator():
 
     def fake_sql_generator(prompt: str, model: str, ollama_host: str, node_name: str) -> str:
         calls.append((model, prompt))
-        if model == "llama3.2:3b":
+        if model == "gemini-2.5-flash-lite":
             return "DROP TABLE orders"
         return "SELECT COUNT(*) AS order_count FROM orders"
 
@@ -56,13 +57,27 @@ def read_csv_rows(path: Path) -> list[dict]:
 
 
 def main() -> None:
+    os.environ["LLM_PROVIDER"] = "gemini"
+    os.environ["GEMINI_API_KEY"] = "key"
+    os.environ["GEMINI_PRIMARY_MODEL"] = "gemini-2.5-flash-lite"
+    os.environ["GEMINI_BACKUP_MODEL"] = "gemini-2.5-flash"
+
+    assert gemini_api_key_is_placeholder() is True
+    try:
+        get_llm("gemini-2.5-flash-lite")
+    except GeminiConfigurationError as error:
+        assert "placeholder value 'key'" in str(error)
+    else:
+        raise AssertionError("Placeholder Gemini API key should stop model initialization.")
+
     with tempfile.TemporaryDirectory() as temp_dir:
         os.environ["LOG_DIR"] = temp_dir
         fake_sql_generator, calls = build_fake_sql_generator()
         config = SQLAgentConfig(
-            primary_model="llama3.2:3b",
-            fallback_model="qwen2.5-coder:7b",
-            max_primary_attempts=2,
+            primary_model="gemini-2.5-flash-lite",
+            fallback_model="gemini-2.5-flash",
+            max_primary_attempts=1,
+            llm_provider="gemini",
             ollama_host="http://localhost:11434",
         )
 
@@ -77,12 +92,11 @@ def main() -> None:
 
         assert state["execution_success"] is True
         assert state["fallback_used"] is True
-        assert state["selected_model"] == "qwen2.5-coder:7b"
-        assert state["total_attempts"] == 3
+        assert state["selected_model"] == "gemini-2.5-flash"
+        assert state["total_attempts"] == 2
         assert [model for model, _prompt in calls] == [
-            "llama3.2:3b",
-            "llama3.2:3b",
-            "qwen2.5-coder:7b",
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-flash",
         ]
 
         readonly_validation = validate_generated_sql(
@@ -100,10 +114,18 @@ def main() -> None:
         query_log_path = Path(temp_dir) / "query_log.csv"
         rows = read_csv_rows(query_log_path)
         assert len(rows) == 3
-        assert rows[0]["selected_model"] == "llama3.2:3b"
-        assert rows[1]["attempt_number"] == "2"
-        assert rows[2]["selected_model"] == "qwen2.5-coder:7b"
+        assert rows[0]["primary_model"] == "gemini-2.5-flash-lite"
+        assert rows[0]["backup_model"] == "gemini-2.5-flash"
+        assert rows[0]["model_used"] == "gemini-2.5-flash-lite"
+        assert rows[0]["success"] == "false"
+        assert rows[1]["model_used"] == "gemini-2.5-flash"
+        assert rows[1]["execution_success"] == "true"
+        assert rows[2]["run_id"] == state["run_id"]
+        assert rows[2]["question"] == "How many orders are there?"
+        assert rows[2]["final_sql"] == state["final_sql"]
+        assert rows[2]["validation_success"] == "true"
         assert rows[2]["execution_success"] == "true"
+        assert rows[2]["answer_preview"]
 
         correction_calls: list[tuple[str, str]] = []
 

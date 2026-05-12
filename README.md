@@ -1,10 +1,10 @@
 # Agentic AI Chat with your Data Prototype
 
-This project starts with a local TPC-H database and a simple CLI backend that asks a local Ollama model to generate PostgreSQL SQL.
+This project starts with a local TPC-H database and a simple CLI backend that asks an LLM to generate PostgreSQL SQL. Gemini is the default LLM provider, with Ollama still available for local runs.
 
 DuckDB is used to generate the local TPC-H sample data. PostgreSQL is used as the target database for the first backend prototype.
 
-## First CLI prototype with local Ollama LLM
+## First CLI prototype
 
 This assumes the local PostgreSQL database `agentic_ai` already exists and contains the TPC-H tables. The database setup commands are documented in `database/README.md`.
 
@@ -15,23 +15,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Install Ollama:
-
-```bash
-brew install ollama
-```
-
-Start Ollama:
-
-```bash
-ollama serve
-```
-
-Pull a small model:
-
-```bash
-ollama pull llama3.2:3b
-```
+Replace the placeholder `GEMINI_API_KEY` value in `.env` with a real Gemini API key before making Gemini calls.
 
 Run the prototype:
 
@@ -59,7 +43,7 @@ The CLI LLM path only generates SQL. The backend validates that the SQL is a sin
 
 ## Run Streamlit frontend
 
-This reuses the same backend modules as the CLI. PostgreSQL should already be running with the TPC-H data loaded, and Ollama should have the configured local model available.
+This reuses the same backend modules as the CLI. PostgreSQL should already be running with the TPC-H data loaded. Gemini is used by default.
 
 Install dependencies:
 
@@ -68,11 +52,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Start Ollama:
-
-```bash
-ollama serve
-```
+Replace the placeholder `GEMINI_API_KEY` value in `.env` with a real Gemini API key.
 
 Run the Streamlit app:
 
@@ -96,31 +76,20 @@ The Streamlit frontend shows the user question, deterministic answer summary, re
 
 The Streamlit frontend runs a LangGraph SQL workflow with explicit nodes for loading schema context, SQL generation, validation, execution, SQL repair, fallback model switching, and final answer generation.
 
-The app first uses the local Ollama model configured by `PRIMARY_MODEL` and tries it at most `MAX_PRIMARY_ATTEMPTS` times. By default this is:
+The app first uses Gemini Flash Lite:
 
 ```text
-PRIMARY_MODEL=llama3.2:3b
-MAX_PRIMARY_ATTEMPTS=2
+LLM_PROVIDER=gemini
+GEMINI_PRIMARY_MODEL=gemini-2.5-flash-lite
 ```
 
-If the primary model produces invalid SQL twice or execution fails twice, the graph switches to:
+If the primary API call fails, returns invalid SQL, fails SQL validation, or fails PostgreSQL execution, the graph retries once with Gemini Flash:
 
 ```text
-FALLBACK_MODEL=qwen2.5-coder:7b
+GEMINI_BACKUP_MODEL=gemini-2.5-flash
 ```
 
-Pull both local models before running:
-
-```bash
-ollama pull llama3.2:3b
-ollama pull qwen2.5-coder:7b
-```
-
-Start Ollama:
-
-```bash
-ollama serve
-```
+To use local Ollama instead, set `LLM_PROVIDER=ollama` and configure `OLLAMA_HOST`, `PRIMARY_MODEL`, and `FALLBACK_MODEL`.
 
 Run the app:
 
@@ -131,10 +100,12 @@ streamlit run streamlit_app.py
 Useful local environment variables:
 
 ```text
-OLLAMA_HOST=http://localhost:11434
-PRIMARY_MODEL=llama3.2:3b
-FALLBACK_MODEL=qwen2.5-coder:7b
-MAX_PRIMARY_ATTEMPTS=2
+GEMINI_API_KEY=<your-gemini-api-key>
+LLM_PROVIDER=gemini
+GEMINI_PRIMARY_MODEL=gemini-2.5-flash-lite
+GEMINI_BACKUP_MODEL=gemini-2.5-flash
+LLM_TEMPERATURE=0
+LLM_MAX_OUTPUT_TOKENS=1024
 ```
 
 Every SQL generation attempt is logged to `logs/query_log.csv`. Streamlit feedback is logged to `logs/feedback.csv`.
@@ -171,7 +142,7 @@ cat logs/feedback.csv
 
 ## Run with Docker Compose
 
-The Docker setup runs Streamlit and PostgreSQL in Docker Compose. Ollama still runs on the host machine. The Dockerized app connects to Ollama through `http://host.docker.internal:11434`.
+The Docker setup runs Streamlit and PostgreSQL in Docker Compose. The app service reads `.env` through `env_file`, so replace the placeholder Gemini API key before asking questions.
 
 Make sure TPC-H CSV exports exist:
 
@@ -180,17 +151,7 @@ source .venv/bin/activate
 python database/export_tpch_to_csv.py
 ```
 
-Start Ollama on the host machine:
-
-```bash
-ollama serve
-```
-
-Pull the local model if it is not already available:
-
-```bash
-ollama pull llama3.2:3b
-```
+If you set `LLM_PROVIDER=ollama`, Ollama still runs on the host machine and the Dockerized app connects through `http://host.docker.internal:11434`.
 
 Start Docker Compose:
 

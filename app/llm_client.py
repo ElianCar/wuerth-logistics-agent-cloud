@@ -1,35 +1,8 @@
-import ollama
-
-from app.config import get_config
+from src.llm.model_adapter import invoke_model
 
 
 def generate_sql(prompt: str) -> str:
-    config = get_config()
-    client = ollama.Client(host=config.ollama_host)
-
     try:
-        response = client.chat(
-            model=config.ollama_model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            options={
-                "temperature": 0,
-            },
-        )
+        return invoke_model(prompt).response_text
     except Exception as error:
-        raise RuntimeError(
-            "Could not get a response from Ollama. "
-            f"Make sure Ollama is running at {config.ollama_host} and the model "
-            f"'{config.ollama_model}' is installed. Try: "
-            f"ollama serve; ollama pull {config.ollama_model}. "
-            f"Original error: {error}"
-        ) from error
-
-    try:
-        return response["message"]["content"].strip()
-    except Exception as error:
-        raise RuntimeError(f"Unexpected Ollama response format: {response}") from error
+        raise RuntimeError(f"Could not get a response from the configured LLM: {error}") from error

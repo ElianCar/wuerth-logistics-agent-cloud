@@ -7,4 +7,8 @@ __pycache__/
 *.duckdb
 database/tpch.duckdb
 evaluation/evaluation_results.csv
-
+logs/*.bak_*
+logs/*.log
+memory/memory_candidates.yaml
+memory/memory_audit_log.csv
+memory/*.bak_*
