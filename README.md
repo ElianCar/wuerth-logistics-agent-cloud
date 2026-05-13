@@ -76,11 +76,11 @@ The Streamlit frontend shows the user question, deterministic answer summary, re
 
 The Streamlit frontend runs a LangGraph SQL workflow with explicit nodes for loading schema context, SQL generation, validation, execution, SQL repair, fallback model switching, and final answer generation.
 
-The app first uses Gemini Flash Lite:
+The app first uses Gemini Flash Lite Preview:
 
 ```text
 LLM_PROVIDER=gemini
-GEMINI_PRIMARY_MODEL=gemini-2.5-flash-lite
+GEMINI_PRIMARY_MODEL=gemini-3.1-flash-lite-preview
 ```
 
 If the primary API call fails, returns invalid SQL, fails SQL validation, or fails PostgreSQL execution, the graph retries once with Gemini Flash:
@@ -89,7 +89,7 @@ If the primary API call fails, returns invalid SQL, fails SQL validation, or fai
 GEMINI_BACKUP_MODEL=gemini-2.5-flash
 ```
 
-To use local Ollama instead, set `LLM_PROVIDER=ollama` and configure `OLLAMA_HOST`, `PRIMARY_MODEL`, and `FALLBACK_MODEL`.
+To use local Ollama instead, enable `Lokales Ollama verwenden` in the Streamlit sidebar. The Streamlit app keeps the model choices fixed: Gemini uses the configured Gemini primary/fallback models, and Ollama uses `llama3.2:3b` for both primary and fallback.
 
 Run the app:
 
@@ -102,8 +102,11 @@ Useful local environment variables:
 ```text
 GEMINI_API_KEY=<your-gemini-api-key>
 LLM_PROVIDER=gemini
-GEMINI_PRIMARY_MODEL=gemini-2.5-flash-lite
+GEMINI_PRIMARY_MODEL=gemini-3.1-flash-lite-preview
 GEMINI_BACKUP_MODEL=gemini-2.5-flash
+OLLAMA_HOST=http://localhost:11434
+PRIMARY_MODEL=llama3.2:3b
+FALLBACK_MODEL=llama3.2:3b
 LLM_TEMPERATURE=0
 LLM_MAX_OUTPUT_TOKENS=1024
 ```

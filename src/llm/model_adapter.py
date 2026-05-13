@@ -10,10 +10,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-DEFAULT_GEMINI_PRIMARY_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_GEMINI_PRIMARY_MODEL = "gemini-3.1-flash-lite-preview"
 DEFAULT_GEMINI_BACKUP_MODEL = "gemini-2.5-flash"
 DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
-DEFAULT_OLLAMA_BACKUP_MODEL = "qwen2.5-coder:7b"
+DEFAULT_OLLAMA_BACKUP_MODEL = "llama3.2:3b"
 PLACEHOLDER_API_KEY = "key"
 
 
@@ -36,18 +36,19 @@ class ModelResponse:
 ValidationFn = Callable[[str], object]
 
 
-def get_provider() -> str:
-    return os.getenv("LLM_PROVIDER", "gemini").strip().lower() or "gemini"
+def get_provider(provider: str | None = None) -> str:
+    configured_provider = provider if provider is not None else os.getenv("LLM_PROVIDER", "gemini")
+    return configured_provider.strip().lower() or "gemini"
 
 
-def get_primary_model() -> str:
-    if get_provider() == "gemini":
+def get_primary_model(provider: str | None = None) -> str:
+    if get_provider(provider) == "gemini":
         return os.getenv("GEMINI_PRIMARY_MODEL", DEFAULT_GEMINI_PRIMARY_MODEL)
     return os.getenv("PRIMARY_MODEL") or os.getenv("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL
 
 
-def get_backup_model() -> str:
-    if get_provider() == "gemini":
+def get_backup_model(provider: str | None = None) -> str:
+    if get_provider(provider) == "gemini":
         return os.getenv("GEMINI_BACKUP_MODEL", DEFAULT_GEMINI_BACKUP_MODEL)
     return os.getenv("FALLBACK_MODEL", DEFAULT_OLLAMA_BACKUP_MODEL)
 
@@ -69,23 +70,35 @@ def gemini_api_key_is_placeholder() -> bool:
     return not api_key or api_key == PLACEHOLDER_API_KEY
 
 
-def get_llm(model_name: str | None = None) -> Any:
-    provider = get_provider()
-    selected_model = model_name or get_primary_model()
+def get_llm(
+    model_name: str | None = None,
+    *,
+    provider: str | None = None,
+    ollama_host: str | None = None,
+) -> Any:
+    selected_provider = get_provider(provider)
+    selected_model = model_name or get_primary_model(selected_provider)
 
-    if provider == "gemini":
+    if selected_provider == "gemini":
         return _get_gemini_llm(selected_model)
-    if provider == "ollama":
-        return _get_ollama_llm(selected_model)
+    if selected_provider == "ollama":
+        return _get_ollama_llm(selected_model, ollama_host=ollama_host)
 
     raise ModelAdapterError(
-        f"Unsupported LLM_PROVIDER '{provider}'. Use 'gemini' or 'ollama'."
+        f"Unsupported LLM_PROVIDER '{selected_provider}'. Use 'gemini' or 'ollama'."
     )
 
 
-def invoke_model(prompt: str, model_name: str | None = None) -> ModelResponse:
-    selected_model = model_name or get_primary_model()
-    llm = get_llm(selected_model)
+def invoke_model(
+    prompt: str,
+    model_name: str | None = None,
+    *,
+    provider: str | None = None,
+    ollama_host: str | None = None,
+) -> ModelResponse:
+    selected_provider = get_provider(provider)
+    selected_model = model_name or get_primary_model(selected_provider)
+    llm = get_llm(selected_model, provider=selected_provider, ollama_host=ollama_host)
     raw_response = llm.invoke(prompt)
     response_text = _extract_response_text(raw_response)
 
@@ -102,9 +115,13 @@ def invoke_model(prompt: str, model_name: str | None = None) -> ModelResponse:
 def invoke_with_fallback(
     prompt: str,
     validation_fn: ValidationFn | None = None,
+    *,
+    provider: str | None = None,
+    ollama_host: str | None = None,
 ) -> ModelResponse:
-    primary_model = get_primary_model()
-    backup_model = get_backup_model()
+    selected_provider = get_provider(provider)
+    primary_model = get_primary_model(selected_provider)
+    backup_model = get_backup_model(selected_provider)
     attempts = [primary_model]
     if backup_model != primary_model:
         attempts.append(backup_model)
@@ -112,7 +129,12 @@ def invoke_with_fallback(
     errors: list[str] = []
     for model_name in attempts:
         try:
-            response = invoke_model(prompt, model_name=model_name)
+            response = invoke_model(
+                prompt,
+                model_name=model_name,
+                provider=selected_provider,
+                ollama_host=ollama_host,
+            )
             _validate_response_text(response.response_text, validation_fn)
             return ModelResponse(
                 model_name=response.model_name,
@@ -151,7 +173,7 @@ def _get_gemini_llm(model_name: str) -> Any:
     )
 
 
-def _get_ollama_llm(model_name: str) -> Any:
+def _get_ollama_llm(model_name: str, *, ollama_host: str | None = None) -> Any:
     try:
         from langchain_ollama import ChatOllama
     except ImportError as error:
@@ -161,7 +183,7 @@ def _get_ollama_llm(model_name: str) -> Any:
 
     return ChatOllama(
         model=model_name,
-        base_url=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
+        base_url=ollama_host or os.getenv("OLLAMA_HOST", "http://localhost:11434"),
         temperature=get_temperature(),
     )
 

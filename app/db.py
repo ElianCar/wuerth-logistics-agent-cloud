@@ -19,7 +19,7 @@ def get_connection() -> psycopg.Connection:
         return psycopg.connect(**connection_args)
     except psycopg.Error as error:
         raise RuntimeError(
-            "Could not connect to PostgreSQL. "
-            "Check that PostgreSQL is running and that your .env settings are correct. "
-            f"Original error: {error}"
+            "Verbindung zu PostgreSQL konnte nicht hergestellt werden. "
+            "Prüfe, ob PostgreSQL läuft und ob die `.env`-Einstellungen korrekt sind. "
+            f"Originalfehler: {error}"
         ) from error

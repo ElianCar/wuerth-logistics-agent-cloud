@@ -64,6 +64,10 @@ class SQLAgentState(TypedDict, total=False):
     total_attempts: int
     result_status: str
     schema_load_failed: bool
+    run_context: str
+    use_approved_memory: bool
+    enable_memory_candidate_generation: bool
+    log_to_query_log: bool
 
 
 @dataclass(frozen=True)
@@ -76,15 +80,21 @@ class SQLAgentConfig:
 
     @classmethod
     def from_env(cls) -> "SQLAgentConfig":
-        llm_provider = get_provider()
+        return cls.from_provider(get_provider())
+
+    @classmethod
+    def from_provider(cls, llm_provider: str) -> "SQLAgentConfig":
+        llm_provider = get_provider(llm_provider)
         if llm_provider == "gemini":
             primary_model = os.getenv("GEMINI_PRIMARY_MODEL", DEFAULT_GEMINI_PRIMARY_MODEL)
             fallback_model = os.getenv("GEMINI_BACKUP_MODEL", DEFAULT_GEMINI_BACKUP_MODEL)
             max_primary_attempts = 1
-        else:
+        elif llm_provider == "ollama":
             primary_model = os.getenv("PRIMARY_MODEL") or os.getenv("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL
             fallback_model = os.getenv("FALLBACK_MODEL", DEFAULT_OLLAMA_BACKUP_MODEL)
             max_primary_attempts = int(os.getenv("MAX_PRIMARY_ATTEMPTS", "2"))
+        else:
+            raise ValueError(f"Unsupported LLM provider '{llm_provider}'. Use 'gemini' or 'ollama'.")
 
         return cls(
             primary_model=primary_model,
@@ -99,6 +109,10 @@ SchemaLoader = Callable[[], str]
 SQLGenerator = Callable[[str, str, str, str], str]
 SQLExecutor = Callable[[str, str], dict[str, Any]]
 AttemptLogger = Callable[..., None]
+
+
+def noop_attempt_logger(**_kwargs: Any) -> None:
+    return None
 
 
 def append_trace(state: SQLAgentState, message: str) -> list[str]:
@@ -175,14 +189,16 @@ User correction:
 {user_correction or "(none)"}
 """
 
-    approved_template_context = format_approved_template_context(state["user_question"])
+    approved_template_context = ""
+    if bool(state.get("use_approved_memory", True)):
+        approved_template_context = format_approved_template_context(state["user_question"])
 
     return f"""You are a PostgreSQL SQL generator.
 
 Return SQL only.
 Do not include markdown code fences.
 Do not include explanations, comments, or prose.
-Generate exactly one read-only SELECT statement.
+Generate exactly one read-only SELECT query. A WITH common table expression is allowed only if the final statement is a SELECT.
 Do not use DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE, COPY, CREATE, GRANT, or REVOKE.
 Use only the provided tables and columns.
 Prefer explicit JOIN syntax.
@@ -202,10 +218,17 @@ User question:
 def default_sql_generator(
     prompt: str,
     model: str,
-    _ollama_host: str,
+    ollama_host: str,
     _node_name: str,
+    *,
+    llm_provider: str | None = None,
 ) -> str:
-    return invoke_model(prompt, model_name=model).response_text
+    return invoke_model(
+        prompt,
+        model_name=model,
+        provider=llm_provider,
+        ollama_host=ollama_host,
+    ).response_text
 
 
 def log_attempt_state(
@@ -265,14 +288,14 @@ def build_sql_agent_graph(
             return {
                 "schema_load_failed": True,
                 "sql_error": str(error),
-                "final_answer": f"Could not load database schema: {error}",
-                "trace_steps": append_trace(state, "load_schema failed"),
+                "final_answer": f"Das Datenbankschema konnte nicht geladen werden: {error}",
+                "trace_steps": append_trace(state, "Schema laden fehlgeschlagen"),
             }
 
         return {
             "schema_context": schema_context,
             "schema_load_failed": False,
-            "trace_steps": append_trace(state, "load_schema loaded database schema and semantic layer"),
+            "trace_steps": append_trace(state, "Schema und Semantic Layer geladen"),
         }
 
     def generate_sql(state: SQLAgentState) -> dict[str, Any]:
@@ -287,18 +310,28 @@ def build_sql_agent_graph(
         selected_model = working_state["selected_model"]
 
         try:
-            generated_sql = sql_generator(
-                prompt,
-                selected_model,
-                working_state.get("ollama_host", "http://localhost:11434"),
-                "generate_sql",
-            )
+            ollama_host = working_state.get("ollama_host", "http://localhost:11434")
+            if sql_generator is default_sql_generator:
+                generated_sql = default_sql_generator(
+                    prompt,
+                    selected_model,
+                    ollama_host,
+                    "generate_sql",
+                    llm_provider=working_state.get("llm_provider", ""),
+                )
+            else:
+                generated_sql = sql_generator(
+                    prompt,
+                    selected_model,
+                    ollama_host,
+                    "generate_sql",
+                )
             sql_error = ""
-            trace_message = f"generate_sql attempt {attempt_number} with {selected_model}"
+            trace_message = f"SQL-Generierung Versuch {attempt_number} mit {selected_model}"
         except Exception as error:
             generated_sql = ""
             sql_error = str(error)
-            trace_message = f"generate_sql failed on attempt {attempt_number} with {selected_model}"
+            trace_message = f"SQL-Generierung in Versuch {attempt_number} mit {selected_model} fehlgeschlagen"
 
         return {
             "attempt_number": attempt_number,
@@ -318,7 +351,7 @@ def build_sql_agent_graph(
                 "source_tables": [],
                 "trace_steps": append_trace(
                     state,
-                    f"validate_sql skipped because generation failed: {state.get('sql_error', '')}",
+                    f"SQL-Validierung übersprungen, weil die Generierung fehlgeschlagen ist: {state.get('sql_error', '')}",
                 ),
             }
             state_for_log: SQLAgentState = {**state, **update}
@@ -341,7 +374,7 @@ def build_sql_agent_graph(
             "source_tables": validation.used_tables,
             "trace_steps": append_trace(
                 state,
-                "validate_sql passed" if validation.is_valid else f"validate_sql failed: {validation.error}",
+                "SQL-Validierung erfolgreich" if validation.is_valid else f"SQL-Validierung fehlgeschlagen: {validation.error}",
             ),
         }
 
@@ -367,7 +400,7 @@ def build_sql_agent_graph(
                 "query_result": query_result,
                 "execution_success": True,
                 "sql_error": "",
-                "trace_steps": append_trace(state, f"execute_sql succeeded with {row_count} rows"),
+                "trace_steps": append_trace(state, f"SQL-Ausführung erfolgreich mit {row_count} Zeilen"),
             }
             state_for_log: SQLAgentState = {**state, **update}
             log_attempt_state(
@@ -382,7 +415,7 @@ def build_sql_agent_graph(
                 "query_result": {},
                 "execution_success": False,
                 "sql_error": str(error),
-                "trace_steps": append_trace(state, f"execute_sql failed: {error}"),
+                "trace_steps": append_trace(state, f"SQL-Ausführung fehlgeschlagen: {error}"),
             }
             state_for_log: SQLAgentState = {**state, **update}
             log_attempt_state(
@@ -396,7 +429,7 @@ def build_sql_agent_graph(
     def repair_sql(state: SQLAgentState) -> dict[str, Any]:
         return {
             "previous_failed_sql": state.get("generated_sql", ""),
-            "trace_steps": append_trace(state, "repair_sql prepared failed SQL and error for another attempt"),
+            "trace_steps": append_trace(state, "SQL-Reparatur hat fehlgeschlagenes SQL und Fehler für einen weiteren Versuch vorbereitet"),
         }
 
     def switch_model(state: SQLAgentState) -> dict[str, Any]:
@@ -406,25 +439,25 @@ def build_sql_agent_graph(
             "attempt_number": 0,
             "fallback_used": True,
             "previous_failed_sql": state.get("generated_sql", ""),
-            "trace_steps": append_trace(state, f"switch_model changed model to {fallback_model}"),
+            "trace_steps": append_trace(state, f"Modellwechsel auf {fallback_model}"),
         }
 
     def generate_final_answer(state: SQLAgentState) -> dict[str, Any]:
         if state.get("schema_load_failed"):
             return {
-                "final_answer": state.get("final_answer", "Could not load database schema."),
-                "result_status": "failed",
-                "trace_steps": append_trace(state, "generate_final_answer reported schema load failure"),
+                "final_answer": state.get("final_answer", "Das Datenbankschema konnte nicht geladen werden."),
+                "result_status": "fehlgeschlagen",
+                "trace_steps": append_trace(state, "Finale Antwort meldet Fehler beim Laden des Schemas"),
             }
 
         if not state.get("execution_success"):
             return {
                 "final_answer": (
-                    "I could not produce a valid executable SQL query. "
-                    f"Last error: {state.get('sql_error', 'unknown error')}"
+                    "Ich konnte keine gültige ausführbare SQL-Abfrage erzeugen. "
+                    f"Letzter Fehler: {state.get('sql_error', 'unbekannter Fehler')}"
                 ),
-                "result_status": "failed",
-                "trace_steps": append_trace(state, "generate_final_answer reported SQL failure"),
+                "result_status": "fehlgeschlagen",
+                "trace_steps": append_trace(state, "Finale Antwort meldet SQL-Fehler"),
             }
 
         query_result = state.get("query_result", {})
@@ -433,23 +466,23 @@ def build_sql_agent_graph(
         row_count = int(query_result.get("row_count", 0))
 
         if row_count == 0:
-            final_answer = "The query returned no rows."
+            final_answer = "Die Abfrage lieferte keine Zeilen."
         elif row_count == 1 and len(columns) == 1:
-            final_answer = f"The answer is {rows[0][0]}."
+            final_answer = f"Die Antwort ist {rows[0][0]}."
         else:
-            final_answer = f"The query returned {row_count} rows."
+            final_answer = f"Die Abfrage lieferte {row_count} Zeilen."
 
         if state.get("fallback_used"):
-            result_status = "fallback success"
+            result_status = "mit Fallback erfolgreich"
         elif int(state.get("total_attempts", 0)) == 1:
-            result_status = "first attempt success"
+            result_status = "im ersten Versuch erfolgreich"
         else:
-            result_status = "repaired success"
+            result_status = "nach Reparatur erfolgreich"
 
         return {
             "final_answer": final_answer,
             "result_status": result_status,
-            "trace_steps": append_trace(state, f"generate_final_answer produced {result_status}"),
+            "trace_steps": append_trace(state, f"Finale Antwort erzeugt: {result_status}"),
         }
 
     def route_after_load_schema(state: SQLAgentState) -> Literal["generate_sql", "generate_final_answer"]:
@@ -515,6 +548,10 @@ def run_sql_agent(
     previous_sql_error: str = "",
     previous_final_answer: str = "",
     user_correction: str = "",
+    run_context: str = "chat",
+    use_approved_memory: bool = True,
+    enable_memory_candidate_generation: bool = True,
+    log_to_query_log: bool = True,
     schema_loader: SchemaLoader = load_schema_context,
     sql_generator: SQLGenerator = default_sql_generator,
     sql_executor: SQLExecutor = execute_read_only_sql,
@@ -524,11 +561,12 @@ def run_sql_agent(
     selected_model = agent_config.fallback_model if force_fallback else agent_config.primary_model
     run_id = generate_run_id()
     started_at = perf_counter()
+    effective_attempt_logger = attempt_logger if log_to_query_log else noop_attempt_logger
     graph = build_sql_agent_graph(
         schema_loader=schema_loader,
         sql_generator=sql_generator,
         sql_executor=sql_executor,
-        attempt_logger=attempt_logger,
+        attempt_logger=effective_attempt_logger,
     )
     initial_state: SQLAgentState = {
         "run_id": run_id,
@@ -566,6 +604,10 @@ def run_sql_agent(
         "total_attempts": 0,
         "result_status": "",
         "schema_load_failed": False,
+        "run_context": run_context,
+        "use_approved_memory": use_approved_memory,
+        "enable_memory_candidate_generation": enable_memory_candidate_generation,
+        "log_to_query_log": log_to_query_log,
     }
     final_state: SQLAgentState = graph.invoke(initial_state, {"recursion_limit": 30})
     latency_seconds = perf_counter() - started_at
@@ -592,24 +634,29 @@ def run_sql_agent(
             "error_message": error_message,
             "row_count": row_count,
             "latency_seconds": latency_seconds,
+            "run_context": run_context,
+            "use_approved_memory": use_approved_memory,
+            "enable_memory_candidate_generation": enable_memory_candidate_generation,
+            "log_to_query_log": log_to_query_log,
         }
     )
 
-    log_query_run(
-        run_id=run_id,
-        question=user_question,
-        generated_sql=generated_sql,
-        final_sql=final_sql,
-        model_primary=agent_config.primary_model,
-        model_used=final_state.get("selected_model", ""),
-        fallback_used=bool(final_state.get("fallback_used", False)),
-        validation_success=validation_success,
-        execution_success=execution_success,
-        error_type=error_type,
-        error_message=error_message,
-        source_tables=final_state.get("source_tables", []),
-        row_count=row_count,
-        latency_seconds=latency_seconds,
-        answer=final_state.get("final_answer", ""),
-    )
+    if log_to_query_log:
+        log_query_run(
+            run_id=run_id,
+            question=user_question,
+            generated_sql=generated_sql,
+            final_sql=final_sql,
+            model_primary=agent_config.primary_model,
+            model_used=final_state.get("selected_model", ""),
+            fallback_used=bool(final_state.get("fallback_used", False)),
+            validation_success=validation_success,
+            execution_success=execution_success,
+            error_type=error_type,
+            error_message=error_message,
+            source_tables=final_state.get("source_tables", []),
+            row_count=row_count,
+            latency_seconds=latency_seconds,
+            answer=final_state.get("final_answer", ""),
+        )
     return final_state

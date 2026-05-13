@@ -28,6 +28,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./memory:/app/memory
+      - ./evaluation:/app/evaluation
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
@@ -36,6 +37,8 @@ services:
       POSTGRES_PASSWORD: postgres
       OLLAMA_HOST: http://host.docker.internal:11434
       OLLAMA_MODEL: llama3.2:3b
+      PRIMARY_MODEL: llama3.2:3b
+      FALLBACK_MODEL: llama3.2:3b
     depends_on:
       postgres:
         condition: service_healthy

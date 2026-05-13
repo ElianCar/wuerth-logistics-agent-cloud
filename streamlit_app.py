@@ -8,6 +8,7 @@ import yaml
 
 from app.schema import TPC_H_TABLES
 from src.agent.langgraph_sql_agent import SQLAgentConfig, run_sql_agent
+from src.agent.golden_test_runner import load_golden_questions, run_golden_tests
 from src.agent.logging_utils import log_feedback
 from src.agent.memory_store import (
     MemoryStoreError,
@@ -25,7 +26,19 @@ from src.agent.memory_store import (
     update_candidate_proposed_template,
 )
 from src.agent.memory_validation import validate_proposed_template
-from src.llm.model_adapter import gemini_api_key_is_placeholder
+from src.llm.model_adapter import (
+    DEFAULT_GEMINI_BACKUP_MODEL,
+    DEFAULT_GEMINI_PRIMARY_MODEL,
+    DEFAULT_OLLAMA_BACKUP_MODEL,
+    DEFAULT_OLLAMA_MODEL,
+    gemini_api_key_is_placeholder,
+)
+
+
+PAGE_CHAT = "Chat"
+PAGE_GOLDEN = "Golden-Testmodus"
+PAGE_MEMORY = "Memory-Prüfung"
+PAGE_TEMPLATES = "Freigegebene Templates"
 
 
 def is_numeric_value(value: object) -> bool:
@@ -72,6 +85,12 @@ def maybe_show_chart(df: pd.DataFrame) -> None:
 def initialize_state() -> None:
     if "history" not in st.session_state:
         st.session_state.history = []
+    st.session_state.setdefault("last_golden_run_id", "")
+    st.session_state.setdefault("last_selected_question_ids", [])
+    st.session_state.setdefault("last_failed_question_ids", [])
+    st.session_state.setdefault("last_errored_question_ids", [])
+    st.session_state.setdefault("last_golden_result_summary", {})
+    st.session_state.setdefault("last_golden_results", [])
     initialize_memory_files()
 
 
@@ -94,6 +113,40 @@ def render_flash() -> None:
         st.info(message)
 
 
+def build_streamlit_llm_config() -> SQLAgentConfig:
+    env_config = SQLAgentConfig.from_env()
+    gemini_config = SQLAgentConfig.from_provider("gemini")
+    ollama_config = SQLAgentConfig.from_provider("ollama")
+
+    st.session_state.setdefault(
+        "use_local_ollama",
+        env_config.llm_provider == "ollama",
+    )
+
+    use_local_ollama = st.toggle(
+        "Lokales Ollama verwenden",
+        key="use_local_ollama",
+        help="Wenn aktiv, nutzt der Workflow lokale Ollama-Modelle für Primary und Fallback. Sonst wird die Gemini API genutzt.",
+    )
+
+    if use_local_ollama:
+        return SQLAgentConfig(
+            primary_model=DEFAULT_OLLAMA_MODEL,
+            fallback_model=DEFAULT_OLLAMA_BACKUP_MODEL,
+            max_primary_attempts=ollama_config.max_primary_attempts,
+            llm_provider="ollama",
+            ollama_host=ollama_config.ollama_host,
+        )
+
+    return SQLAgentConfig(
+        primary_model=gemini_config.primary_model or DEFAULT_GEMINI_PRIMARY_MODEL,
+        fallback_model=gemini_config.fallback_model or DEFAULT_GEMINI_BACKUP_MODEL,
+        max_primary_attempts=1,
+        llm_provider="gemini",
+        ollama_host=ollama_config.ollama_host,
+    )
+
+
 def apply_app_styles() -> None:
     st.markdown(
         """
@@ -110,37 +163,36 @@ def apply_app_styles() -> None:
     )
 
 
-def render_sidebar() -> str:
-    config = SQLAgentConfig.from_env()
-
+def render_sidebar() -> tuple[str, SQLAgentConfig]:
     with st.sidebar:
         st.header("Navigation")
         page = st.radio(
-            "View",
-            ["Chat", "Memory Review", "Approved Templates"],
+            "Ansicht",
+            [PAGE_CHAT, PAGE_GOLDEN, PAGE_MEMORY, PAGE_TEMPLATES],
             label_visibility="collapsed",
         )
 
-        st.header("Configuration")
-        st.write("Selected database: PostgreSQL")
-        st.write(f"LLM provider: `{config.llm_provider}`")
-        st.write(f"Primary model: `{config.primary_model}`")
-        st.write(f"Fallback model: `{config.fallback_model}`")
-        st.write(f"Max primary attempts: `{config.max_primary_attempts}`")
+        st.header("Konfiguration")
+        config = build_streamlit_llm_config()
+        st.write("Ausgewählte Datenbank: PostgreSQL")
+        st.write(f"LLM-Anbieter: `{config.llm_provider}`")
+        st.write(f"Primäres Modell: `{config.primary_model}`")
+        st.write(f"Fallback-Modell: `{config.fallback_model}`")
+        st.write(f"Max. primäre Versuche: `{config.max_primary_attempts}`")
         if config.llm_provider == "gemini":
             if gemini_api_key_is_placeholder():
                 st.warning(
-                    "GEMINI_API_KEY is still set to `key`. Replace it in `.env` "
-                    "with a real Gemini API key before asking questions."
+                    "GEMINI_API_KEY ist noch auf `key` gesetzt. Ersetze den Wert in `.env` "
+                    "durch einen echten Gemini API Key, bevor Fragen gestellt werden."
                 )
         else:
-            st.write(f"Ollama host: `{config.ollama_host}`")
+            st.write(f"Ollama-Host: `{config.ollama_host}`")
 
-        st.header("Allowed tables")
+        st.header("Erlaubte Tabellen")
         for table in TPC_H_TABLES:
             st.write(f"- `{table}`")
 
-    return page
+    return page, config
 
 
 def write_feedback(record: dict, rating: str, comment: str) -> str:
@@ -158,33 +210,40 @@ def write_feedback(record: dict, rating: str, comment: str) -> str:
     )
 
 
-def retry_with_comment(record: dict, index: int, comment: str) -> None:
+def retry_with_comment(record: dict, index: int, comment: str, config: SQLAgentConfig) -> None:
     if not comment.strip():
-        st.warning("Add a short correction first.")
+        st.warning("Bitte zuerst eine kurze Korrektur eingeben.")
         return
 
     write_feedback(record, "neutral", f"retry_with_comment: {comment}")
-    with st.spinner("Retrying with your correction..."):
+    with st.spinner("Wiederhole den Lauf mit deiner Korrektur..."):
         corrected_record = run_sql_agent(
             record.get("user_question", ""),
+            config=config,
             previous_failed_sql=record.get("generated_sql", ""),
             previous_final_answer=record.get("final_answer", ""),
-            previous_sql_error="User said the previous answer did not match their intent.",
+            previous_sql_error="Der Nutzer hat angegeben, dass die vorherige Antwort nicht zur Absicht passte.",
             user_correction=comment.strip(),
         )
     st.session_state.history[index] = corrected_record
     st.rerun()
 
 
-def rerun_with_fallback(record: dict, index: int, comment: str = "") -> None:
+def rerun_with_fallback(
+    record: dict,
+    index: int,
+    config: SQLAgentConfig,
+    comment: str = "",
+) -> None:
     write_feedback(record, "neutral", f"fallback_requested: {comment}")
-    with st.spinner("Retrying with fallback model..."):
+    with st.spinner("Wiederhole den Lauf mit dem Fallback-Modell..."):
         fallback_record = run_sql_agent(
             record.get("user_question", ""),
+            config=config,
             force_fallback=True,
             previous_failed_sql=record.get("generated_sql", ""),
             previous_final_answer=record.get("final_answer", ""),
-            previous_sql_error="User requested the fallback model.",
+            previous_sql_error="Der Nutzer hat das Fallback-Modell angefordert.",
             user_correction=comment.strip(),
         )
     st.session_state.history[index] = fallback_record
@@ -193,15 +252,17 @@ def rerun_with_fallback(record: dict, index: int, comment: str = "") -> None:
 
 def render_metadata(record: dict) -> None:
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Model", record.get("model_used") or record.get("selected_model", ""))
-    col2.metric("Attempts", int(record.get("total_attempts", 0)))
-    col3.metric("Fallback", "yes" if record.get("fallback_used") else "no")
-    col4.metric("Status", record.get("result_status", ""))
+    col1.metric("Modell", record.get("model_used") or record.get("selected_model", ""))
+    col2.metric("Versuche", int(record.get("total_attempts", 0)))
+    col3.metric("Fallback", "ja" if record.get("fallback_used") else "nein")
+    col4.metric("Status", format_status(record.get("result_status", "")))
 
 
 def can_create_template_candidate(record: dict) -> bool:
     return (
-        bool(record.get("validation_success", record.get("sql_valid")))
+        record.get("run_context", "chat") == "chat"
+        and bool(record.get("enable_memory_candidate_generation", True))
+        and bool(record.get("validation_success", record.get("sql_valid")))
         and bool(record.get("execution_success"))
         and bool(record.get("final_sql") or record.get("generated_sql"))
         and bool(record.get("question") or record.get("user_question"))
@@ -224,6 +285,19 @@ def render_candidate_creation(record: dict, index: int) -> None:
             st.success("YAML Template Vorschlag wurde erstellt.")
         else:
             st.info(message)
+
+
+def format_filter_value(value: object) -> str:
+    mapping = {
+        "all": "alle",
+        "pending_review": "wartet auf Prüfung",
+        "needs_changes": "Überarbeitung nötig",
+        "rejected": "verworfen",
+        "approved": "freigegeben",
+        "disabled": "deaktiviert",
+        "solution_template": "Lösungstemplate",
+    }
+    return mapping.get(str(value), str(value))
 
 
 def dump_yaml(data: object) -> str:
@@ -294,10 +368,10 @@ def render_candidate_details(candidate: dict) -> None:
     col1, col2, col3, col4 = st.columns(4)
     col1.write(f"candidate_id: `{candidate.get('candidate_id', '')}`")
     col2.write(f"run_id: `{candidate.get('run_id', '')}`")
-    col3.write(f"status: `{candidate.get('status', '')}`")
-    col4.write(f"type: `{candidate.get('candidate_type', '')}`")
-    st.write(f"created_at: `{candidate.get('created_at', '')}`")
-    st.write(f"updated_at: `{candidate.get('updated_at', '')}`")
+    col3.write(f"Status: `{format_filter_value(candidate.get('status', ''))}`")
+    col4.write(f"Typ: `{format_filter_value(candidate.get('candidate_type', ''))}`")
+    st.write(f"Erstellt am: `{candidate.get('created_at', '')}`")
+    st.write(f"Aktualisiert am: `{candidate.get('updated_at', '')}`")
 
     st.subheader("Originalfrage")
     st.write(candidate.get("original_question", ""))
@@ -307,34 +381,34 @@ def render_candidate_details(candidate: dict) -> None:
 
     sql_col1, sql_col2 = st.columns(2)
     with sql_col1:
-        st.subheader("Generated SQL")
-        st.code(candidate.get("generated_sql", "") or "(empty)", language="sql")
+        st.subheader("Generiertes SQL")
+        st.code(candidate.get("generated_sql", "") or "(leer)", language="sql")
     with sql_col2:
-        st.subheader("Final SQL")
-        st.code(candidate.get("final_sql", "") or "(empty)", language="sql")
+        st.subheader("Finales SQL")
+        st.code(candidate.get("final_sql", "") or "(leer)", language="sql")
 
     st.subheader("Metadaten")
     metadata = {
-        "source_tables": candidate.get("source_tables", []),
-        "model_primary": candidate.get("model_primary"),
-        "model_used": candidate.get("model_used"),
-        "fallback_used": candidate.get("fallback_used"),
-        "validation_success": candidate.get("validation_success"),
-        "execution_success": candidate.get("execution_success"),
-        "error_type": candidate.get("error_type"),
-        "error_message": candidate.get("error_message"),
-        "row_count": candidate.get("row_count"),
+        "Quelltabellen": candidate.get("source_tables", []),
+        "Primäres Modell": candidate.get("model_primary"),
+        "Verwendetes Modell": candidate.get("model_used"),
+        "Fallback verwendet": candidate.get("fallback_used"),
+        "Validierung erfolgreich": candidate.get("validation_success"),
+        "Ausführung erfolgreich": candidate.get("execution_success"),
+        "Fehlertyp": candidate.get("error_type"),
+        "Fehlermeldung": candidate.get("error_message"),
+        "Zeilenanzahl": candidate.get("row_count"),
     }
     st.json(metadata, expanded=False)
 
     feedback = candidate.get("feedback", {})
-    st.subheader("Feedback")
-    st.write(f"rating: `{feedback.get('rating') if isinstance(feedback, dict) else ''}`")
+    st.subheader("Rückmeldung")
+    st.write(f"Bewertung: `{feedback.get('rating') if isinstance(feedback, dict) else ''}`")
     st.write(feedback.get("comment") if isinstance(feedback, dict) else "")
 
 
 def render_memory_review_view() -> None:
-    st.title("Memory Review")
+    st.title("Memory-Prüfung")
     render_flash()
 
     try:
@@ -353,11 +427,26 @@ def render_memory_review_view() -> None:
 
     filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
     with filter_col1:
-        status_filter = st.selectbox("Status", statuses, key="candidate_status_filter")
+        status_filter = st.selectbox(
+            "Status",
+            statuses,
+            key="candidate_status_filter",
+            format_func=format_filter_value,
+        )
     with filter_col2:
-        type_filter = st.selectbox("Typ", candidate_types, key="candidate_type_filter")
+        type_filter = st.selectbox(
+            "Typ",
+            candidate_types,
+            key="candidate_type_filter",
+            format_func=format_filter_value,
+        )
     with filter_col3:
-        table_filter = st.selectbox("Source table", ["all", *source_tables], key="candidate_table_filter")
+        table_filter = st.selectbox(
+            "Quelltabelle",
+            ["all", *source_tables],
+            key="candidate_table_filter",
+            format_func=format_filter_value,
+        )
     with filter_col4:
         search_text = st.text_input("Suche", key="candidate_search")
 
@@ -384,12 +473,12 @@ def render_memory_review_view() -> None:
             {
                 "candidate_id": candidate.get("candidate_id", ""),
                 "run_id": candidate.get("run_id", ""),
-                "status": candidate.get("status", ""),
-                "candidate_type": candidate.get("candidate_type", ""),
-                "intent": proposed_template.get("intent", "") if isinstance(proposed_template, dict) else "",
-                "source_tables": ", ".join(parse_source_tables(candidate.get("source_tables"))),
-                "created_at": candidate.get("created_at", ""),
-                "updated_at": candidate.get("updated_at", ""),
+                "Status": format_filter_value(candidate.get("status", "")),
+                "Typ": format_filter_value(candidate.get("candidate_type", "")),
+                "Intent": proposed_template.get("intent", "") if isinstance(proposed_template, dict) else "",
+                "Quelltabellen": ", ".join(parse_source_tables(candidate.get("source_tables"))),
+                "Erstellt am": candidate.get("created_at", ""),
+                "Aktualisiert am": candidate.get("updated_at", ""),
             }
         )
     st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
@@ -409,7 +498,7 @@ def render_memory_review_view() -> None:
 
     render_candidate_details(candidate)
 
-    st.subheader("Proposed Template YAML")
+    st.subheader("Vorgeschlagenes Template-YAML")
     yaml_key = f"candidate_yaml_{candidate_id}"
     loaded_key = f"candidate_loaded_updated_at_{candidate_id}"
     if yaml_key not in st.session_state:
@@ -515,7 +604,7 @@ def render_memory_review_view() -> None:
 
 
 def render_approved_templates_view() -> None:
-    st.title("Approved Templates")
+    st.title("Freigegebene Templates")
     render_flash()
 
     try:
@@ -531,15 +620,15 @@ def render_approved_templates_view() -> None:
     table_rows = [
         {
             "template_id": template.get("template_id", ""),
-            "version": template.get("version", ""),
-            "status": template.get("status", ""),
-            "is_active": template.get("is_active", False),
-            "intent": template.get("intent", ""),
-            "required_tables": ", ".join(parse_source_tables(template.get("required_tables"))),
-            "created_from_candidate_id": template.get("created_from_candidate_id", ""),
-            "source_run_id": template.get("source_run_id", ""),
-            "approved_at": template.get("approved_at", ""),
-            "approved_by": template.get("approved_by", ""),
+            "Version": template.get("version", ""),
+            "Status": format_filter_value(template.get("status", "")),
+            "Aktiv": format_yes_no(template.get("is_active", False)),
+            "Intent": template.get("intent", ""),
+            "Benötigte Tabellen": ", ".join(parse_source_tables(template.get("required_tables"))),
+            "Erstellt aus Candidate": template.get("created_from_candidate_id", ""),
+            "Quell-Run": template.get("source_run_id", ""),
+            "Freigegeben am": template.get("approved_at", ""),
+            "Freigegeben von": template.get("approved_by", ""),
         }
         for template in templates
     ]
@@ -557,19 +646,19 @@ def render_approved_templates_view() -> None:
 
     st.subheader("Details")
     st.write(f"template_id: `{template.get('template_id', '')}`")
-    st.write(f"status: `{template.get('status', '')}`")
-    st.write(f"is_active: `{template.get('is_active', False)}`")
-    st.write(f"intent: {template.get('intent', '')}")
-    st.write("trigger_phrases")
+    st.write(f"Status: `{format_filter_value(template.get('status', ''))}`")
+    st.write(f"Aktiv: `{format_yes_no(template.get('is_active', False))}`")
+    st.write(f"Intent: {template.get('intent', '')}")
+    st.write("Auslösephrasen")
     st.json(template.get("trigger_phrases", []), expanded=False)
-    st.write("metric_definitions")
+    st.write("Metrikdefinitionen")
     st.json(template.get("metric_definitions", {}), expanded=False)
-    st.write("join_logic")
+    st.write("Join-Logik")
     st.json(template.get("join_logic", []), expanded=False)
-    st.write("quality")
+    st.write("Qualität")
     st.json(template.get("quality", {}), expanded=False)
-    st.subheader("SQL Skeleton")
-    st.code(template.get("sql_skeleton", "") or "(empty)", language="sql")
+    st.subheader("SQL-Gerüst")
+    st.code(template.get("sql_skeleton", "") or "(leer)", language="sql")
 
     disabled_reason = st.text_area(
         "Deaktivierungsgrund",
@@ -600,95 +689,399 @@ def render_approved_templates_view() -> None:
                 st.rerun()
 
 
-def render_record(record: dict, index: int) -> None:
+def golden_checkbox_key(question_id: str) -> str:
+    return f"golden_select_{question_id}"
+
+
+def initialize_golden_question_state(questions: list[dict]) -> None:
+    for question in questions:
+        st.session_state.setdefault(golden_checkbox_key(question["question_id"]), False)
+
+
+def selected_golden_question_ids(questions: list[dict]) -> list[str]:
+    return [
+        question["question_id"]
+        for question in questions
+        if st.session_state.get(golden_checkbox_key(question["question_id"]), False)
+    ]
+
+
+def ordered_subset(question_ids: list[str], questions: list[dict]) -> list[str]:
+    requested = set(question_ids)
+    return [question["question_id"] for question in questions if question["question_id"] in requested]
+
+
+def run_golden_question_ids(
+    question_ids: list[str],
+    *,
+    use_approved_memory: bool,
+    config: SQLAgentConfig,
+) -> None:
+    if not question_ids:
+        st.warning("Bitte zuerst mindestens eine Golden-Testfrage auswählen.")
+        return
+
+    with st.spinner("Golden Tests werden gegen PostgreSQL ausgeführt..."):
+        batch_run_id, results, summary = run_golden_tests(
+            question_ids,
+            use_approved_memory=use_approved_memory,
+            config=config,
+        )
+
+    st.session_state.last_golden_run_id = batch_run_id
+    st.session_state.last_selected_question_ids = question_ids
+    st.session_state.last_failed_question_ids = [
+        result["question_id"] for result in results if result.get("status") == "failed"
+    ]
+    st.session_state.last_errored_question_ids = [
+        result["question_id"] for result in results if result.get("status") == "error"
+    ]
+    st.session_state.last_golden_result_summary = summary
+    st.session_state.last_golden_results = results
+
+
+def preview_to_dataframe(preview: dict) -> pd.DataFrame:
+    return pd.DataFrame(preview.get("rows", []), columns=preview.get("columns", []))
+
+
+def format_status(value: object) -> str:
+    mapping = {
+        "passed": "bestanden",
+        "failed": "fehlgeschlagen",
+        "error": "Fehler",
+        "first attempt success": "im ersten Versuch erfolgreich",
+        "repaired success": "nach Reparatur erfolgreich",
+        "fallback success": "mit Fallback erfolgreich",
+    }
+    return mapping.get(str(value), str(value))
+
+
+def format_yes_no(value: object) -> str:
+    return "ja" if bool(value) else "nein"
+
+
+def format_failure_reason(value: object) -> str:
+    mapping = {
+        "output_mismatch": "Ausgabe weicht ab",
+        "sql_validation": "SQL-Validierung fehlgeschlagen",
+        "execution_error": "Ausführungsfehler",
+        "reference_sql_validation_error": "Referenz-SQL ist ungültig",
+        "reference_sql_execution_error": "Referenz-SQL konnte nicht ausgeführt werden",
+        "agent_error": "Agentenfehler",
+        "unexpected_error": "Unerwarteter Fehler",
+        "shape mismatch": "Form der Ausgabe weicht ab",
+        "missing rows": "fehlende Zeilen",
+        "unexpected rows": "unerwartete Zeilen",
+        "value mismatch": "Wertabweichung",
+        "column mismatch": "Spaltenabweichung",
+        "order mismatch": "Sortierung weicht ab",
+    }
+    text = str(value or "")
+    for english, german in mapping.items():
+        text = text.replace(english, german)
+    return text
+
+
+def localize_diff_summary(diff_summary: dict) -> dict:
+    if not isinstance(diff_summary, dict):
+        return {}
+    localized = {
+        "bestanden": diff_summary.get("passed", False),
+        "Probleme": [
+            format_failure_reason(issue)
+            for issue in diff_summary.get("issues", [])
+        ],
+    }
+    for source_key, target_key in [
+        ("shape_mismatch", "Formabweichung"),
+        ("column_mismatch", "Spaltenabweichung"),
+        ("value_mismatch", "Wertabweichung"),
+        ("missing_rows", "fehlende Zeilen"),
+        ("unexpected_rows", "unerwartete Zeilen"),
+    ]:
+        if source_key in diff_summary:
+            localized[target_key] = diff_summary[source_key]
+    localized["reihenfolge_sensitiv"] = diff_summary.get("order_sensitive", False)
+    localized["spaltennamen_vergleichen"] = diff_summary.get("compare_column_names", True)
+    return localized
+
+
+def render_golden_summary(summary: dict) -> None:
+    if not summary:
+        return
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Tests insgesamt", int(summary.get("total_tests_run", 0)))
+    col2.metric("Bestanden", int(summary.get("passed", 0)))
+    col3.metric("Bestehensquote", f"{float(summary.get('pass_rate', 0.0)) * 100:.1f}%")
+    col4.metric("Ø Laufzeit", f"{float(summary.get('average_runtime', 0.0)):.2f}s")
+
+    col5, col6, col7 = st.columns(3)
+    col5.metric("Ausgabeabweichung", int(summary.get("failed_output_mismatch", 0)))
+    col6.metric("SQL-Validierung", int(summary.get("failed_sql_validation", 0)))
+    col7.metric("Ausführungsfehler", int(summary.get("failed_execution_error", 0)))
+
+
+def render_golden_results(results: list[dict]) -> None:
+    if not results:
+        return
+
+    st.subheader("Ergebnisse")
+    table_rows = [
+        {
+            "Frage": result.get("question_id", ""),
+            "Titel": result.get("title", ""),
+            "Status": format_status(result.get("status", "")),
+            "Bestanden": format_yes_no(result.get("passed", False)),
+            "Laufzeit": f"{float(result.get('runtime_seconds', 0.0)):.2f}s",
+            "Erwartete Zeilen": result.get("expected_row_count", 0),
+            "Tatsächliche Zeilen": result.get("actual_row_count", 0),
+            "Fehlergrund": format_failure_reason(result.get("failure_reason", "")),
+        }
+        for result in results
+    ]
+    st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+
+    for result in results:
+        label = (
+            f"{result.get('question_id', '')} - {result.get('title', '')} "
+            f"({format_status(result.get('status', ''))})"
+        )
+        with st.expander(label, expanded=not result.get("passed", False)):
+            meta1, meta2, meta3, meta4 = st.columns(4)
+            meta1.write(f"Zeitpunkt: `{result.get('timestamp', '')}`")
+            meta2.write(f"Modell: `{result.get('model_used', '')}`")
+            meta3.write(f"Backend: `{result.get('backend', '')}`")
+            meta4.write(f"Memory/Templates: `{format_yes_no(result.get('memory_templates_enabled', False))}`")
+
+            st.subheader("Frage")
+            st.write(result.get("question", ""))
+
+            sql_col1, sql_col2 = st.columns(2)
+            with sql_col1:
+                st.subheader("Generiertes Agenten-SQL")
+                st.code(result.get("generated_agent_sql", "") or "(leer)", language="sql")
+            with sql_col2:
+                st.subheader("Referenz-SQL")
+                st.code(result.get("reference_sql", "") or "(leer)", language="sql")
+
+            out_col1, out_col2 = st.columns(2)
+            with out_col1:
+                st.subheader("Tatsächliche Ausgabevorschau")
+                st.dataframe(
+                    preview_to_dataframe(result.get("actual_output_preview", {})),
+                    use_container_width=True,
+                )
+            with out_col2:
+                st.subheader("Erwartete Ausgabevorschau")
+                st.dataframe(
+                    preview_to_dataframe(result.get("expected_output_preview", {})),
+                    use_container_width=True,
+                )
+
+            st.subheader("Abweichungsübersicht")
+            st.json(localize_diff_summary(result.get("diff_summary", {})), expanded=False)
+
+            if result.get("validation_errors"):
+                st.subheader("Validierungsfehler")
+                st.json(result.get("validation_errors", []), expanded=False)
+
+            if result.get("execution_errors"):
+                st.subheader("Ausführungsfehler")
+                execution_errors = result.get("execution_errors", {})
+                if isinstance(execution_errors, dict):
+                    execution_errors = {
+                        format_failure_reason(key): value
+                        for key, value in execution_errors.items()
+                    }
+                st.json(execution_errors, expanded=False)
+
+            if result.get("agent_trace_steps"):
+                st.subheader("Ablaufschritte")
+                for step in result.get("agent_trace_steps", []):
+                    st.markdown(f"- {step}")
+
+
+def render_golden_test_mode_view(config: SQLAgentConfig) -> None:
+    st.title("Golden-Testmodus")
+    st.caption("Reiner Evaluationsmodus für Q01 bis Q22. Ergebnisse werden nach evaluation/golden_results.jsonl geschrieben.")
+    render_flash()
+
+    try:
+        questions = load_golden_questions()
+    except Exception as error:
+        st.error(f"Golden-Testfragen konnten nicht geladen werden: {error}")
+        return
+
+    initialize_golden_question_state(questions)
+    all_question_ids = [question["question_id"] for question in questions]
+    use_approved_memory = st.toggle(
+        "Freigegebene Memory/Templates verwenden",
+        value=True,
+        key="golden_use_approved_memory",
+    )
+
+    if not st.session_state.last_golden_run_id:
+        st.info("Es gibt noch keinen vorherigen Golden-Testlauf. Wiederholen-Buttons sind deaktiviert, bis ein Lauf abgeschlossen wurde.")
+
+    control_cols = st.columns(6)
+    with control_cols[0]:
+        if st.button("Alle auswählen"):
+            for question_id in all_question_ids:
+                st.session_state[golden_checkbox_key(question_id)] = True
+            st.rerun()
+    with control_cols[1]:
+        if st.button("Alle abwählen"):
+            for question_id in all_question_ids:
+                st.session_state[golden_checkbox_key(question_id)] = False
+            st.rerun()
+    with control_cols[2]:
+        if st.button("Ausgewählte Golden Tests ausführen"):
+            run_golden_question_ids(
+                selected_golden_question_ids(questions),
+                use_approved_memory=use_approved_memory,
+                config=config,
+            )
+    with control_cols[3]:
+        if st.button("Alle Golden Tests ausführen"):
+            run_golden_question_ids(
+                all_question_ids,
+                use_approved_memory=use_approved_memory,
+                config=config,
+            )
+    with control_cols[4]:
+        if st.button(
+            "Letzten Lauf wiederholen",
+            disabled=not bool(st.session_state.last_selected_question_ids),
+        ):
+            run_golden_question_ids(
+                ordered_subset(st.session_state.last_selected_question_ids, questions),
+                use_approved_memory=use_approved_memory,
+                config=config,
+            )
+    with control_cols[5]:
+        failed_or_errored = ordered_subset(
+            [
+                *st.session_state.last_failed_question_ids,
+                *st.session_state.last_errored_question_ids,
+            ],
+            questions,
+        )
+        if st.button("Nur fehlgeschlagene Tests wiederholen", disabled=not bool(failed_or_errored)):
+            run_golden_question_ids(
+                failed_or_errored,
+                use_approved_memory=use_approved_memory,
+                config=config,
+            )
+
+    selected_ids = selected_golden_question_ids(questions)
+    st.write(f"Ausgewählte Fragen: `{len(selected_ids)}` von `{len(questions)}`")
+
+    st.subheader("Fragen")
+    for question in questions:
+        st.checkbox(
+            f"{question['question_id']} - {question.get('title', '')}",
+            key=golden_checkbox_key(question["question_id"]),
+        )
+        st.caption(question.get("question", ""))
+
+    render_golden_summary(st.session_state.last_golden_result_summary)
+    render_golden_results(st.session_state.last_golden_results)
+
+
+def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
     with st.chat_message("user"):
-        st.caption("Question")
+        st.caption("Frage")
         st.markdown(record.get("user_question", ""))
 
     with st.chat_message("assistant"):
         render_metadata(record)
 
-        st.subheader("Answer")
-        st.write(record.get("final_answer") or "No answer was generated.")
+        st.subheader("Antwort")
+        st.write(record.get("final_answer") or "Es wurde keine Antwort erzeugt.")
 
         query_result = record.get("query_result", {})
         rows = query_result.get("rows", [])
         columns = query_result.get("columns", [])
         if rows and columns:
-            st.subheader("Query result preview")
+            st.subheader("Ergebnisvorschau")
             df = result_to_dataframe(record)
             st.dataframe(df, use_container_width=True)
             maybe_show_chart(df)
 
-        st.subheader("SQL statement")
-        st.code(record.get("final_sql") or record.get("generated_sql", "") or "(no SQL generated)", language="sql")
+        st.subheader("SQL-Anweisung")
+        st.code(record.get("final_sql") or record.get("generated_sql", "") or "(kein SQL erzeugt)", language="sql")
 
         source_tables = record.get("source_tables", [])
-        st.subheader("Source tables")
+        st.subheader("Quelltabellen")
         if source_tables:
             for table in source_tables:
                 st.markdown(f"- `{table}`")
         else:
-            st.write("No source tables were extracted.")
+            st.write("Es wurden keine Quelltabellen erkannt.")
 
         if record.get("sql_error"):
-            st.subheader("SQL error")
+            st.subheader("SQL-Fehler")
             st.error(record["sql_error"])
 
-        with st.expander("Trace steps", expanded=False):
+        with st.expander("Ablaufschritte", expanded=False):
             for step in record.get("trace_steps", []):
                 st.markdown(f"- {step}")
 
         if record.get("user_correction"):
-            st.subheader("User correction")
+            st.subheader("Nutzerkorrektur")
             st.write(record["user_correction"])
 
-        st.subheader("Feedback")
-        comment = st.text_area("Optional comment", key=f"feedback_comment_{index}")
+        st.subheader("Rückmeldung")
+        comment = st.text_area("Optionaler Kommentar", key=f"feedback_comment_{index}")
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            if st.button("Good answer", key=f"feedback_good_{index}"):
+            if st.button("Gute Antwort", key=f"feedback_good_{index}"):
                 write_feedback(record, "thumbs_up", comment)
-                st.success("Feedback saved.")
+                st.success("Rückmeldung gespeichert.")
         with col2:
-            if st.button("Bad answer", key=f"feedback_bad_{index}"):
+            if st.button("Schlechte Antwort", key=f"feedback_bad_{index}"):
                 write_feedback(record, "thumbs_down", comment)
-                st.warning("Feedback saved.")
+                st.warning("Rückmeldung gespeichert.")
         with col3:
-            if st.button("Retry with comment", key=f"feedback_retry_{index}"):
-                retry_with_comment(record, index, comment)
+            if st.button("Mit Kommentar wiederholen", key=f"feedback_retry_{index}"):
+                retry_with_comment(record, index, comment, config)
         with col4:
-            if st.button("Use fallback model", key=f"feedback_fallback_{index}"):
-                rerun_with_fallback(record, index, comment)
+            if st.button("Fallback-Modell verwenden", key=f"feedback_fallback_{index}"):
+                rerun_with_fallback(record, index, config, comment)
 
         render_candidate_creation(record, index)
 
 
 def main() -> None:
-    st.set_page_config(page_title="Agentic AI Data Assistant", layout="wide")
+    st.set_page_config(page_title="Agentic AI Datenassistent", layout="wide")
     apply_app_styles()
     initialize_state()
-    page = render_sidebar()
+    page, config = render_sidebar()
 
-    if page == "Memory Review":
+    if page == PAGE_MEMORY:
         render_memory_review_view()
         return
 
-    if page == "Approved Templates":
+    if page == PAGE_GOLDEN:
+        render_golden_test_mode_view(config)
+        return
+
+    if page == PAGE_TEMPLATES:
         render_approved_templates_view()
         return
 
-    st.title("Agentic AI Data Assistant")
-    st.caption("LangGraph SQL workflow over local TPC-H data with Gemini fallback models.")
+    st.title("Agentic AI Datenassistent")
+    st.caption("LangGraph-SQL-Workflow über lokalen TPC-H-Daten mit konfigurierbaren Primary- und Fallback-Modellen.")
     render_flash()
 
     for index, record in enumerate(st.session_state.history):
-        render_record(record, index)
+        render_record(record, index, config)
 
-    question = st.chat_input("Ask a question about the TPC-H data")
+    question = st.chat_input("Stelle eine Frage zu den TPC-H-Daten")
     if question:
-        with st.spinner("Running LangGraph SQL workflow..."):
-            record = run_sql_agent(question)
+        with st.spinner("LangGraph-SQL-Workflow wird ausgeführt..."):
+            record = run_sql_agent(question, config=config)
         st.session_state.history.append(record)
         st.rerun()
 

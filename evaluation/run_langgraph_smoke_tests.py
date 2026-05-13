@@ -127,6 +127,25 @@ def main() -> None:
         assert rows[2]["execution_success"] == "true"
         assert rows[2]["answer_preview"]
 
+        rows_before_silent_run = len(rows)
+        silent_state = run_sql_agent(
+            "How many orders are there?",
+            config=config,
+            run_context="golden_test",
+            use_approved_memory=False,
+            enable_memory_candidate_generation=False,
+            log_to_query_log=False,
+            schema_loader=fake_schema_loader,
+            sql_generator=lambda _prompt, _model, _host, _node: "SELECT COUNT(*) AS order_count FROM orders",
+            sql_executor=fake_sql_executor,
+        )
+
+        assert silent_state["execution_success"] is True
+        assert silent_state["run_context"] == "golden_test"
+        assert silent_state["use_approved_memory"] is False
+        assert silent_state["enable_memory_candidate_generation"] is False
+        assert len(read_csv_rows(query_log_path)) == rows_before_silent_run
+
         correction_calls: list[tuple[str, str]] = []
 
         def correction_sql_generator(

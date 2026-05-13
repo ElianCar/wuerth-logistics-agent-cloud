@@ -65,6 +65,7 @@ SQL_KEYWORDS = {
     "then",
     "when",
     "where",
+    "with",
 }
 
 
@@ -105,19 +106,19 @@ def parse_schema_columns(schema_context: str) -> dict[str, set[str]]:
 def reject_markdown_or_explanation(raw_sql: str) -> str | None:
     stripped = raw_sql.strip()
     if "```" in stripped:
-        return "Markdown fenced code is not allowed. Return SQL only."
+        return "Markdown-Codeblöcke sind nicht erlaubt. Bitte nur SQL ausgeben."
     if "--" in stripped or "/*" in stripped or "*/" in stripped:
-        return "SQL comments or explanations are not allowed. Return SQL only."
+        return "SQL-Kommentare oder Erklärungen sind nicht erlaubt. Bitte nur SQL ausgeben."
     forbidden_pattern = r"\b(" + "|".join(sorted(DESTRUCTIVE_KEYWORDS)) + r")\b"
     forbidden_match = re.search(forbidden_pattern, stripped, re.IGNORECASE)
     if forbidden_match:
-        return f"Destructive operation is not allowed: {forbidden_match.group(1).upper()}."
-    if not re.match(r"^\s*select\b", stripped, re.IGNORECASE):
-        return "Only SQL starting with SELECT is allowed."
+        return f"Destruktive Operation ist nicht erlaubt: {forbidden_match.group(1).upper()}."
+    if not re.match(r"^\s*(select|with)\b", stripped, re.IGNORECASE):
+        return "Nur read-only SELECT-Abfragen sind erlaubt."
 
     semicolon_match = re.search(r";\s*\S+", stripped)
     if semicolon_match:
-        return "Explanations or additional statements after SQL are not allowed."
+        return "Erklärungen oder zusätzliche Statements nach dem SQL sind nicht erlaubt."
 
     explanation_patterns = [
         r"\bhere is\b",
@@ -127,7 +128,7 @@ def reject_markdown_or_explanation(raw_sql: str) -> str | None:
     ]
     for pattern in explanation_patterns:
         if re.search(pattern, stripped, re.IGNORECASE):
-            return "Explanatory text is not allowed. Return SQL only."
+            return "Erklärender Text ist nicht erlaubt. Bitte nur SQL ausgeben."
 
     return None
 
@@ -137,7 +138,17 @@ def has_multiple_statements(sql: str) -> bool:
     return len(parts) > 1
 
 
+def mask_non_table_from_clauses(sql: str) -> str:
+    return re.sub(
+        r"\bextract\s*\(\s*[a-zA-Z_][a-zA-Z0-9_]*\s+from\s+[a-zA-Z_][a-zA-Z0-9_\.]*\s*\)",
+        "extract_value",
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+
 def extract_referenced_tables(sql: str) -> set[str]:
+    sql = mask_non_table_from_clauses(sql)
     pattern = re.compile(
         r"\b(?:from|join)\s+([a-zA-Z_][a-zA-Z0-9_\.]*)",
         re.IGNORECASE,
@@ -153,7 +164,19 @@ def extract_referenced_tables(sql: str) -> set[str]:
     return tables
 
 
+def extract_cte_names(sql: str) -> set[str]:
+    if not re.match(r"^\s*with\b", sql, re.IGNORECASE):
+        return set()
+
+    pattern = re.compile(
+        r"(?:\bwith\b|,)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+as\s*\(",
+        re.IGNORECASE,
+    )
+    return {match.group(1).strip('"').lower() for match in pattern.finditer(sql)}
+
+
 def extract_table_aliases(sql: str) -> dict[str, str]:
+    sql = mask_non_table_from_clauses(sql)
     pattern = re.compile(
         r"\b(?:from|join)\s+([a-zA-Z_][a-zA-Z0-9_\.]*)"
         r"(?:\s+(?:as\s+)?([a-zA-Z_][a-zA-Z0-9_]*))?",
@@ -200,7 +223,7 @@ def validate_known_columns(sql: str, schema_columns: dict[str, set[str]]) -> str
 
         known_columns = schema_columns.get(table_name, set())
         if known_columns and column_name not in known_columns:
-            return f"Unknown column reference: {alias}.{column}."
+            return f"Unbekannte Spaltenreferenz: {alias}.{column}."
 
     return None
 
@@ -213,13 +236,13 @@ def validate_generated_sql(raw_sql: str, schema_context: str = "") -> SQLValidat
         return SQLValidationResult(cleaned_sql, False, format_error, [])
 
     if not cleaned_sql:
-        return SQLValidationResult(cleaned_sql, False, "SQL is empty.", [])
+        return SQLValidationResult(cleaned_sql, False, "SQL ist leer.", [])
 
     if has_multiple_statements(cleaned_sql):
         return SQLValidationResult(
             cleaned_sql,
             False,
-            "Multiple SQL statements are not allowed.",
+            "Mehrere SQL-Statements sind nicht erlaubt.",
             [],
         )
 
@@ -229,22 +252,23 @@ def validate_generated_sql(raw_sql: str, schema_context: str = "") -> SQLValidat
         return SQLValidationResult(
             cleaned_sql,
             False,
-            f"Destructive operation is not allowed: {forbidden_match.group(1).upper()}.",
+            f"Destruktive Operation ist nicht erlaubt: {forbidden_match.group(1).upper()}.",
             [],
         )
 
     referenced_tables = extract_referenced_tables(cleaned_sql)
-    unknown_tables = sorted(referenced_tables - ALLOWED_TABLES)
+    cte_names = extract_cte_names(cleaned_sql)
+    unknown_tables = sorted(referenced_tables - ALLOWED_TABLES - cte_names)
     if unknown_tables:
         return SQLValidationResult(
             cleaned_sql,
             False,
-            "Unknown or disallowed table reference: " + ", ".join(unknown_tables) + ".",
+            "Unbekannte oder nicht erlaubte Tabellenreferenz: " + ", ".join(unknown_tables) + ".",
             [],
         )
 
     if not referenced_tables:
-        return SQLValidationResult(cleaned_sql, False, "No table reference found in SQL.", [])
+        return SQLValidationResult(cleaned_sql, False, "Keine Tabellenreferenz im SQL gefunden.", [])
 
     schema_columns = parse_schema_columns(schema_context)
     column_error = validate_known_columns(cleaned_sql, schema_columns)

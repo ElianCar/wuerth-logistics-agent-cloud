@@ -39,17 +39,17 @@ def validate_sql_skeleton(sql: str, schema_context: str | None = None) -> list[s
     cleaned_sql = (sql or "").strip()
 
     if not cleaned_sql:
-        return ["sql_skeleton must be a non-empty string."]
+        return ["sql_skeleton muss eine nicht leere Zeichenkette sein."]
 
     forbidden_pattern = r"\b(" + "|".join(sorted(FORBIDDEN_SQL_KEYWORDS)) + r")\b"
     forbidden_match = re.search(forbidden_pattern, cleaned_sql, re.IGNORECASE)
     if forbidden_match:
         errors.append(
-            f"sql_skeleton contains a forbidden keyword: {forbidden_match.group(1).upper()}."
+            f"sql_skeleton enthält ein verbotenes Schlüsselwort: {forbidden_match.group(1).upper()}."
         )
 
     if not re.match(r"^\s*select\b", cleaned_sql, re.IGNORECASE):
-        errors.append("sql_skeleton must start with SELECT.")
+        errors.append("sql_skeleton muss mit SELECT beginnen.")
 
     if schema_context is None:
         try:
@@ -73,35 +73,35 @@ def validate_proposed_template(
     errors: list[str] = []
 
     if not isinstance(proposed_template, dict):
-        return ["proposed_template must be a YAML mapping."]
+        return ["proposed_template muss ein YAML-Mapping sein."]
 
     for field in REQUIRED_TEMPLATE_FIELDS:
         if field not in proposed_template:
-            errors.append(f"Missing required field: {field}.")
+            errors.append(f"Pflichtfeld fehlt: {field}.")
 
     intent = proposed_template.get("intent")
     if not isinstance(intent, str) or not intent.strip():
-        errors.append("intent must be a non-empty string.")
+        errors.append("intent muss eine nicht leere Zeichenkette sein.")
 
     trigger_phrases = proposed_template.get("trigger_phrases")
     if not isinstance(trigger_phrases, list):
-        errors.append("trigger_phrases must be a list.")
+        errors.append("trigger_phrases muss eine Liste sein.")
 
     required_tables = proposed_template.get("required_tables")
     if not isinstance(required_tables, list):
-        errors.append("required_tables must be a list.")
+        errors.append("required_tables muss eine Liste sein.")
 
     metric_definitions = proposed_template.get("metric_definitions")
     if not isinstance(metric_definitions, dict):
-        errors.append("metric_definitions must be a dict.")
+        errors.append("metric_definitions muss ein Mapping sein.")
 
     join_logic = proposed_template.get("join_logic")
     if not isinstance(join_logic, list):
-        errors.append("join_logic must be a list.")
+        errors.append("join_logic muss eine Liste sein.")
 
     sql_skeleton = proposed_template.get("sql_skeleton")
     if not isinstance(sql_skeleton, str) or not sql_skeleton.strip():
-        errors.append("sql_skeleton must be a non-empty string.")
+        errors.append("sql_skeleton muss eine nicht leere Zeichenkette sein.")
     elif validate_sql:
         errors.extend(validate_sql_skeleton(sql_skeleton, schema_context=schema_context))
 

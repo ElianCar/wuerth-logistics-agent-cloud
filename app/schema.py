@@ -35,9 +35,9 @@ def get_schema_text() -> str:
     missing_tables = [table for table, columns in rows_by_table.items() if not columns]
     if missing_tables:
         raise RuntimeError(
-            "Missing expected PostgreSQL tables: "
+            "Erwartete PostgreSQL-Tabellen fehlen: "
             + ", ".join(missing_tables)
-            + ". Load the TPC-H schema and CSV data first."
+            + ". Lade zuerst das TPC-H-Schema und die CSV-Daten."
         )
 
     lines = ["PostgreSQL schema:"]
