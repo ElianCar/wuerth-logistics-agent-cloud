@@ -88,7 +88,7 @@ class SQLAgentConfig:
         if llm_provider == "gemini":
             primary_model = os.getenv("GEMINI_PRIMARY_MODEL", DEFAULT_GEMINI_PRIMARY_MODEL)
             fallback_model = os.getenv("GEMINI_BACKUP_MODEL", DEFAULT_GEMINI_BACKUP_MODEL)
-            max_primary_attempts = 1
+            max_primary_attempts = int(os.getenv("MAX_PRIMARY_ATTEMPTS", "2"))
         elif llm_provider == "ollama":
             primary_model = os.getenv("PRIMARY_MODEL") or os.getenv("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL
             fallback_model = os.getenv("FALLBACK_MODEL", DEFAULT_OLLAMA_BACKUP_MODEL)
@@ -496,6 +496,13 @@ def build_sql_agent_graph(
             and int(state.get("attempt_number", 0)) < int(state.get("max_primary_attempts", 2))
         )
 
+    def can_switch_to_fallback(state: SQLAgentState) -> bool:
+        return (
+            state.get("selected_model") == state.get("primary_model")
+            and bool(state.get("fallback_model"))
+            and state.get("fallback_model") != state.get("primary_model")
+        )
+
     def route_after_validate_sql(
         state: SQLAgentState,
     ) -> Literal["execute_sql", "repair_sql", "switch_model", "generate_final_answer"]:
@@ -503,7 +510,7 @@ def build_sql_agent_graph(
             return "execute_sql"
         if can_retry_primary(state):
             return "repair_sql"
-        if state.get("selected_model") == state.get("primary_model"):
+        if can_switch_to_fallback(state):
             return "switch_model"
         return "generate_final_answer"
 
@@ -514,7 +521,7 @@ def build_sql_agent_graph(
             return "generate_final_answer"
         if can_retry_primary(state):
             return "repair_sql"
-        if state.get("selected_model") == state.get("primary_model"):
+        if can_switch_to_fallback(state):
             return "switch_model"
         return "generate_final_answer"
 

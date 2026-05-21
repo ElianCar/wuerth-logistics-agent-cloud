@@ -103,3 +103,28 @@ templates:
     row_count: 25
     model_used: llama3.2:3b
     fallback_used: false
+- template_id: tmpl_bitte_gib_mir_alle_nationen_aus_20260519_123154_491b
+  version: 1
+  status: approved
+  is_active: true
+  created_from_candidate_id: cand_20260519_123118_d2cd
+  source_run_id: run_20260519_123023_4ee0
+  created_at: '2026-05-19T12:31:54'
+  approved_at: '2026-05-19T12:31:54'
+  approved_by: manual_review
+  intent: bitte gib mir alle nationen aus
+  trigger_phrases:
+  - bitte gib mir alle nationen aus
+  required_tables:
+  - nation
+  metric_definitions: {}
+  join_logic: []
+  sql_skeleton: SELECT n_name, n_regionkey FROM nation LIMIT 50
+  notes: Automatically generated candidate from successful run. Requires manual review.
+  quality:
+    source_feedback_rating: null
+    validation_success: true
+    execution_success: true
+    row_count: 25
+    model_used: gemini-3.1-flash-lite
+    fallback_used: false

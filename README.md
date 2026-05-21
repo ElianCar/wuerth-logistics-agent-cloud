@@ -83,7 +83,7 @@ LLM_PROVIDER=gemini
 GEMINI_PRIMARY_MODEL=gemini-3.1-flash-lite-preview
 ```
 
-If the primary API call fails, returns invalid SQL, fails SQL validation, or fails PostgreSQL execution, the graph retries once with Gemini Flash:
+If the primary API call fails, returns invalid SQL, fails SQL validation, or fails PostgreSQL execution, the graph tries the primary model up to two times by default. If a different fallback model is configured, it then retries with Gemini Flash:
 
 ```text
 GEMINI_BACKUP_MODEL=gemini-2.5-flash
@@ -104,6 +104,7 @@ GEMINI_API_KEY=<your-gemini-api-key>
 LLM_PROVIDER=gemini
 GEMINI_PRIMARY_MODEL=gemini-3.1-flash-lite-preview
 GEMINI_BACKUP_MODEL=gemini-2.5-flash
+MAX_PRIMARY_ATTEMPTS=2
 OLLAMA_HOST=http://localhost:11434
 PRIMARY_MODEL=llama3.2:3b
 FALLBACK_MODEL=llama3.2:3b

@@ -141,7 +141,7 @@ def build_streamlit_llm_config() -> SQLAgentConfig:
     return SQLAgentConfig(
         primary_model=gemini_config.primary_model or DEFAULT_GEMINI_PRIMARY_MODEL,
         fallback_model=gemini_config.fallback_model or DEFAULT_GEMINI_BACKUP_MODEL,
-        max_primary_attempts=1,
+        max_primary_attempts=gemini_config.max_primary_attempts,
         llm_provider="gemini",
         ollama_host=ollama_config.ollama_host,
     )

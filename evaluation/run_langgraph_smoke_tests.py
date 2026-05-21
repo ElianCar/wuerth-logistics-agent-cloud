@@ -61,6 +61,9 @@ def main() -> None:
     os.environ["GEMINI_API_KEY"] = "key"
     os.environ["GEMINI_PRIMARY_MODEL"] = "gemini-2.5-flash-lite"
     os.environ["GEMINI_BACKUP_MODEL"] = "gemini-2.5-flash"
+    os.environ.pop("MAX_PRIMARY_ATTEMPTS", None)
+
+    assert SQLAgentConfig.from_provider("gemini").max_primary_attempts == 2
 
     assert gemini_api_key_is_placeholder() is True
     try:
@@ -111,9 +114,44 @@ def main() -> None:
         )
         assert destructive_validation.is_valid is False
 
+        same_model_config = SQLAgentConfig(
+            primary_model="gemini-3.1-flash-lite-preview",
+            fallback_model="gemini-3.1-flash-lite-preview",
+            max_primary_attempts=1,
+            llm_provider="gemini",
+            ollama_host="http://localhost:11434",
+        )
+        same_model_calls: list[tuple[str, str]] = []
+
+        def failing_same_model_generator(
+            prompt: str,
+            model: str,
+            ollama_host: str,
+            node_name: str,
+        ) -> str:
+            same_model_calls.append((model, prompt))
+            return "DROP TABLE orders"
+
+        same_model_state = run_sql_agent(
+            "How many orders are there?",
+            config=same_model_config,
+            schema_loader=fake_schema_loader,
+            sql_generator=failing_same_model_generator,
+            sql_executor=fake_sql_executor,
+            attempt_logger=log_query_attempt,
+        )
+
+        assert same_model_state["execution_success"] is False
+        assert same_model_state["fallback_used"] is False
+        assert same_model_state["selected_model"] == "gemini-3.1-flash-lite-preview"
+        assert same_model_state["total_attempts"] == 1
+        assert [model for model, _prompt in same_model_calls] == [
+            "gemini-3.1-flash-lite-preview",
+        ]
+
         query_log_path = Path(temp_dir) / "query_log.csv"
         rows = read_csv_rows(query_log_path)
-        assert len(rows) == 3
+        assert len(rows) == 5
         assert rows[0]["primary_model"] == "gemini-2.5-flash-lite"
         assert rows[0]["backup_model"] == "gemini-2.5-flash"
         assert rows[0]["model_used"] == "gemini-2.5-flash-lite"
@@ -126,6 +164,12 @@ def main() -> None:
         assert rows[2]["validation_success"] == "true"
         assert rows[2]["execution_success"] == "true"
         assert rows[2]["answer_preview"]
+        assert rows[3]["primary_model"] == "gemini-3.1-flash-lite-preview"
+        assert rows[3]["backup_model"] == "gemini-3.1-flash-lite-preview"
+        assert rows[3]["model_used"] == "gemini-3.1-flash-lite-preview"
+        assert rows[3]["success"] == "false"
+        assert rows[4]["run_id"] == same_model_state["run_id"]
+        assert rows[4]["execution_success"] == "false"
 
         rows_before_silent_run = len(rows)
         silent_state = run_sql_agent(
