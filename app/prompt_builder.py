@@ -10,7 +10,7 @@ Do not explain.
 Do not include markdown code fences.
 Use only the provided tables and columns.
 Generate only SELECT queries.
-Do not use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, COPY, GRANT, or REVOKE.
+Do not use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, MERGE, TRUNCATE, COPY, GRANT, or REVOKE.
 Prefer explicit JOIN syntax.
 Do not add a LIMIT clause unless the user explicitly asks for a limit, top-N, or bottom-N result.
 Use the semantic layer for business meaning.

@@ -144,6 +144,110 @@ cat logs/feedback.csv
 
 `logs/query_log.csv` stores every processed question from Streamlit. `logs/feedback.csv` stores user feedback from the thumbs up/down buttons. These logs support traceability and manual validation while the prototype is still simple and local.
 
+## Database backends
+
+The SQL agent now selects its database backend through `DB_BACKEND`.
+
+```text
+DB_BACKEND=postgres
+```
+
+PostgreSQL demo mode is the default when `DB_BACKEND` is unset. It preserves the existing local TPC-H demo behavior and uses the existing PostgreSQL settings:
+
+```text
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=agentic_ai
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=
+```
+
+The backend structure is:
+
+```text
+src/backends/base.py
+src/backends/config.py
+src/backends/factory.py
+src/backends/demo/postgres_adapter.py
+src/backends/databricks/databricks_adapter.py
+```
+
+`src/backends/demo` wraps the existing PostgreSQL demo logic. `src/backends/databricks` contains the optional Databricks SQL Warehouse integration. The LangGraph workflow still uses the same load-schema, generate-SQL, validate, execute, repair, fallback, and final-answer nodes.
+
+## Databricks mode
+
+Databricks mode is optional and selected with:
+
+```text
+DB_BACKEND=databricks
+```
+
+Required safe configuration names are listed in `.env.example`. Do not commit real credentials or workspace details. The app must never expose tokens, client secrets, server hostnames, HTTP paths, OAuth values, or full connection strings in logs or UI.
+
+For local testing in this organization, use OAuth user-to-machine because personal access tokens are disabled:
+
+```text
+DATABRICKS_AUTH_TYPE=oauth_u2m
+DATABRICKS_SERVER_HOSTNAME=<your-databricks-server-hostname>
+DATABRICKS_HTTP_PATH=<your-sql-warehouse-http-path>
+DATABRICKS_CATALOG=workspace
+DATABRICKS_SCHEMA=default
+DATABRICKS_ALLOWED_TABLES=workspace.default.datenabzug_projekt_tum_shipments,workspace.default.datenabzug_projekt_tum_invoices
+```
+
+PAT mode is available only as an isolated optional path:
+
+```text
+DATABRICKS_AUTH_TYPE=pat
+DATABRICKS_ACCESS_TOKEN=<optional-token>
+```
+
+For AWS or Wuerth-hosted deployment, OAuth machine-to-machine with a service principal is the preferred direction:
+
+```text
+DATABRICKS_AUTH_TYPE=oauth_m2m
+DATABRICKS_HOST=<your-databricks-workspace-url>
+DATABRICKS_CLIENT_ID=<service-principal-client-id>
+DATABRICKS_CLIENT_SECRET=<service-principal-client-secret>
+```
+
+Only the configured allowed tables are exposed to the agent schema context. The intended allowed tables are:
+
+```text
+workspace.default.datenabzug_projekt_tum_shipments
+workspace.default.datenabzug_projekt_tum_invoices
+```
+
+### Databricks TLS certificates
+
+Local Databricks OAuth and SQL Warehouse connections require the Python environment to trust the TLS certificate chain presented by the network. In corporate environments with TLS inspection, this usually means installing the company proxy/root CA certificate into the local trust store or pointing Python at a CA bundle that includes it.
+
+If the smoke test fails with `SSLCertVerificationError` or `self-signed certificate in certificate chain`, create or use a PEM bundle that contains:
+
+```text
+certifi root certificates
+corporate TLS inspection/root CA certificate
+any endpoint protection proxy CA certificate used on the machine
+```
+
+For this local machine, the successful smoke test used a temporary bundle made from the virtualenv `certifi` CA file plus the local endpoint-protection CA bundle. Use environment variables to point Python and requests-compatible libraries at the bundle:
+
+```bash
+SSL_CERT_FILE=/path/to/company-ca-bundle.pem \
+REQUESTS_CA_BUNDLE=/path/to/company-ca-bundle.pem \
+python scripts/test_databricks_connection.py
+```
+
+Do not disable TLS verification. Do not commit certificate bundles if they are internal company assets. Prefer installing the corporate root CA through managed device policy or a documented local certificate setup.
+
+Live Databricks tests are intentionally not run during implementation because starting or querying the SQL Warehouse is a manual step and the warehouse auto-stops after a short idle period. When you are ready for live testing, manually start the SQL Warehouse first, then run:
+
+```bash
+python scripts/test_databricks_connection.py
+```
+
+That script opens the Databricks connection, runs `SELECT 1`, and samples five rows from each allowed table. It prints only safe success messages and row counts.
+
 ## Run with Docker Compose
 
 The Docker setup runs Streamlit and PostgreSQL in Docker Compose. The app service reads `.env` through `env_file`, so replace the placeholder Gemini API key before asking questions.

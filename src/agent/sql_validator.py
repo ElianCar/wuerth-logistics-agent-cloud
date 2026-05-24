@@ -21,6 +21,7 @@ DESTRUCTIVE_KEYWORDS = {
     "DROP",
     "GRANT",
     "INSERT",
+    "MERGE",
     "REVOKE",
     "TRUNCATE",
     "UPDATE",
@@ -36,12 +37,14 @@ SQL_KEYWORDS = {
     "case",
     "cast",
     "count",
+    "cross",
     "date_trunc",
     "desc",
     "distinct",
     "else",
     "end",
     "from",
+    "full",
     "group",
     "having",
     "in",
@@ -63,6 +66,7 @@ SQL_KEYWORDS = {
     "select",
     "sum",
     "then",
+    "using",
     "when",
     "where",
     "with",
@@ -84,21 +88,74 @@ def strip_trailing_semicolon(sql: str) -> str:
     return cleaned
 
 
+def normalize_table_reference(reference: str) -> str:
+    parts = [
+        part.strip().strip('"').strip("`").lower()
+        for part in reference.split(".")
+        if part.strip()
+    ]
+    return ".".join(parts)
+
+
+def short_table_name(reference: str) -> str:
+    return normalize_table_reference(reference).split(".")[-1]
+
+
+def table_reference_forms(reference: str) -> set[str]:
+    normalized = normalize_table_reference(reference)
+    parts = normalized.split(".")
+    forms = {normalized, parts[-1]}
+    if len(parts) == 3:
+        forms.add(".".join(parts[1:]))
+    return forms
+
+
+def parse_schema_table_names(schema_context: str) -> list[str]:
+    table_names = []
+    for raw_line in schema_context.splitlines():
+        line = raw_line.strip()
+        table_match = re.match(
+            r"Table:\s+([`\"]?[a-zA-Z_][a-zA-Z0-9_]*[`\"]?(?:\.[`\"]?[a-zA-Z_][a-zA-Z0-9_]*[`\"]?){0,2})",
+            line,
+        )
+        if table_match:
+            table_names.append(normalize_table_reference(table_match.group(1)))
+    return table_names
+
+
+def build_allowed_table_map(schema_context: str) -> dict[str, str]:
+    schema_tables = parse_schema_table_names(schema_context)
+    if not schema_tables:
+        schema_tables = sorted(ALLOWED_TABLES)
+
+    allowed: dict[str, str] = {}
+    for table_name in schema_tables:
+        for form in table_reference_forms(table_name):
+            allowed[form] = table_name
+    return allowed
+
+
 def parse_schema_columns(schema_context: str) -> dict[str, set[str]]:
     schema: dict[str, set[str]] = {}
     current_table = ""
 
     for raw_line in schema_context.splitlines():
         line = raw_line.strip()
-        table_match = re.match(r"Table:\s+([a-zA-Z_][a-zA-Z0-9_]*)", line)
+        table_match = re.match(
+            r"Table:\s+([`\"]?[a-zA-Z_][a-zA-Z0-9_]*[`\"]?(?:\.[`\"]?[a-zA-Z_][a-zA-Z0-9_]*[`\"]?){0,2})",
+            line,
+        )
         if table_match:
-            current_table = table_match.group(1).lower()
+            current_table = normalize_table_reference(table_match.group(1))
             schema.setdefault(current_table, set())
+            schema.setdefault(short_table_name(current_table), set())
             continue
 
         column_match = re.match(r"-\s+([a-zA-Z_][a-zA-Z0-9_]*):", line)
         if current_table and column_match:
-            schema[current_table].add(column_match.group(1).lower())
+            column_name = column_match.group(1).lower()
+            schema[current_table].add(column_name)
+            schema[short_table_name(current_table)].add(column_name)
 
     return schema
 
@@ -147,21 +204,25 @@ def mask_non_table_from_clauses(sql: str) -> str:
     )
 
 
-def extract_referenced_tables(sql: str) -> set[str]:
+def extract_referenced_table_refs(sql: str) -> set[str]:
     sql = mask_non_table_from_clauses(sql)
     pattern = re.compile(
-        r"\b(?:from|join)\s+([a-zA-Z_][a-zA-Z0-9_\.]*)",
+        r"\b(?:from|join)\s+([`\"]?[a-zA-Z_][a-zA-Z0-9_]*[`\"]?(?:\.[`\"]?[a-zA-Z_][a-zA-Z0-9_]*[`\"]?){0,2})",
         re.IGNORECASE,
     )
     tables: set[str] = set()
 
     for match in pattern.finditer(sql):
-        reference = match.group(1).strip('"').lower()
-        table_name = reference.split(".")[-1].strip('"')
+        reference = normalize_table_reference(match.group(1))
+        table_name = short_table_name(reference)
         if table_name not in SQL_KEYWORDS:
-            tables.add(table_name)
+            tables.add(reference)
 
     return tables
+
+
+def extract_referenced_tables(sql: str) -> set[str]:
+    return {short_table_name(reference) for reference in extract_referenced_table_refs(sql)}
 
 
 def extract_cte_names(sql: str) -> set[str]:
@@ -175,40 +236,57 @@ def extract_cte_names(sql: str) -> set[str]:
     return {match.group(1).strip('"').lower() for match in pattern.finditer(sql)}
 
 
-def extract_table_aliases(sql: str) -> dict[str, str]:
+def extract_table_aliases(sql: str, allowed_tables: dict[str, str]) -> dict[str, str]:
     sql = mask_non_table_from_clauses(sql)
     pattern = re.compile(
-        r"\b(?:from|join)\s+([a-zA-Z_][a-zA-Z0-9_\.]*)"
+        r"\b(?:from|join)\s+([`\"]?[a-zA-Z_][a-zA-Z0-9_]*[`\"]?(?:\.[`\"]?[a-zA-Z_][a-zA-Z0-9_]*[`\"]?){0,2})"
         r"(?:\s+(?:as\s+)?([a-zA-Z_][a-zA-Z0-9_]*))?",
         re.IGNORECASE,
     )
     aliases: dict[str, str] = {}
 
     for match in pattern.finditer(sql):
-        reference = match.group(1).strip('"').lower()
-        table_name = reference.split(".")[-1].strip('"')
+        reference = normalize_table_reference(match.group(1))
+        table_name = short_table_name(reference)
         alias = (match.group(2) or "").strip('"').lower()
+        canonical_name = allowed_tables.get(reference) or allowed_tables.get(table_name) or reference
 
         if table_name in SQL_KEYWORDS:
             continue
 
-        aliases[table_name] = table_name
+        aliases[table_name] = canonical_name
+        aliases[canonical_name] = canonical_name
         if alias and alias not in SQL_KEYWORDS:
-            aliases[alias] = table_name
+            aliases[alias] = canonical_name
 
     return aliases
 
 
-def extract_used_tables(sql: str) -> list[str]:
-    referenced_tables = extract_referenced_tables(sql)
-    return [table for table in sorted(ALLOWED_TABLES) if table in referenced_tables]
+def extract_used_tables(sql: str, schema_context: str = "") -> list[str]:
+    referenced_table_refs = extract_referenced_table_refs(sql)
+    cte_names = extract_cte_names(sql)
+    allowed_tables = build_allowed_table_map(schema_context)
+    used_tables = []
+
+    for reference in sorted(referenced_table_refs):
+        if reference in cte_names or short_table_name(reference) in cte_names:
+            continue
+        canonical_name = allowed_tables.get(reference)
+        if canonical_name and canonical_name not in used_tables:
+            used_tables.append(canonical_name)
+
+    return used_tables
 
 
-def validate_known_columns(sql: str, schema_columns: dict[str, set[str]]) -> str | None:
+def validate_known_columns(
+    sql: str,
+    schema_columns: dict[str, set[str]],
+    allowed_tables: dict[str, str],
+) -> str | None:
     if not schema_columns:
         return None
 
-    aliases = extract_table_aliases(sql)
+    aliases = extract_table_aliases(sql, allowed_tables)
     qualified_pattern = re.compile(
         r"\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b"
     )
@@ -256,9 +334,15 @@ def validate_generated_sql(raw_sql: str, schema_context: str = "") -> SQLValidat
             [],
         )
 
-    referenced_tables = extract_referenced_tables(cleaned_sql)
+    allowed_tables = build_allowed_table_map(schema_context)
+    referenced_table_refs = extract_referenced_table_refs(cleaned_sql)
     cte_names = extract_cte_names(cleaned_sql)
-    unknown_tables = sorted(referenced_tables - ALLOWED_TABLES - cte_names)
+    unknown_tables = sorted(
+        reference
+        for reference in referenced_table_refs
+        if reference not in allowed_tables
+        and short_table_name(reference) not in cte_names
+    )
     if unknown_tables:
         return SQLValidationResult(
             cleaned_sql,
@@ -267,22 +351,22 @@ def validate_generated_sql(raw_sql: str, schema_context: str = "") -> SQLValidat
             [],
         )
 
-    if not referenced_tables:
+    if not referenced_table_refs:
         return SQLValidationResult(cleaned_sql, False, "Keine Tabellenreferenz im SQL gefunden.", [])
 
     schema_columns = parse_schema_columns(schema_context)
-    column_error = validate_known_columns(cleaned_sql, schema_columns)
+    column_error = validate_known_columns(cleaned_sql, schema_columns, allowed_tables)
     if column_error:
         return SQLValidationResult(
             cleaned_sql,
             False,
             column_error,
-            extract_used_tables(cleaned_sql),
+            extract_used_tables(cleaned_sql, schema_context),
         )
 
     return SQLValidationResult(
         cleaned_sql,
         True,
         "",
-        extract_used_tables(cleaned_sql),
+        extract_used_tables(cleaned_sql, schema_context),
     )
