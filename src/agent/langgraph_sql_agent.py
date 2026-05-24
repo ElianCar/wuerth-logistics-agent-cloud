@@ -158,6 +158,16 @@ must use only relevant templates, and must still pass validation.
 """ + "\n".join(formatted_templates)
 
 
+def extract_context_value(schema_context: str, key: str, default: str) -> str:
+    prefix = f"{key}:"
+    for raw_line in schema_context.splitlines():
+        line = raw_line.strip()
+        if line.lower().startswith(prefix.lower()):
+            value = line[len(prefix):].strip()
+            return value or default
+    return default
+
+
 def build_sql_prompt(state: SQLAgentState) -> str:
     repair_context = ""
     correction_context = ""
@@ -193,20 +203,26 @@ User correction:
     if bool(state.get("use_approved_memory", True)):
         approved_template_context = format_approved_template_context(state["user_question"])
 
-    return f"""You are a PostgreSQL SQL generator.
+    schema_context = state.get("schema_context", "")
+    sql_dialect = extract_context_value(schema_context, "SQL dialect", "PostgreSQL")
+    backend_name = extract_context_value(schema_context, "Backend", "postgres")
+
+    return f"""You are a {sql_dialect} SQL generator.
 
 Return SQL only.
 Do not include markdown code fences.
 Do not include explanations, comments, or prose.
 Generate exactly one read-only SELECT query. A WITH common table expression is allowed only if the final statement is a SELECT.
-Do not use DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE, COPY, CREATE, GRANT, or REVOKE.
+Do not use DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE, COPY, CREATE, MERGE, GRANT, or REVOKE.
 Use only the provided tables and columns.
 Prefer explicit JOIN syntax.
 Do not add a LIMIT clause unless the user explicitly asks for a limit, top-N, or bottom-N result.
 For revenue, use SUM(l_extendedprice * (1 - l_discount)) unless otherwise stated.
+Active backend: {backend_name}
+SQL dialect: {sql_dialect}
 
 Database and semantic context:
-{state.get("schema_context", "")}
+{schema_context}
 {approved_template_context}
 {repair_context}
 {correction_context}

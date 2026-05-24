@@ -7,6 +7,7 @@ import streamlit as st
 import yaml
 
 from app.schema import TPC_H_TABLES
+from src.agent.db import get_active_backend_metadata
 from src.agent.golden_test_runner import load_golden_questions, run_golden_tests
 from src.agent.langgraph_sql_agent import SQLAgentConfig, run_sql_agent
 from src.agent.logging_utils import log_feedback
@@ -174,7 +175,21 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
 
         st.header("Konfiguration")
         config = build_streamlit_llm_config()
-        st.write("Ausgewählte Datenbank: PostgreSQL")
+        try:
+            backend_metadata = get_active_backend_metadata()
+        except Exception as error:
+            backend_metadata = {
+                "backend_name": "unbekannt",
+                "sql_dialect": "unbekannt",
+                "auth_type": "",
+                "allowed_tables": list(TPC_H_TABLES),
+            }
+            st.error(f"Datenbank-Backend ist nicht korrekt konfiguriert: {error}")
+
+        st.write(f"Ausgewähltes Backend: `{backend_metadata.get('backend_name', '')}`")
+        st.write(f"SQL-Dialekt: `{backend_metadata.get('sql_dialect', '')}`")
+        if backend_metadata.get("auth_type"):
+            st.write(f"Databricks-Auth-Modus: `{backend_metadata.get('auth_type', '')}`")
         st.write(f"LLM-Anbieter: `{config.llm_provider}`")
         st.write(f"Primäres Modell: `{config.primary_model}`")
         st.write(f"Fallback-Modell: `{config.fallback_model}`")
@@ -189,7 +204,8 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
             st.write(f"Ollama-Host: `{config.ollama_host}`")
 
         st.header("Erlaubte Tabellen")
-        for table in TPC_H_TABLES:
+        allowed_tables = backend_metadata.get("allowed_tables") or list(TPC_H_TABLES)
+        for table in allowed_tables:
             st.write(f"- `{table}`")
 
     return page, config

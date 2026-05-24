@@ -19,6 +19,7 @@ FORBIDDEN_KEYWORDS = {
     "DROP",
     "ALTER",
     "CREATE",
+    "MERGE",
     "TRUNCATE",
     "COPY",
     "GRANT",
