@@ -5,10 +5,8 @@ questions:
       Man erstelle einen aufsummierten Preisbericht über alle Auftragspositionen, die spätestens 90 Tage vor dem 1. Dezember 1998 versandt wurden. Die Ausgabe soll nach RETURNFLAG und LINESTATUS gruppiert und in aufsteigender Reihenfolge nach diesen Attributen sortiert werden. Für jede Gruppe sollen die gesamte Menge, der Gesamtpreis, der ermäßigte Gesamtpreis, der ermäßigte Gesamtpreis inklusive Steuern, die durchschnittliche Anzahl, der durchschnittliche Gesamtpreis und der durchschnittliche Nachlass und die Anzahl der Auftragspositionen aufgelistet werden.
     solution_sql_file: q01.sql
     tags: [tpch, aggregation, lineitem]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q02
@@ -17,10 +15,8 @@ questions:
       Für jedes Teil aus Messing (engl. brass) mit Größe 15 soll festgestellt werden, welcher Zulieferer in Europa beim nächsten Auftrag ausgewählt werden sollte. Das Kriterium für die Wahl eines Lieferanten sind dabei minimale Lieferkosten. Die Anfrage soll für jeden qualifizierenden Lieferanten Kontostand, Namen, Land, Teilenummer, Hersteller des Teils, sowie Adresse und Telefonnummer des Lieferanten auflisten.
     solution_sql_file: q02.sql
     tags: [tpch, supplier, partsupp, part, ranking]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q03
@@ -29,10 +25,8 @@ questions:
       Man berechne den möglichen Umsatz aus den Aufträgen aus dem Marktsegment „Gebäude“ (engl. building), die am 15. März 1995 noch nicht (vollständig) versandt waren. Die 10 Aufträge, die durch Auslieferung der ausstehenden Auftragspositionen den höchsten Umsatz ergeben, und deren Lieferpriorität sollen ausgegeben werden.
     solution_sql_file: q03.sql
     tags: [tpch, orders, lineitem, customer, top_k]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q04
@@ -41,10 +35,8 @@ questions:
       Mit Hilfe dieser Anfrage soll überprüft werden, wie gut das Auftragsprioritätensystem funktioniert. Zusätzlich liefert sie eine Einschätzung über die Zufriedenstellung der Kunden. Dazu zählt die Anfrage die Aufträge im dritten Quartal 1993, bei denen wenigstens eine Auftragsposition nach dem zugesagten Liefertermin zugestellt wurde. Die Ausgabeliste soll die Anzahl dieser Aufträge nach Priorität sortiert in aufsteigender Reihenfolge enthalten.
     solution_sql_file: q04.sql
     tags: [tpch, orders, lineitem, exists]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q05
@@ -53,10 +45,8 @@ questions:
       Für jedes Land in Asien sollen die Einnahmen aufgelistet werden, die aus Auftragspositionen resultieren, bei denen die Kunden und die dazugehörigen Lieferanten beide aus dem gleichen Land stammen. Anhand dieser Ergebnisse kann festgestellt werden, ob es sich lohnt, in einem bestimmten Gebiet lokale Verteilungszentren einzurichten. Dabei werden nur Aufträge aus dem Jahr 1994 berücksichtigt.
     solution_sql_file: q05.sql
     tags: [tpch, revenue, nation, region]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q06
@@ -65,10 +55,8 @@ questions:
       Es soll berechnet werden, um wieviel sich die Einnahmen erhöht hätten, wenn ein gewährter Nachlass von 5 bis 7 % für Mengen von weniger als 24 Teilen für im Jahr 1994 verschickte Aufträge gestrichen worden wäre.
     solution_sql_file: q06.sql
     tags: [tpch, lineitem, revenue]
-    order_sensitive: false
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q07
@@ -77,10 +65,8 @@ questions:
       Zur Unterstützung bei der Verhandlung über neue Lieferverträge soll der Wert der zwischen Frankreich und Deutschland transportierten Güter festgestellt werden. Dazu werden jeweils die rabattierten Einnahmen in den Jahren 1995 und 1996 berechnet, die aus Auftragspositionen resultieren, bei denen der Lieferant aus dem einen, und der Kunde aus dem anderen Land stammt.
     solution_sql_file: q07.sql
     tags: [tpch, shipping, nation, revenue]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q08
@@ -89,10 +75,8 @@ questions:
       Es soll der Marktanteil Brasiliens innerhalb der Region Amerika für den Teiletyp „ECONOMY ANODIZED STEEL“ in den Jahren 1995 und 1996 (ausschlaggebend ist das Bestelldatum) berechnet werden. Der Marktanteil Brasiliens ist definiert als der Anteil am Gesamtumsatz, welcher durch Produkte dieses speziellen Typs, geliefert von einem brasilianischen Lieferanten, in Amerika erzielt wurde.
     solution_sql_file: q08.sql
     tags: [tpch, market_share, part, nation]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.0001
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.0001
     max_preview_rows: 20
 
   - question_id: Q09
@@ -101,10 +85,8 @@ questions:
       Man ermittle den durch eine bestimmte Produktlinie erzielten Gewinn, aufgeschlüsselt nach Zuliefererland und Jahr der Bestellung. Die zu untersuchende Produktlinie besteht aus allen Teilen, die den Teilstring „green“ in ihrem Namen enthalten.
     solution_sql_file: q09.sql
     tags: [tpch, profit, part, nation]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q10
@@ -113,10 +95,8 @@ questions:
       Es werden die 20 Kunden gesucht, die durch Rücksendungen (Reklamationen, RETURNFLAG=‘R’) den größten Umsatzverlust im vierten Quartal 1993 verursacht haben. Es werden dabei nur Produkte berücksichtigt, die auch in diesem Quartal bestellt wurden. Man liste jeweils Nummer und Namen des Kunden, Umsatz durch diesen Kunden, Kontostand, Land, sowie Adresse und Telefonnummer des Kunden auf.
     solution_sql_file: q10.sql
     tags: [tpch, customer, returns, top_k]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q11
@@ -125,10 +105,8 @@ questions:
       Man finde durch Überprüfung der Lagerbestände der Lieferanten in Deutschland diejenigen Teile heraus, die einen signifikanten Anteil (mindestens 0,01%) am Gesamtwert aller verfügbaren Teile in Deutschland darstellen. Man liste Teilenummer und Wert des Lagerbestandes auf, sortiert nach absteigendem Wert.
     solution_sql_file: q11.sql
     tags: [tpch, partsupp, supplier, inventory]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q12
@@ -137,10 +115,8 @@ questions:
       Diese Anfrage soll feststellen, ob die Verwendung von billigeren Lieferarten kritische Aufträge negativ beeinflusst, und zwar in der Form, dass den Kunden mehrere Produkte erst nach dem zugesagten Datum zugeschickt werden. Zu diesem Zweck zählt die Anfrage für die beiden Lieferarten „MAIL“ und „SHIP“ und getrennt nach den Prioritätskategorien „hoch“ (HIGH, URGENT) und „niedrig“ (alle übrigen) all die Auftragspositionen, welche die Kunden im Laufe des Jahres 1994 tatsächlich erhielten, und die zu einem Auftrag gehören, bei dem das RECEIPTDATE das COMMITDATE überschreitet, obwohl die Auftragsposition spätestens einen Tag vor dem angesetzten Liefertermin losgeschickt wurde.
     solution_sql_file: q12.sql
     tags: [tpch, shipping, priority]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q13
@@ -149,10 +125,8 @@ questions:
       Diese Anfrage ermittelt die Verteilung der Bestelleingänge, d.h. wie viele Kunden keine Bestellung aufgegeben haben, wie viele eine Bestellung usw. Dabei werden Sonderbestellungen nicht berücksichtigt. Sonderbestellungen sind durch die Schlüsselwörter „special“ und „requests“ in Kommentaren zu den jeweiligen Bestellvorgängen erkennbar.
     solution_sql_file: q13.sql
     tags: [tpch, customer, distribution]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q14
@@ -161,10 +135,8 @@ questions:
       Die Resonanz des Marktes auf eine Marketingaktion, wie z.B. Fernsehwerbung, soll für den September 1995 bestimmt werden. Dazu muss der Prozentsatz der durch beworbene Produkte (Typbezeichnungen starten mit „PROMO“) erzielten Monatseinnahmen am Gesamtumsatz berechnet werden. Es werden nur tatsächlich verschickte Teile betrachtet.
     solution_sql_file: q14.sql
     tags: [tpch, promotion, revenue]
-    order_sensitive: false
-    numeric_abs_tolerance: 0.0001
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.0001
     max_preview_rows: 20
 
   - question_id: Q15
@@ -173,10 +145,8 @@ questions:
       Der beste Lieferant im ersten Quartal 1996 soll ermittelt werden. Das ist der Lieferant, der in diesem Quartal den größten Anteil zum Gesamtumsatz beigetragen hat. Nummer, Name, Adresse, Telefonnummer des Lieferanten sowie der Umsatz durch diesen Lieferanten sollen ausgegeben werden.
     solution_sql_file: q15.sql
     tags: [tpch, supplier, revenue, cte]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
     notes: "Die PDF-Lösung verwendet CREATE VIEW und DROP VIEW. Die Referenz-SQL ist als read-only CTE formuliert."
 
@@ -186,10 +156,8 @@ questions:
       Man finde heraus, wieviele Lieferanten Teile in den Größen 49, 14, 23, 45, 19, 3, 36 oder 9 liefern können, die nicht von der Sorte 45 und nicht vom Typ „MEDIUM POLISHED“ sind. Außerdem dürfen für diese Lieferanten keine Beschwerden vermerkt sein, was durch einen Kommentar ausgedrückt wird, der die Teilstrings „Better Business Bureau“ und „Complaints“ enthält. Man zähle die Lieferanten je Größe, Sorte und Typ und sortiere die Ausgabe nach aufsteigender Sorte und absteigendem Zähler (count).
     solution_sql_file: q16.sql
     tags: [tpch, part, supplier, anti_join]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q17
@@ -198,10 +166,8 @@ questions:
       Ausgehend von einem siebenjährigen Datensatz berechne man den durchschnittlichen jährlichen Einnahmenverlust, der sich ergeben würde, falls Aufträge mit kleineren Mengen (unter 20 % der Durchschnittsmenge für dieses Teil) für die Sorte (brand) 23 im Container „MED BOX“ nicht mehr angenommen würden.
     solution_sql_file: q17.sql
     tags: [tpch, part, revenue, correlated_subquery]
-    order_sensitive: false
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q18
@@ -210,10 +176,8 @@ questions:
       Man ermittle die Top 100-Kunden (gemäß dem Gesamtpreis (totalprice) ihrer Bestellungen), die eine Bestellung aufgegeben haben, die mindestens 312 Einheiten eines Produkts umfasst.
     solution_sql_file: q18.sql
     tags: [tpch, customer, orders, top_k]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q19
@@ -224,10 +188,8 @@ questions:
       Bei dieser Anfrage handelt es sich um eine typische Anfrage, wie sie von Data Mining-Systemen generiert wird.
     solution_sql_file: q19.sql
     tags: [tpch, revenue, part, lineitem]
-    order_sensitive: false
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q20
@@ -236,10 +198,8 @@ questions:
       In dieser Anfrage sollen Sonderangebots-Kandidaten ermittelt werden: Man finde die Hersteller, die von bestimmten Teilen (gekennzeichnet durch die Farbe „forest“, wobei die Farbe in die Produktbezeichnung kodiert ist) mehr als die Hälfte des kanadischen Jahresabsatzes (von 1994) auf Lager haben.
     solution_sql_file: q20.sql
     tags: [tpch, supplier, partsupp, promotion]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q21
@@ -248,10 +208,8 @@ questions:
       In dieser Anfrage sollen säumige Lieferanten aus Saudi Arabien ermittelt werden. Es sollen die Lieferanten dieses Landes ermittelt werden, die in einer mehrere Lieferanten betreffenden, verspätet ausgelieferten Bestellung als einzige den Status (linestatus) ’F’ haben.
     solution_sql_file: q21.sql
     tags: [tpch, supplier, orders, top_k]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20
 
   - question_id: Q22
@@ -260,8 +218,6 @@ questions:
       Finde potentiell reaktivierbare Kunden. Für bestimmte Länderregionen (identifiziert durch die ersten beiden Ziffern der Kunden-Telefonnummer) finde die Anzahl der Kunden, die in den letzten 7 Jahren keine Bestellung mehr aufgegeben haben, aber dennoch ein überdurchschnittliches Bestellkonto (acctbal) aufweisen.
     solution_sql_file: q22.sql
     tags: [tpch, customer, sales_opportunity]
-    order_sensitive: true
-    numeric_abs_tolerance: 0.01
-    numeric_rel_tolerance: 0.000001
-    compare_column_names: true
+    compare:
+      numeric_tolerance: 0.01
     max_preview_rows: 20

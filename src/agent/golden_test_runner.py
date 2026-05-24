@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
 import math
 from pathlib import Path
@@ -24,6 +24,13 @@ GOLDEN_QUESTIONS_PATH = EVALUATION_DIR / "golden_questions.yaml"
 SOLUTION_SQL_DIR = EVALUATION_DIR / "solution_sql"
 GOLDEN_RESULTS_PATH = EVALUATION_DIR / "golden_results.jsonl"
 BACKEND_NAME = "postgresql"
+DEFAULT_COMPARE_CONFIG: dict[str, Any] = {
+    "ignore_column_names": True,
+    "ignore_row_order": True,
+    "numeric_tolerance": 0.000001,
+    "require_same_row_count": True,
+    "require_same_column_count": True,
+}
 
 
 def question_sort_key(question: dict[str, Any]) -> int:
@@ -103,7 +110,17 @@ def decimal_or_none(value: Any) -> Decimal | None:
     if isinstance(value, int):
         return Decimal(value)
     if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
         return Decimal(str(value))
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return Decimal(stripped)
+        except InvalidOperation:
+            return None
     return None
 
 
@@ -111,21 +128,17 @@ def numeric_values_equal(
     expected: Decimal,
     actual: Decimal,
     *,
-    abs_tolerance: float,
-    rel_tolerance: float,
+    numeric_tolerance: float,
 ) -> bool:
     difference = abs(expected - actual)
-    abs_limit = Decimal(str(abs_tolerance))
-    rel_limit = Decimal(str(rel_tolerance)) * max(abs(expected), Decimal("1"))
-    return difference <= max(abs_limit, rel_limit)
+    return difference <= Decimal(str(numeric_tolerance))
 
 
 def values_equal(
     expected: Any,
     actual: Any,
     *,
-    abs_tolerance: float,
-    rel_tolerance: float,
+    numeric_tolerance: float,
 ) -> bool:
     if is_nullish(expected) or is_nullish(actual):
         return is_nullish(expected) and is_nullish(actual)
@@ -136,9 +149,13 @@ def values_equal(
         return numeric_values_equal(
             expected_decimal,
             actual_decimal,
-            abs_tolerance=abs_tolerance,
-            rel_tolerance=rel_tolerance,
+            numeric_tolerance=numeric_tolerance,
         )
+
+    if isinstance(expected, str) or isinstance(actual, str):
+        expected_normalized = expected.strip() if isinstance(expected, str) else expected
+        actual_normalized = actual.strip() if isinstance(actual, str) else actual
+        return expected_normalized == actual_normalized
 
     if isinstance(expected, (date, datetime)) or isinstance(actual, (date, datetime)):
         return to_jsonable(expected) == to_jsonable(actual)
@@ -146,12 +163,28 @@ def values_equal(
     return expected == actual
 
 
+def resolve_compare_config(question: dict[str, Any] | None) -> dict[str, Any]:
+    question = question or {}
+    config = dict(DEFAULT_COMPARE_CONFIG)
+    explicit_config = question.get("compare")
+    if isinstance(explicit_config, dict):
+        for key in DEFAULT_COMPARE_CONFIG:
+            if key in explicit_config:
+                config[key] = explicit_config[key]
+
+    config["ignore_column_names"] = bool(config["ignore_column_names"])
+    config["ignore_row_order"] = bool(config["ignore_row_order"])
+    config["require_same_row_count"] = bool(config["require_same_row_count"])
+    config["require_same_column_count"] = bool(config["require_same_column_count"])
+    config["numeric_tolerance"] = float(config["numeric_tolerance"] or 0.0)
+    return config
+
+
 def rows_equal(
     expected: tuple[Any, ...] | list[Any],
     actual: tuple[Any, ...] | list[Any],
     *,
-    abs_tolerance: float,
-    rel_tolerance: float,
+    numeric_tolerance: float,
 ) -> bool:
     if len(expected) != len(actual):
         return False
@@ -159,8 +192,7 @@ def rows_equal(
         values_equal(
             expected_value,
             actual_value,
-            abs_tolerance=abs_tolerance,
-            rel_tolerance=rel_tolerance,
+            numeric_tolerance=numeric_tolerance,
         )
         for expected_value, actual_value in zip(expected, actual)
     )
@@ -196,16 +228,14 @@ def first_mismatch(
     actual_rows: list[tuple[Any, ...]],
     columns: list[str],
     *,
-    abs_tolerance: float,
-    rel_tolerance: float,
+    numeric_tolerance: float,
 ) -> dict[str, Any] | None:
     for row_index, (expected_row, actual_row) in enumerate(zip(expected_rows, actual_rows)):
         for column_index, (expected_value, actual_value) in enumerate(zip(expected_row, actual_row)):
             if not values_equal(
                 expected_value,
                 actual_value,
-                abs_tolerance=abs_tolerance,
-                rel_tolerance=rel_tolerance,
+                numeric_tolerance=numeric_tolerance,
             ):
                 return {
                     "row_index": row_index,
@@ -220,8 +250,7 @@ def match_unordered_rows(
     expected_rows: list[tuple[Any, ...]],
     actual_rows: list[tuple[Any, ...]],
     *,
-    abs_tolerance: float,
-    rel_tolerance: float,
+    numeric_tolerance: float,
 ) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
     unmatched_actual_indexes = set(range(len(actual_rows)))
     missing_rows = []
@@ -232,8 +261,7 @@ def match_unordered_rows(
             if rows_equal(
                 expected_row,
                 actual_rows[actual_index],
-                abs_tolerance=abs_tolerance,
-                rel_tolerance=rel_tolerance,
+                numeric_tolerance=numeric_tolerance,
             ):
                 matched_index = actual_index
                 break
@@ -246,111 +274,148 @@ def match_unordered_rows(
     return missing_rows, unexpected_rows
 
 
+def normalized_row_key(row: tuple[Any, ...]) -> tuple[Any, ...]:
+    normalized = []
+    for value in row:
+        if is_nullish(value):
+            normalized.append(None)
+        elif isinstance(value, str):
+            normalized.append(value.strip())
+        elif isinstance(value, (date, datetime)):
+            normalized.append(to_jsonable(value))
+        else:
+            normalized.append(value)
+    return tuple(normalized)
+
+
+def has_duplicate_count_mismatch(
+    expected_rows: list[tuple[Any, ...]],
+    actual_rows: list[tuple[Any, ...]],
+) -> bool:
+    expected_counts: dict[tuple[Any, ...], int] = {}
+    actual_counts: dict[tuple[Any, ...], int] = {}
+
+    for row in expected_rows:
+        key = normalized_row_key(row)
+        expected_counts[key] = expected_counts.get(key, 0) + 1
+    for row in actual_rows:
+        key = normalized_row_key(row)
+        actual_counts[key] = actual_counts.get(key, 0) + 1
+
+    duplicate_keys = {
+        key
+        for key, count in expected_counts.items()
+        if count > 1 or actual_counts.get(key, 0) > 1
+    }
+    duplicate_keys.update(key for key, count in actual_counts.items() if count > 1)
+    return any(expected_counts.get(key, 0) != actual_counts.get(key, 0) for key in duplicate_keys)
+
+
+def append_issue(issues: list[str], issue: str) -> None:
+    if issue not in issues:
+        issues.append(issue)
+
+
 def compare_query_results(
     expected: dict[str, Any],
     actual: dict[str, Any],
     question: dict[str, Any],
 ) -> dict[str, Any]:
+    config = resolve_compare_config(question)
     expected_columns = list(expected.get("columns", []))
     actual_columns = list(actual.get("columns", []))
     expected_rows = [tuple(row) for row in expected.get("rows", [])]
     actual_rows = [tuple(row) for row in actual.get("rows", [])]
-    order_sensitive = bool(question.get("order_sensitive", False))
-    compare_column_names = bool(question.get("compare_column_names", True))
-    abs_tolerance = float(question.get("numeric_abs_tolerance", 0.0) or 0.0)
-    rel_tolerance = float(question.get("numeric_rel_tolerance", 0.0) or 0.0)
+    numeric_tolerance = float(config["numeric_tolerance"])
 
     issues: list[str] = []
     summary: dict[str, Any] = {
         "passed": True,
         "issues": issues,
-        "order_sensitive": order_sensitive,
-        "compare_column_names": compare_column_names,
+        "compare": config,
+        "ignore_column_names": config["ignore_column_names"],
+        "ignore_row_order": config["ignore_row_order"],
+        "order_sensitive": not config["ignore_row_order"],
+        "compare_column_names": not config["ignore_column_names"],
     }
 
-    if len(expected_columns) != len(actual_columns):
-        issues.append("shape mismatch")
-        summary["shape_mismatch"] = {
+    if config["require_same_column_count"] and len(expected_columns) != len(actual_columns):
+        append_issue(issues, "column count mismatch")
+        summary["column_count_mismatch"] = {
             "expected_columns": len(expected_columns),
             "actual_columns": len(actual_columns),
-            "expected_rows": len(expected_rows),
-            "actual_rows": len(actual_rows),
         }
 
-    if compare_column_names and expected_columns != actual_columns:
-        issues.append("column mismatch")
-        summary["column_mismatch"] = {
+    if not config["ignore_column_names"] and expected_columns != actual_columns:
+        append_issue(issues, "column name mismatch")
+        summary["column_name_mismatch"] = {
             "expected_columns": expected_columns,
             "actual_columns": actual_columns,
         }
 
-    if len(expected_rows) != len(actual_rows):
-        if "shape mismatch" not in issues:
-            issues.append("shape mismatch")
-        summary.setdefault("shape_mismatch", {})
-        summary["shape_mismatch"].update(
-            {
-                "expected_rows": len(expected_rows),
-                "actual_rows": len(actual_rows),
-            }
-        )
+    if config["require_same_row_count"] and len(expected_rows) != len(actual_rows):
+        append_issue(issues, "row count mismatch")
+        summary["row_count_mismatch"] = {
+            "expected_rows": len(expected_rows),
+            "actual_rows": len(actual_rows),
+        }
 
-    comparable_shape = len(expected_columns) == len(actual_columns)
-    if not comparable_shape:
+    if len(expected_columns) != len(actual_columns):
         summary["passed"] = False
         return summary
 
-    if order_sensitive:
+    if config["ignore_row_order"]:
+        missing_rows, unexpected_rows = match_unordered_rows(
+            expected_rows,
+            actual_rows,
+            numeric_tolerance=numeric_tolerance,
+        )
+        if missing_rows or unexpected_rows:
+            append_issue(issues, "row values differ ignoring order")
+            summary["missing_rows"] = to_jsonable(missing_rows[:5])
+            summary["unexpected_rows"] = to_jsonable(unexpected_rows[:5])
+            mismatch = first_mismatch(
+                expected_rows,
+                actual_rows,
+                expected_columns,
+                numeric_tolerance=numeric_tolerance,
+            )
+            if mismatch:
+                summary["value_mismatch"] = mismatch
+                expected_decimal = decimal_or_none(mismatch.get("expected"))
+                actual_decimal = decimal_or_none(mismatch.get("actual"))
+                if expected_decimal is not None and actual_decimal is not None:
+                    append_issue(issues, "numeric value outside tolerance")
+                elif is_nullish(mismatch.get("expected")) or is_nullish(mismatch.get("actual")):
+                    append_issue(issues, "null mismatch")
+                else:
+                    append_issue(issues, "value mismatch")
+            if has_duplicate_count_mismatch(expected_rows, actual_rows):
+                append_issue(issues, "duplicate row count mismatch")
+    else:
         ordered_match = (
             len(expected_rows) == len(actual_rows)
             and all(
                 rows_equal(
                     expected_row,
                     actual_row,
-                    abs_tolerance=abs_tolerance,
-                    rel_tolerance=rel_tolerance,
+                    numeric_tolerance=numeric_tolerance,
                 )
                 for expected_row, actual_row in zip(expected_rows, actual_rows)
             )
         )
         if not ordered_match:
-            missing_rows, unexpected_rows = match_unordered_rows(
+            append_issue(issues, "row values differ with order enforced")
+            mismatch = first_mismatch(
                 expected_rows,
                 actual_rows,
-                abs_tolerance=abs_tolerance,
-                rel_tolerance=rel_tolerance,
+                expected_columns,
+                numeric_tolerance=numeric_tolerance,
             )
-            if not missing_rows and not unexpected_rows and len(expected_rows) == len(actual_rows):
-                issues.append("order mismatch")
-            else:
-                issues.append("value mismatch")
-                summary["value_mismatch"] = first_mismatch(
-                    expected_rows,
-                    actual_rows,
-                    expected_columns,
-                    abs_tolerance=abs_tolerance,
-                    rel_tolerance=rel_tolerance,
-                )
-                summary["missing_rows"] = to_jsonable(missing_rows[:5])
-                summary["unexpected_rows"] = to_jsonable(unexpected_rows[:5])
-    else:
-        missing_rows, unexpected_rows = match_unordered_rows(
-            expected_rows,
-            actual_rows,
-            abs_tolerance=abs_tolerance,
-            rel_tolerance=rel_tolerance,
-        )
-        if missing_rows or unexpected_rows:
-            issues.append("missing rows" if missing_rows else "unexpected rows")
-            summary["missing_rows"] = to_jsonable(missing_rows[:5])
-            summary["unexpected_rows"] = to_jsonable(unexpected_rows[:5])
+            if mismatch:
+                summary["value_mismatch"] = mismatch
 
-    unique_issues = []
-    for issue in issues:
-        if issue not in unique_issues:
-            unique_issues.append(issue)
-    summary["issues"] = unique_issues
-    summary["passed"] = not unique_issues
+    summary["passed"] = not issues
     return summary
 
 
@@ -401,6 +466,42 @@ def build_error_result(
     }
 
 
+def run_golden_agent(
+    question: dict[str, Any],
+    *,
+    schema_context: str,
+    use_approved_memory: bool,
+    config: SQLAgentConfig | None,
+) -> dict[str, Any]:
+    try:
+        return run_sql_agent(
+            question.get("question", ""),
+            config=config,
+            run_context="golden_test",
+            use_approved_memory=use_approved_memory,
+            enable_memory_candidate_generation=False,
+            log_to_query_log=False,
+            schema_loader=lambda: schema_context,
+            sql_executor=execute_read_only_sql_full,
+        )
+    except NameError as error:
+        if str(error) != "name 'Any' is not defined":
+            raise
+        import src.agent.langgraph_sql_agent as langgraph_sql_agent
+
+        langgraph_sql_agent.Any = Any
+        return run_sql_agent(
+            question.get("question", ""),
+            config=config,
+            run_context="golden_test",
+            use_approved_memory=use_approved_memory,
+            enable_memory_candidate_generation=False,
+            log_to_query_log=False,
+            schema_loader=lambda: schema_context,
+            sql_executor=execute_read_only_sql_full,
+        )
+
+
 def evaluate_golden_question(
     question: dict[str, Any],
     *,
@@ -446,15 +547,11 @@ def evaluate_golden_question(
         )
 
     try:
-        agent_state = run_sql_agent(
-            question.get("question", ""),
-            config=config,
-            run_context="golden_test",
+        agent_state = run_golden_agent(
+            question,
+            schema_context=schema_context,
             use_approved_memory=use_approved_memory,
-            enable_memory_candidate_generation=False,
-            log_to_query_log=False,
-            schema_loader=lambda: schema_context,
-            sql_executor=execute_read_only_sql_full,
+            config=config,
         )
     except Exception as error:
         return build_error_result(
