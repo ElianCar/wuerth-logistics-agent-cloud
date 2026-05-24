@@ -7,8 +7,8 @@ import streamlit as st
 import yaml
 
 from app.schema import TPC_H_TABLES
-from src.agent.langgraph_sql_agent import SQLAgentConfig, run_sql_agent
 from src.agent.golden_test_runner import load_golden_questions, run_golden_tests
+from src.agent.langgraph_sql_agent import SQLAgentConfig, run_sql_agent
 from src.agent.logging_utils import log_feedback
 from src.agent.memory_store import (
     MemoryStoreError,
@@ -770,6 +770,14 @@ def format_failure_reason(value: object) -> str:
         "agent_error": "Agentenfehler",
         "unexpected_error": "Unerwarteter Fehler",
         "shape mismatch": "Form der Ausgabe weicht ab",
+        "column count mismatch": "Spaltenanzahl weicht ab",
+        "row count mismatch": "Zeilenanzahl weicht ab",
+        "column name mismatch": "Spaltennamen weichen ab",
+        "row values differ ignoring order": "Zeilenwerte weichen ab",
+        "row values differ with order enforced": "Zeilenwerte oder Sortierung weichen ab",
+        "duplicate row count mismatch": "Anzahl doppelter Zeilen weicht ab",
+        "numeric value outside tolerance": "Numerischer Wert außerhalb der Toleranz",
+        "null mismatch": "NULL-Wert weicht ab",
         "missing rows": "fehlende Zeilen",
         "unexpected rows": "unerwartete Zeilen",
         "value mismatch": "Wertabweichung",
@@ -794,6 +802,9 @@ def localize_diff_summary(diff_summary: dict) -> dict:
     }
     for source_key, target_key in [
         ("shape_mismatch", "Formabweichung"),
+        ("column_count_mismatch", "Spaltenanzahlabweichung"),
+        ("row_count_mismatch", "Zeilenanzahlabweichung"),
+        ("column_name_mismatch", "Spaltennamenabweichung"),
         ("column_mismatch", "Spaltenabweichung"),
         ("value_mismatch", "Wertabweichung"),
         ("missing_rows", "fehlende Zeilen"),

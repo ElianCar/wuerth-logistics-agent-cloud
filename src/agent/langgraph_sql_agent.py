@@ -202,7 +202,7 @@ Generate exactly one read-only SELECT query. A WITH common table expression is a
 Do not use DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE, COPY, CREATE, GRANT, or REVOKE.
 Use only the provided tables and columns.
 Prefer explicit JOIN syntax.
-Add LIMIT 50 unless the user asks for aggregation only or a single value.
+Do not add a LIMIT clause unless the user explicitly asks for a limit, top-N, or bottom-N result.
 For revenue, use SUM(l_extendedprice * (1 - l_discount)) unless otherwise stated.
 
 Database and semantic context:

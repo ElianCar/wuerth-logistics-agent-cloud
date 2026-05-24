@@ -12,7 +12,7 @@ Use only the provided tables and columns.
 Generate only SELECT queries.
 Do not use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, COPY, GRANT, or REVOKE.
 Prefer explicit JOIN syntax.
-Add LIMIT 50 unless the user asks for aggregation only or asks for a specific limit.
+Do not add a LIMIT clause unless the user explicitly asks for a limit, top-N, or bottom-N result.
 Use the semantic layer for business meaning.
 For revenue, use SUM(l_extendedprice * (1 - l_discount)) unless otherwise stated.
 
