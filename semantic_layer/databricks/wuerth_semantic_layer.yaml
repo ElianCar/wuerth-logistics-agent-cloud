@@ -1,0 +1,963 @@
+execution:
+  target_platform: databricks
+  sql_dialect: databricks_sql
+  catalog: workspace
+  schema: default
+  require_fully_qualified_table_names: true
+  allowed_tables:
+    - workspace.default.datenabzug_projekt_tum_invoices
+    - workspace.default.datenabzug_projekt_tum_shipments
+
+dataset:
+  id: wuerth_shipment_invoice_v1
+  name: Wuerth Shipment and Invoice Semantic Layer
+  description: >
+    Semantic layer for the anonymized Wuerth project dataset containing invoice statistics
+    and shipment or delivery operations data. The layer explains table meaning, column meaning,
+    join logic and supported KPIs for the SQL agent.
+  catalog: workspace
+  schema: default
+  source_tables:
+    - datenabzug_projekt_tum_invoices
+    - datenabzug_projekt_tum_shipments
+  business_context: >
+    The dataset is used for a Chat with your Data prototype in logistics and sales analytics.
+    The invoice table contains sales and invoice statistics. The shipment table contains delivery
+    and shipment related operational information.
+  important_warning: >
+    The data is anonymized. Several fields are coded technical identifiers. Business meaning
+    should not be inferred beyond the definitions in this semantic layer.
+
+tables:
+  datenabzug_projekt_tum_invoices:
+    business_name: Invoice statistics
+    technical_name: datenabzug_projekt_tum_invoices
+    fully_qualified_name: workspace.default.datenabzug_projekt_tum_invoices
+    description: >
+      Invoice and sales statistics table. It contains order level and order item level commercial
+      information such as customer, product, invoiced quantity, turnover, freight cost and reporting
+      date.
+    grain: >
+      Likely one row per invoice or sales statistics line for an order item. The table can contain
+      multiple rows per order_number and therefore order_number is not a primary key.
+    primary_business_use:
+      - Revenue and turnover analysis
+      - Invoiced quantity analysis
+      - Sales analysis by customer, product, market segment, sales area and sales territory
+      - Invoice reporting by calendar day or calendar month
+    columns:
+      order_date:
+        business_name: Order date
+        data_type: string
+        description: >
+          Date of the original customer order. Some rows can be null. Use for questions about
+          when the customer order was placed, not necessarily when revenue was reported.
+        example_values:
+          - "2025-12-01"
+          - "2025-11-07"
+          - null
+        semantic_type: date
+        nullable: true
+
+      order_reason_statistic:
+        business_name: Statistical order reason
+        data_type: string
+        description: >
+          Coded reason or category used in sales statistics. Values are codes such as 001, 015,
+          410, ZIV or C60. Do not translate these codes unless a code dictionary is provided.
+        example_values:
+          - "001"
+          - "015"
+          - "410"
+          - "ZIV"
+        semantic_type: categorical_code
+        nullable: false
+
+      order_number:
+        business_name: Order number
+        aliases:
+          - Auftrag
+          - Auftragsnummer
+        data_type: string
+        description: >
+          Sales order identifier. This is the main candidate key for linking invoice data to
+          shipment data. It is not unique in this table.
+        example_values:
+          - "4122026279"
+          - "3842881738"
+        semantic_type: identifier
+        nullable: false
+        join_role: candidate_join_key
+
+      order_item:
+        business_name: Order item
+        data_type: string
+        description: >
+          Item or position number within an order. Values look like SAP item numbers such as
+          000010, 000020 or 000030. There is no clearly equivalent field in the shipment table
+          based on the current dataset.
+        example_values:
+          - "000010"
+          - "000020"
+          - "000030"
+        semantic_type: line_item_identifier
+        nullable: false
+
+      sales_area:
+        business_name: Sales area
+        data_type: string
+        description: >
+          Coded sales area or sales organization assignment. Use for grouping commercial
+          invoice metrics by sales area.
+        example_values:
+          - "556434229380"
+          - "257893614886"
+        semantic_type: organizational_code
+        nullable: false
+
+      order_entry_date:
+        business_name: Order entry date
+        data_type: string
+        description: >
+          Date when the order was entered into the system. Often similar to order_date in the
+          sample, but not guaranteed. Some rows can be null.
+        example_values:
+          - "2025-12-01"
+          - "2025-12-02"
+          - null
+        semantic_type: date
+        nullable: true
+
+      customer:
+        business_name: Customer
+        aliases:
+          - Kunde
+          - Kundennummer
+        data_type: string
+        description: >
+          Anonymized customer identifier in the invoice statistics table. For cross table joins,
+          this semantic layer maps it to shipments.soldtoparty.
+        example_values:
+          - "2454045796"
+          - "6016434581"
+        semantic_type: customer_identifier
+        nullable: false
+        join_role: candidate_join_key
+        maps_to:
+          - table: datenabzug_projekt_tum_shipments
+            column: soldtoparty
+
+      market_segment:
+        business_name: Market segment
+        data_type: string
+        description: >
+          Coded market segment of the customer or order. Use for grouping invoice metrics by
+          market segment. Do not translate codes without a code dictionary.
+        example_values:
+          - "0001"
+          - "0002"
+          - "0026"
+        semantic_type: categorical_code
+        nullable: false
+
+      material_price:
+        business_name: Material price key
+        data_type: string
+        description: >
+          Material or pricing related technical key. Despite the name, this should not be treated
+          as a numeric price. It appears to be a coded material or pricing reference.
+        example_values:
+          - "591494227 200"
+          - "819205655 1"
+        semantic_type: material_or_pricing_identifier
+        nullable: false
+
+      pack_size:
+        business_name: Pack size
+        data_type: string
+        description: >
+          Package size or pack quantity code. It is stored as a string with leading zeros.
+          Interpret as a code unless confirmed otherwise.
+        example_values:
+          - "00200"
+          - "00001"
+        semantic_type: quantity_code
+        nullable: false
+
+      price_key_quantity:
+        business_name: Price key quantity
+        data_type: string
+        description: >
+          Quantity basis used for pricing or statistics. Stored as a string with leading zeros.
+          Do not aggregate as a numeric KPI unless confirmed.
+        example_values:
+          - "000100"
+          - "000001"
+        semantic_type: quantity_code
+        nullable: false
+
+      product:
+        business_name: Product
+        aliases:
+          - Artikel
+          - Produkt
+          - Material
+        data_type: string
+        description: >
+          Anonymized product or article identifier. Use for product based invoice analysis.
+        example_values:
+          - "0214805525"
+          - "W050115000"
+        semantic_type: product_identifier
+        nullable: false
+
+      sales_territory:
+        business_name: Sales territory
+        data_type: string
+        description: >
+          Coded sales territory or regional sales assignment. Use for grouping invoice metrics
+          by sales territory.
+        example_values:
+          - "57866388"
+          - "50498046"
+        semantic_type: organizational_code
+        nullable: false
+
+      invoice_quantity_in_sales_unit_inv:
+        business_name: Invoiced quantity
+        aliases:
+          - fakturierte Menge
+          - Rechnungsmenge
+        data_type: bigint
+        description: >
+          Quantity invoiced in sales units. Use this as the invoice side quantity measure.
+        example_values:
+          - 10000
+          - 1
+          - 2
+        semantic_type: measure
+        nullable: false
+        default_aggregation: sum
+
+      freight_cost_inv:
+        business_name: Invoice freight cost
+        data_type: decimal
+        description: >
+          Freight cost assigned to the invoice line. In the sample values are often zero.
+          Check usefulness before using as a business KPI.
+        example_values:
+          - "0E-16"
+        semantic_type: monetary_measure
+        nullable: false
+        default_aggregation: sum
+
+      turnover_inv:
+        business_name: Invoiced turnover
+        aliases:
+          - Umsatz
+          - Rechnungsumsatz
+          - fakturierter Umsatz
+        data_type: decimal
+        description: >
+          Invoiced turnover amount. This is the main revenue or sales value field in the invoice
+          table. Confirm whether this is net turnover, gross turnover or statistical turnover before
+          using in external reporting.
+        example_values:
+          - "3539.480000000000000000"
+          - "5281.480000000000000000"
+        semantic_type: monetary_measure
+        nullable: false
+        default_aggregation: sum
+        currency_column: statistics_currency
+
+      calendar_yearmonth:
+        business_name: Calendar year month
+        aliases:
+          - Kalendermonat
+          - Monat
+          - Jahrmonat
+        data_type: string
+        description: >
+          Reporting month in YYYYMM format. Use for monthly invoice reporting.
+        example_values:
+          - "202512"
+        semantic_type: reporting_period
+        nullable: false
+
+      calendar_day:
+        business_name: Calendar day
+        aliases:
+          - Kalendertag
+          - Berichtstag
+          - Reporting Datum
+        data_type: timestamp
+        description: >
+          Reporting or statistics date for the invoice record. Prefer this field for revenue
+          reporting over order_date unless the user explicitly asks for order date.
+        example_values:
+          - "2025-12-02T00:00:00.000+00:00"
+          - "2025-12-04T00:00:00.000+00:00"
+        semantic_type: reporting_date
+        nullable: false
+
+      statistics_currency:
+        business_name: Statistics currency
+        data_type: string
+        description: >
+          Currency of monetary invoice statistics. In the sample this is EUR.
+        example_values:
+          - "EUR"
+        semantic_type: currency
+        nullable: false
+
+  datenabzug_projekt_tum_shipments:
+    business_name: Shipments and deliveries
+    technical_name: datenabzug_projekt_tum_shipments
+    fully_qualified_name: workspace.default.datenabzug_projekt_tum_shipments
+    description: >
+      Shipment and delivery operations table. It contains order reference, delivered quantity,
+      customer material, delivery priority, delivery type, ship to party, sold to party, delivery
+      number, freight costs, packing costs, plant, shipping point and shipment date.
+    grain: >
+      Likely one row per shipment, delivery or delivery item. The table can contain multiple rows
+      per order_number and therefore order_number is not a primary key.
+    primary_business_use:
+      - Shipment and delivery analysis
+      - Delivered quantity analysis
+      - Delivery analysis by plant and shipping point
+      - Delivery type analysis
+      - Direct delivery analysis
+      - Freight and packing cost analysis
+    columns:
+      order_number:
+        business_name: Order number
+        aliases:
+          - Auftrag
+          - Auftragsnummer
+        data_type: string
+        description: >
+          Sales order reference. This is the main candidate key for linking shipment data to
+          invoice data. It is not unique in this table.
+        example_values:
+          - "2554805062"
+          - "5450853606"
+        semantic_type: identifier
+        nullable: false
+        join_role: candidate_join_key
+
+      number_delivery_items:
+        business_name: Number of delivery items
+        data_type: bigint
+        description: >
+          Number or index of delivery items. Do not treat this as equivalent to invoices.order_item,
+          because invoice order_item uses values such as 000010 while this field uses values such
+          as 0, 1 or 2.
+        example_values:
+          - 0
+          - 1
+          - 2
+        semantic_type: count_or_item_index
+        nullable: false
+
+      actual_quantity_delivered_in_sales_units:
+        business_name: Actual delivered quantity
+        aliases:
+          - gelieferte Menge
+          - Liefermenge
+        data_type: bigint
+        description: >
+          Quantity actually delivered in sales units. Use this as the shipment side delivered
+          quantity measure.
+        example_values:
+          - 500
+          - 900
+          - 30000
+        semantic_type: measure
+        nullable: false
+        default_aggregation: sum
+
+      customer_material:
+        business_name: Customer material
+        data_type: string
+        description: >
+          Customer or material related identifier in the shipment data. It appears to combine
+          material or packaging information. Do not join it to invoice material fields unless
+          confirmed.
+        example_values:
+          - "393177237 005  500"
+          - "970912809 150"
+        semantic_type: material_or_customer_material_identifier
+        nullable: false
+
+      priority_of_delivery:
+        business_name: Delivery priority
+        data_type: string
+        description: >
+          Coded delivery priority. Use for grouping or filtering shipments by priority.
+        example_values:
+          - "60"
+          - "11"
+          - "03"
+        semantic_type: categorical_code
+        nullable: false
+
+      delivery_type:
+        business_name: Delivery type
+        aliases:
+          - Lieferart
+          - Lieferungstyp
+        data_type: string
+        description: >
+          Delivery document type. Examples include LF, ZNL, ZPPP, ZLB and ZKE. Do not translate
+          codes unless a code dictionary is provided.
+        example_values:
+          - "LF"
+          - "ZNL"
+          - "ZPPP"
+        semantic_type: categorical_code
+        nullable: false
+
+      shiptoparty:
+        business_name: Ship to party
+        data_type: string
+        description: >
+          Anonymized recipient or delivery destination customer identifier.
+        example_values:
+          - "2761312729"
+          - "2571835281"
+        semantic_type: customer_identifier
+        nullable: false
+
+      soldtoparty:
+        business_name: Sold to party
+        data_type: string
+        description: >
+          Anonymized sold to party or commercial customer identifier. This semantic layer maps
+          invoices.customer to this field for invoice shipment joins.
+        example_values:
+          - "2761312729"
+          - "2571835281"
+        semantic_type: customer_identifier
+        nullable: false
+        join_role: candidate_join_key
+        maps_from:
+          - table: datenabzug_projekt_tum_invoices
+            column: customer
+
+      delivery_number:
+        business_name: Delivery number
+        aliases:
+          - Lieferung
+          - Liefernummer
+        data_type: string
+        description: >
+          Delivery or shipment document identifier. Use COUNT DISTINCT delivery_number for
+          number of deliveries, unless table grain is later confirmed differently.
+        example_values:
+          - "8430545216"
+          - "9519813046"
+        semantic_type: delivery_identifier
+        nullable: false
+        default_aggregation: count_distinct
+
+      freight_costs:
+        business_name: Freight costs
+        aliases:
+          - Frachtkosten
+          - Transportkosten
+        data_type: string
+        description: >
+          Freight cost value in the shipment table. Stored as string and contains nulls.
+          Use TRY_CAST before numeric aggregation.
+        example_values:
+          - "0.945"
+          - "1.015"
+          - null
+        semantic_type: monetary_measure
+        nullable: true
+        default_aggregation: sum
+        sql_cast: "TRY_CAST(freight_costs AS DECIMAL(18,3))"
+
+      packing_costs:
+        business_name: Packing costs
+        aliases:
+          - Verpackungskosten
+        data_type: string
+        description: >
+          Packing cost value in the shipment table. Stored as string and contains nulls.
+          Use TRY_CAST before numeric aggregation.
+        example_values:
+          - "1.771"
+          - "1.990"
+          - null
+        semantic_type: monetary_measure
+        nullable: true
+        default_aggregation: sum
+        sql_cast: "TRY_CAST(packing_costs AS DECIMAL(18,3))"
+
+      flag_direct_delivery:
+        business_name: Direct delivery flag
+        aliases:
+          - Direktlieferung
+          - Direktlieferungskennzeichen
+        data_type: string
+        description: >
+          Direct delivery indicator. Value X likely means direct delivery. Empty or null means
+          no direct delivery flag.
+        example_values:
+          - "X"
+          - null
+        semantic_type: boolean_flag
+        nullable: true
+        true_value: "X"
+
+      sorting_system:
+        business_name: Sorting system
+        data_type: string
+        description: >
+          Code for sorting system or logistics sorting process. Use only as coded category.
+        example_values:
+          - "1"
+          - "2"
+          - "4"
+        semantic_type: categorical_code
+        nullable: true
+
+      plant:
+        business_name: Plant
+        aliases:
+          - Werk
+          - Standort
+        data_type: string
+        description: >
+          Delivering plant or logistics site. Use for grouping shipment metrics by plant.
+        example_values:
+          - "9981"
+          - "5401"
+        semantic_type: location_or_plant_code
+        nullable: false
+
+      shipping_point:
+        business_name: Shipping point
+        aliases:
+          - Versandstelle
+          - Versandpunkt
+        data_type: string
+        description: >
+          Shipping point responsible for dispatch. Use for grouping shipment metrics by
+          shipping point.
+        example_values:
+          - "6641"
+          - "6300"
+          - "2095"
+        semantic_type: logistics_location_code
+        nullable: false
+
+      shipment_date:
+        business_name: Shipment date
+        aliases:
+          - Versanddatum
+          - Lieferdatum
+          - Versandtag
+        data_type: timestamp
+        description: >
+          Date of shipment or dispatch. Use for shipment time based reporting.
+        example_values:
+          - "2025-12-08T00:00:00.000+00:00"
+          - "2025-12-04T00:00:00.000+00:00"
+        semantic_type: shipment_date
+        nullable: false
+
+      number_of_packages_per_delivery:
+        business_name: Number of packages per delivery
+        data_type: bigint
+        description: >
+          Number of packages assigned to the delivery. In the provided sample this is often zero.
+          Validate usefulness before using as operational KPI.
+        example_values:
+          - 0
+        semantic_type: measure
+        nullable: false
+        default_aggregation: sum
+
+      number_of_pick_trays_of_shipment:
+        business_name: Number of pick trays of shipment
+        data_type: bigint
+        description: >
+          Number of pick trays used for the shipment. In the provided sample this is often zero.
+          Validate usefulness before using as operational KPI.
+        example_values:
+          - 0
+        semantic_type: measure
+        nullable: false
+        default_aggregation: sum
+
+joins:
+  invoices_to_shipments:
+    name: invoices_to_shipments_by_order_and_sold_to
+    status: candidate_defined_by_project_team
+    left_table: datenabzug_projekt_tum_invoices
+    right_table: datenabzug_projekt_tum_shipments
+    relationship_type: many_to_many_possible
+    join_condition:
+      - left_column: order_number
+        operator: "="
+        right_column: order_number
+      - left_column: customer
+        operator: "="
+        right_column: soldtoparty
+    sql_condition: >
+      i.order_number = s.order_number
+      AND i.customer = s.soldtoparty
+    business_meaning: >
+      Links invoice statistics to shipment records for the same sales order and commercial customer.
+      invoices.customer is treated as corresponding to shipments.soldtoparty.
+    usage_rule: >
+      Use this join when a user explicitly asks for combined commercial and logistics analysis,
+      such as turnover together with deliveries or delivered quantity. For pure revenue questions,
+      use only the invoice table. For pure shipment questions, use only the shipment table.
+    aggregation_warning: >
+      Both tables can contain multiple rows per order. When summing measures from both tables,
+      prefer pre aggregation on the intended reporting grain before joining to avoid row multiplication.
+    confidence: medium_low_until_business_confirmed
+    validation_status: >
+      The join condition is plausible from available columns but should be confirmed by Wuerth.
+      A raw join on order_number alone has already shown severe row multiplication, therefore
+      this two column join is safer than order_number alone but still not guaranteed to be unique.
+
+safe_query_patterns:
+  invoice_only_revenue:
+    description: Use only invoice table for revenue, turnover, invoice quantity and customer/product sales analysis.
+    example_sql: >
+      SELECT
+        calendar_day,
+        SUM(turnover_inv) AS turnover
+      FROM workspace.default.datenabzug_projekt_tum_invoices
+      GROUP BY calendar_day
+      ORDER BY calendar_day;
+
+  shipment_only_delivery:
+    description: Use only shipment table for delivery count, shipment quantity, plant, shipping point and delivery type analysis.
+    example_sql: >
+      SELECT
+        shipment_date,
+        COUNT(DISTINCT delivery_number) AS deliveries,
+        SUM(actual_quantity_delivered_in_sales_units) AS delivered_quantity
+      FROM workspace.default.datenabzug_projekt_tum_shipments
+      GROUP BY shipment_date
+      ORDER BY shipment_date;
+
+  combined_invoice_shipment_preaggregated:
+    description: >
+      For combined revenue and shipment metrics, aggregate each table first at the requested grain,
+      then join the aggregates. This avoids multiplying rows from both raw tables.
+    example_sql: >
+      WITH invoice_agg AS (
+        SELECT
+          order_number,
+          customer,
+          SUM(turnover_inv) AS turnover,
+          SUM(invoice_quantity_in_sales_unit_inv) AS invoiced_quantity
+        FROM workspace.default.datenabzug_projekt_tum_invoices
+        GROUP BY order_number, customer
+      ),
+      shipment_agg AS (
+        SELECT
+          order_number,
+          soldtoparty,
+          COUNT(DISTINCT delivery_number) AS deliveries,
+          SUM(actual_quantity_delivered_in_sales_units) AS delivered_quantity
+        FROM workspace.default.datenabzug_projekt_tum_shipments
+        GROUP BY order_number, soldtoparty
+      )
+      SELECT
+        i.order_number,
+        i.customer,
+        i.turnover,
+        i.invoiced_quantity,
+        s.deliveries,
+        s.delivered_quantity
+      FROM invoice_agg i
+      JOIN shipment_agg s
+        ON i.order_number = s.order_number
+       AND i.customer = s.soldtoparty
+      ORDER BY i.turnover DESC
+      LIMIT 50;
+
+kpis:
+  invoice_kpis:
+    invoiced_turnover:
+      business_name: Invoiced turnover
+      description: Total turnover from invoice statistics.
+      table: datenabzug_projekt_tum_invoices
+      formula_sql: "SUM(turnover_inv)"
+      required_columns:
+        - turnover_inv
+        - statistics_currency
+      default_date_column: calendar_day
+      caveat: Confirm whether turnover_inv is net turnover, gross turnover or statistical turnover.
+
+    invoiced_quantity:
+      business_name: Invoiced quantity
+      description: Total invoiced quantity in sales units.
+      table: datenabzug_projekt_tum_invoices
+      formula_sql: "SUM(invoice_quantity_in_sales_unit_inv)"
+      required_columns:
+        - invoice_quantity_in_sales_unit_inv
+      default_date_column: calendar_day
+
+    order_count_invoice:
+      business_name: Number of invoiced orders
+      description: Number of distinct orders in the invoice table.
+      table: datenabzug_projekt_tum_invoices
+      formula_sql: "COUNT(DISTINCT order_number)"
+      required_columns:
+        - order_number
+
+    order_item_count_invoice:
+      business_name: Number of invoiced order items
+      description: Number of distinct order item combinations in the invoice table.
+      table: datenabzug_projekt_tum_invoices
+      formula_sql: "COUNT(DISTINCT CONCAT_WS('|', order_number, order_item))"
+      required_columns:
+        - order_number
+        - order_item
+
+    turnover_by_customer:
+      business_name: Turnover by customer
+      description: Invoiced turnover grouped by customer.
+      table: datenabzug_projekt_tum_invoices
+      formula_sql: "SUM(turnover_inv) GROUP BY customer"
+      required_columns:
+        - customer
+        - turnover_inv
+
+    turnover_by_product:
+      business_name: Turnover by product
+      description: Invoiced turnover grouped by product.
+      table: datenabzug_projekt_tum_invoices
+      formula_sql: "SUM(turnover_inv) GROUP BY product"
+      required_columns:
+        - product
+        - turnover_inv
+
+    turnover_by_sales_area:
+      business_name: Turnover by sales area
+      description: Invoiced turnover grouped by sales area.
+      table: datenabzug_projekt_tum_invoices
+      formula_sql: "SUM(turnover_inv) GROUP BY sales_area"
+      required_columns:
+        - sales_area
+        - turnover_inv
+
+    turnover_by_market_segment:
+      business_name: Turnover by market segment
+      description: Invoiced turnover grouped by market segment.
+      table: datenabzug_projekt_tum_invoices
+      formula_sql: "SUM(turnover_inv) GROUP BY market_segment"
+      required_columns:
+        - market_segment
+        - turnover_inv
+
+  shipment_kpis:
+    delivery_count:
+      business_name: Number of deliveries
+      description: Number of distinct delivery documents.
+      table: datenabzug_projekt_tum_shipments
+      formula_sql: "COUNT(DISTINCT delivery_number)"
+      required_columns:
+        - delivery_number
+      default_date_column: shipment_date
+
+    shipment_row_count:
+      business_name: Shipment row count
+      description: Number of rows in the shipment table. Use only as row count unless the table grain is confirmed.
+      table: datenabzug_projekt_tum_shipments
+      formula_sql: "COUNT(*)"
+      required_columns:
+        - delivery_number
+
+    delivered_quantity:
+      business_name: Delivered quantity
+      description: Total quantity actually delivered in sales units.
+      table: datenabzug_projekt_tum_shipments
+      formula_sql: "SUM(actual_quantity_delivered_in_sales_units)"
+      required_columns:
+        - actual_quantity_delivered_in_sales_units
+      default_date_column: shipment_date
+
+    order_count_shipment:
+      business_name: Number of orders with shipments
+      description: Number of distinct orders in the shipment table.
+      table: datenabzug_projekt_tum_shipments
+      formula_sql: "COUNT(DISTINCT order_number)"
+      required_columns:
+        - order_number
+
+    freight_costs:
+      business_name: Freight costs
+      description: Total freight costs from shipment table.
+      table: datenabzug_projekt_tum_shipments
+      formula_sql: "SUM(TRY_CAST(freight_costs AS DECIMAL(18,3)))"
+      required_columns:
+        - freight_costs
+      caveat: freight_costs is stored as string and contains nulls.
+
+    packing_costs:
+      business_name: Packing costs
+      description: Total packing costs from shipment table.
+      table: datenabzug_projekt_tum_shipments
+      formula_sql: "SUM(TRY_CAST(packing_costs AS DECIMAL(18,3)))"
+      required_columns:
+        - packing_costs
+      caveat: packing_costs is stored as string and contains nulls.
+
+    direct_delivery_count:
+      business_name: Number of direct deliveries
+      description: Count of distinct delivery documents flagged as direct delivery.
+      table: datenabzug_projekt_tum_shipments
+      formula_sql: "COUNT(DISTINCT CASE WHEN flag_direct_delivery = 'X' THEN delivery_number END)"
+      required_columns:
+        - flag_direct_delivery
+        - delivery_number
+
+    direct_delivery_share:
+      business_name: Direct delivery share
+      description: Delivery based share of distinct deliveries flagged as direct delivery.
+      table: datenabzug_projekt_tum_shipments
+      formula_sql: "COUNT(DISTINCT CASE WHEN flag_direct_delivery = 'X' THEN delivery_number END) * 1.0 / COUNT(DISTINCT delivery_number)"
+      required_columns:
+        - flag_direct_delivery
+        - delivery_number
+
+    deliveries_by_plant:
+      business_name: Deliveries by plant
+      description: Number of distinct deliveries grouped by plant.
+      table: datenabzug_projekt_tum_shipments
+      formula_sql: "COUNT(DISTINCT delivery_number) GROUP BY plant"
+      required_columns:
+        - delivery_number
+        - plant
+
+    deliveries_by_shipping_point:
+      business_name: Deliveries by shipping point
+      description: Number of distinct deliveries grouped by shipping point.
+      table: datenabzug_projekt_tum_shipments
+      formula_sql: "COUNT(DISTINCT delivery_number) GROUP BY shipping_point"
+      required_columns:
+        - delivery_number
+        - shipping_point
+
+    deliveries_by_delivery_type:
+      business_name: Deliveries by delivery type
+      description: Number of distinct deliveries grouped by delivery type.
+      table: datenabzug_projekt_tum_shipments
+      formula_sql: "COUNT(DISTINCT delivery_number) GROUP BY delivery_type"
+      required_columns:
+        - delivery_number
+        - delivery_type
+
+  combined_kpis:
+    turnover_with_delivered_quantity_by_order_customer:
+      business_name: Turnover with delivered quantity by order and customer
+      description: >
+        Combines invoice turnover and delivered quantity by order and customer. Use pre aggregated
+        invoice and shipment subqueries before joining.
+      required_tables:
+        - datenabzug_projekt_tum_invoices
+        - datenabzug_projekt_tum_shipments
+      join_name: invoices_to_shipments_by_order_and_sold_to
+      formula_rule: >
+        Aggregate invoices by order_number and customer. Aggregate shipments by order_number
+        and soldtoparty. Join aggregates on order_number and customer equals soldtoparty.
+      caveat: Do not sum raw joined rows directly.
+
+    turnover_with_delivery_count_by_order_customer:
+      business_name: Turnover with delivery count by order and customer
+      description: >
+        Combines invoice turnover and number of distinct deliveries by order and customer.
+      required_tables:
+        - datenabzug_projekt_tum_invoices
+        - datenabzug_projekt_tum_shipments
+      join_name: invoices_to_shipments_by_order_and_sold_to
+      formula_rule: >
+        Aggregate invoices by order_number and customer. Aggregate shipments by order_number
+        and soldtoparty using COUNT DISTINCT delivery_number. Join aggregates afterwards.
+      caveat: Do not count delivery_number after a raw many to many join.
+
+business_rules:
+  default_date_handling:
+    invoices:
+      default_reporting_date: calendar_day
+      alternative_dates:
+        - order_date
+        - order_entry_date
+      rule: >
+        Use calendar_day for invoice reporting unless the user explicitly asks for order date
+        or order entry date.
+    shipments:
+      default_reporting_date: shipment_date
+      rule: >
+        Use shipment_date for shipment and delivery reporting.
+
+  table_selection:
+    revenue_questions:
+      use_table: datenabzug_projekt_tum_invoices
+      reason: Revenue and turnover are only available in the invoice table.
+    shipment_questions:
+      use_table: datenabzug_projekt_tum_shipments
+      reason: Delivery number, shipment date, plant, shipping point and delivered quantity are only available in the shipment table.
+    combined_questions:
+      use_tables:
+        - datenabzug_projekt_tum_invoices
+        - datenabzug_projekt_tum_shipments
+      rule: >
+        Use the defined join on order_number and customer equals soldtoparty. Prefer pre aggregation
+        before joining when summing measures from both tables.
+
+  aggregation_safety:
+    avoid_raw_many_to_many_joins: true
+    warning: >
+      Do not directly join raw invoice rows and raw shipment rows and then sum measures from both
+      tables. This can inflate values because both tables may contain multiple rows per order and customer.
+    safe_method: >
+      Pre aggregate each table to the requested reporting grain, then join the aggregates.
+
+  unsupported_or_unconfirmed_metrics:
+    on_time_delivery_rate:
+      status: not_supported_yet
+      reason: >
+        No promised delivery date, requested delivery date or SLA target column is available in the current table samples.
+    s24_compliance:
+      status: not_supported_yet
+      reason: >
+        S24 logic requires a confirmed SLA definition and appropriate date columns. Current samples only show order dates,
+        invoice reporting dates and shipment dates.
+    delivery_delay:
+      status: not_supported_yet
+      reason: >
+        Delivery delay requires promised or requested delivery date. Not available in the current sample.
+    gross_profit:
+      status: not_supported_yet
+      reason: >
+        No cost of goods sold or gross profit field is visible in the current sample. turnover_inv alone is not gross profit.
+
+sql_generation_guidance:
+  general:
+    - Use fully qualified table names.
+    - Generate exactly one SELECT statement.
+    - Use explicit joins.
+    - Use aliases i for invoices and s for shipments when joining.
+    - Add LIMIT 50 for broad row level queries.
+    - Do not use information_schema for business questions.
+  invoice_table:
+    - Use datenabzug_projekt_tum_invoices for turnover, invoiced quantity, customer, product, market segment, sales area and sales territory.
+    - Use calendar_day as the default reporting date.
+  shipment_table:
+    - Use datenabzug_projekt_tum_shipments for deliveries, shipment date, delivered quantity, plant, shipping point, delivery type and direct delivery.
+    - Use shipment_date as the default shipment date.
+    - Cast freight_costs and packing_costs before numeric aggregation.
+  joins:
+    - Join invoices to shipments on order_number and customer equals soldtoparty.
+    - Prefer pre aggregation when combining monetary and operational measures.
+    - Never assume order_item equals number_delivery_items.

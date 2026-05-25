@@ -2,17 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-import os
 import re
 from typing import Any
 
 import yaml
 
 from src.agent.logging_utils import get_log_dir
+from src.config.scenarios import get_active_scenario
 
 
-MEMORY_DIR = Path(os.getenv("MEMORY_DIR", "memory"))
-SOLUTION_TEMPLATES_PATH = MEMORY_DIR / "solution_templates.yaml"
+def get_solution_templates_path() -> Path:
+    return get_active_scenario().memory_dir / "solution_templates.yaml"
 
 
 def _log_retrieval_error(message: str) -> None:
@@ -27,22 +27,23 @@ def _log_retrieval_error(message: str) -> None:
 
 
 def _load_solution_templates() -> list[dict[str, Any]]:
-    if not SOLUTION_TEMPLATES_PATH.exists() or SOLUTION_TEMPLATES_PATH.stat().st_size == 0:
+    path = get_solution_templates_path()
+    if not path.exists() or path.stat().st_size == 0:
         return []
 
     try:
-        with SOLUTION_TEMPLATES_PATH.open("r", encoding="utf-8") as file:
+        with path.open("r", encoding="utf-8") as file:
             data = yaml.safe_load(file) or {}
     except yaml.YAMLError as error:
-        _log_retrieval_error(f"Invalid YAML in {SOLUTION_TEMPLATES_PATH}: {error}")
+        _log_retrieval_error(f"Invalid YAML in {path}: {error}")
         return []
     except OSError as error:
-        _log_retrieval_error(f"Could not read {SOLUTION_TEMPLATES_PATH}: {error}")
+        _log_retrieval_error(f"Could not read {path}: {error}")
         return []
 
     templates = data.get("templates", [])
     if not isinstance(templates, list):
-        _log_retrieval_error(f"{SOLUTION_TEMPLATES_PATH} does not contain a templates list.")
+        _log_retrieval_error(f"{path} does not contain a templates list.")
         return []
     return [template for template in templates if isinstance(template, dict)]
 
@@ -80,11 +81,16 @@ def load_approved_solution_templates(
     question: str,
     max_templates: int = 3,
 ) -> list[dict[str, Any]]:
+    scenario = get_active_scenario()
     templates = []
     for template in _load_solution_templates():
         if template.get("status") != "approved":
             continue
         if template.get("is_active") is not True:
+            continue
+        if template.get("scenario") != scenario.scenario_id:
+            continue
+        if template.get("dataset_id") != scenario.dataset_id:
             continue
         score = _template_score(question, template)
         if score > 0:

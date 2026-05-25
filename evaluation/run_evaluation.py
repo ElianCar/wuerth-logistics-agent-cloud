@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "question_ids",
         nargs="*",
-        help="Optional question IDs such as Q01 Q02. Defaults to all Q01-Q22.",
+        help="Optional question IDs such as Q01 Q02 or W01 W02. Defaults to all questions for the active scenario.",
     )
     parser.add_argument(
         "--no-approved-memory",

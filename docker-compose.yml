@@ -2,6 +2,8 @@ services:
   postgres:
     image: postgres:16
     container_name: agentic_ai_postgres
+    profiles:
+      - demo
     environment:
       POSTGRES_DB: agentic_ai
       POSTGRES_USER: postgres
@@ -30,6 +32,8 @@ services:
       - ./memory:/app/memory
       - ./evaluation:/app/evaluation
     environment:
+      DATA_SCENARIO: ${DATA_SCENARIO:-databricks}
+      SQL_BACKEND: ${SQL_BACKEND:-databricks}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: agentic_ai
@@ -39,9 +43,6 @@ services:
       OLLAMA_MODEL: llama3.2:3b
       PRIMARY_MODEL: llama3.2:3b
       FALLBACK_MODEL: llama3.2:3b
-    depends_on:
-      postgres:
-        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

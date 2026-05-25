@@ -9,7 +9,7 @@ import sys
 from dotenv import load_dotenv
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -23,7 +23,8 @@ def run_query(adapter: DatabricksAdapter, sql: str, label: str) -> None:
 
 def main() -> None:
     load_dotenv(PROJECT_ROOT / ".env")
-    os.environ["DB_BACKEND"] = "databricks"
+    os.environ["DATA_SCENARIO"] = "databricks"
+    os.environ["SQL_BACKEND"] = "databricks"
 
     adapter = DatabricksAdapter()
     adapter.test_connection()
@@ -32,16 +33,15 @@ def main() -> None:
     run_query(adapter, "SELECT 1", "SELECT 1")
     run_query(
         adapter,
-        "SELECT * FROM workspace.default.datenabzug_projekt_tum_shipments LIMIT 5",
-        "Shipments sample",
+        "SELECT COUNT(*) FROM workspace.default.datenabzug_projekt_tum_invoices",
+        "Invoices reachability",
     )
     run_query(
         adapter,
-        "SELECT * FROM workspace.default.datenabzug_projekt_tum_invoices LIMIT 5",
-        "Invoices sample",
+        "SELECT COUNT(*) FROM workspace.default.datenabzug_projekt_tum_shipments",
+        "Shipments reachability",
     )
 
 
 if __name__ == "__main__":
     main()
-

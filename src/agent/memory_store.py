@@ -17,14 +17,10 @@ from src.agent.id_utils import (
     generate_template_id,
 )
 from src.agent.logging_utils import append_csv_row, get_log_dir, read_csv_rows
+from src.config.scenarios import get_active_scenario
 
 
 ACTOR = "manual_review"
-MEMORY_DIR = Path(os.getenv("MEMORY_DIR", "memory"))
-SOLUTION_TEMPLATES_PATH = MEMORY_DIR / "solution_templates.yaml"
-ERROR_MEMORY_PATH = MEMORY_DIR / "error_memory.yaml"
-MEMORY_CANDIDATES_PATH = MEMORY_DIR / "memory_candidates.yaml"
-MEMORY_AUDIT_LOG_PATH = MEMORY_DIR / "memory_audit_log.csv"
 
 DEFAULT_CANDIDATES = {"candidates": []}
 DEFAULT_TEMPLATES = {"templates": []}
@@ -47,6 +43,26 @@ class MemoryStoreError(RuntimeError):
     pass
 
 
+def memory_dir() -> Path:
+    return get_active_scenario().memory_dir
+
+
+def solution_templates_path() -> Path:
+    return memory_dir() / "solution_templates.yaml"
+
+
+def error_memory_path() -> Path:
+    return memory_dir() / "error_memory.yaml"
+
+
+def memory_candidates_path() -> Path:
+    return memory_dir() / "memory_candidates.yaml"
+
+
+def memory_audit_log_path() -> Path:
+    return memory_dir() / "memory_audit_log.csv"
+
+
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -56,12 +72,14 @@ def backup_suffix() -> str:
 
 
 def initialize_memory_files() -> None:
-    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
-    _create_yaml_if_missing(SOLUTION_TEMPLATES_PATH, DEFAULT_TEMPLATES)
-    _create_yaml_if_missing(ERROR_MEMORY_PATH, DEFAULT_ERRORS)
-    _create_yaml_if_missing(MEMORY_CANDIDATES_PATH, DEFAULT_CANDIDATES)
-    if not MEMORY_AUDIT_LOG_PATH.exists() or MEMORY_AUDIT_LOG_PATH.stat().st_size == 0:
-        MEMORY_AUDIT_LOG_PATH.write_text(",".join(AUDIT_COLUMNS) + "\n", encoding="utf-8")
+    active_memory_dir = memory_dir()
+    active_memory_dir.mkdir(parents=True, exist_ok=True)
+    _create_yaml_if_missing(solution_templates_path(), DEFAULT_TEMPLATES)
+    _create_yaml_if_missing(error_memory_path(), DEFAULT_ERRORS)
+    _create_yaml_if_missing(memory_candidates_path(), DEFAULT_CANDIDATES)
+    audit_path = memory_audit_log_path()
+    if not audit_path.exists() or audit_path.stat().st_size == 0:
+        audit_path.write_text(",".join(AUDIT_COLUMNS) + "\n", encoding="utf-8")
 
 
 def _create_yaml_if_missing(path: Path, default_data: dict[str, Any]) -> None:
@@ -125,21 +143,23 @@ def _write_templates_and_candidates(
     candidates: list[dict[str, Any]],
 ) -> None:
     initialize_memory_files()
-    templates_backup = _backup_yaml(SOLUTION_TEMPLATES_PATH)
-    candidates_backup = _backup_yaml(MEMORY_CANDIDATES_PATH)
-    templates_temp = _write_yaml_temp(SOLUTION_TEMPLATES_PATH, {"templates": templates})
-    candidates_temp = _write_yaml_temp(MEMORY_CANDIDATES_PATH, {"candidates": candidates})
+    templates_path = solution_templates_path()
+    candidates_path = memory_candidates_path()
+    templates_backup = _backup_yaml(templates_path)
+    candidates_backup = _backup_yaml(candidates_path)
+    templates_temp = _write_yaml_temp(templates_path, {"templates": templates})
+    candidates_temp = _write_yaml_temp(candidates_path, {"candidates": candidates})
 
     try:
-        os.replace(templates_temp, SOLUTION_TEMPLATES_PATH)
+        os.replace(templates_temp, templates_path)
         try:
-            os.replace(candidates_temp, MEMORY_CANDIDATES_PATH)
+            os.replace(candidates_temp, candidates_path)
         except Exception:
-            _restore_backup(SOLUTION_TEMPLATES_PATH, templates_backup)
+            _restore_backup(templates_path, templates_backup)
             raise
     except Exception:
-        _restore_backup(SOLUTION_TEMPLATES_PATH, templates_backup)
-        _restore_backup(MEMORY_CANDIDATES_PATH, candidates_backup)
+        _restore_backup(templates_path, templates_backup)
+        _restore_backup(candidates_path, candidates_backup)
         raise
     finally:
         for temp_path in (templates_temp, candidates_temp):
@@ -151,7 +171,7 @@ def _write_templates_and_candidates(
 
 
 def load_candidates_data() -> dict[str, Any]:
-    data = _load_yaml(MEMORY_CANDIDATES_PATH, DEFAULT_CANDIDATES)
+    data = _load_yaml(memory_candidates_path(), DEFAULT_CANDIDATES)
     if not isinstance(data.get("candidates", []), list):
         raise MemoryStoreError("memory_candidates.yaml must contain a candidates list.")
     return data
@@ -163,11 +183,11 @@ def load_candidates() -> list[dict[str, Any]]:
 
 
 def save_candidates(candidates: list[dict[str, Any]]) -> None:
-    _write_yaml(MEMORY_CANDIDATES_PATH, {"candidates": candidates})
+    _write_yaml(memory_candidates_path(), {"candidates": candidates})
 
 
 def load_templates_data() -> dict[str, Any]:
-    data = _load_yaml(SOLUTION_TEMPLATES_PATH, DEFAULT_TEMPLATES)
+    data = _load_yaml(solution_templates_path(), DEFAULT_TEMPLATES)
     if not isinstance(data.get("templates", []), list):
         raise MemoryStoreError("solution_templates.yaml must contain a templates list.")
     return data
@@ -179,7 +199,7 @@ def load_templates() -> list[dict[str, Any]]:
 
 
 def save_templates(templates: list[dict[str, Any]]) -> None:
-    _write_yaml(SOLUTION_TEMPLATES_PATH, {"templates": templates})
+    _write_yaml(solution_templates_path(), {"templates": templates})
 
 
 def append_audit(
@@ -194,7 +214,7 @@ def append_audit(
 ) -> None:
     initialize_memory_files()
     append_csv_row(
-        MEMORY_AUDIT_LOG_PATH,
+        memory_audit_log_path(),
         AUDIT_COLUMNS,
         {
             "audit_id": generate_audit_id(),
@@ -286,6 +306,7 @@ def _find_template_index(templates: list[dict[str, Any]], template_id: str) -> i
 
 def create_candidate_from_run(record: dict[str, Any]) -> tuple[dict[str, Any], bool, str]:
     initialize_memory_files()
+    scenario = get_active_scenario()
     candidates = load_candidates()
     run_id = str(record.get("run_id", "")).strip()
     if not run_id:
@@ -309,6 +330,8 @@ def create_candidate_from_run(record: dict[str, Any]) -> tuple[dict[str, Any], b
     timestamp = now_iso()
 
     proposed_template = {
+        "scenario": scenario.scenario_id,
+        "dataset_id": scenario.dataset_id,
         "intent": build_intent(question),
         "trigger_phrases": build_trigger_phrases(question),
         "required_tables": source_tables,
@@ -320,6 +343,8 @@ def create_candidate_from_run(record: dict[str, Any]) -> tuple[dict[str, Any], b
 
     candidate = {
         "candidate_id": generate_candidate_id(),
+        "scenario": scenario.scenario_id,
+        "dataset_id": scenario.dataset_id,
         "run_id": run_id,
         "feedback_id": feedback.get("feedback_id") or None,
         "status": "pending_review",
@@ -406,6 +431,7 @@ def approve_candidate(
     candidate_id: str,
     proposed_template: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    scenario = get_active_scenario()
     candidates = load_candidates()
     candidate_index = _find_candidate_index(candidates, candidate_id)
     candidate = candidates[candidate_index]
@@ -435,6 +461,8 @@ def approve_candidate(
     template = {
         "template_id": template_id,
         "version": 1,
+        "scenario": scenario.scenario_id,
+        "dataset_id": scenario.dataset_id,
         "status": "approved",
         "is_active": True,
         "created_from_candidate_id": candidate_id,

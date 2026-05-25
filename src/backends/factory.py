@@ -18,7 +18,7 @@ def get_backend() -> SQLBackend:
         return PostgresAdapter()
     if settings.backend_name == DATABRICKS_BACKEND and settings.databricks is not None:
         return DatabricksAdapter(settings.databricks)
-    raise BackendConfigError(f"Unsupported DB_BACKEND '{settings.backend_name}'.")
+    raise BackendConfigError(f"Unsupported data scenario backend '{settings.backend_name}'.")
 
 
 def get_backend_metadata() -> dict[str, object]:
@@ -27,5 +27,4 @@ def get_backend_metadata() -> dict[str, object]:
         return PostgresAdapter().get_safe_metadata()
     if backend_name == DATABRICKS_BACKEND:
         return DatabricksAdapter().get_safe_metadata()
-    raise BackendConfigError(f"Unsupported DB_BACKEND '{backend_name}'.")
-
+    raise BackendConfigError(f"Unsupported data scenario backend '{backend_name}'.")
