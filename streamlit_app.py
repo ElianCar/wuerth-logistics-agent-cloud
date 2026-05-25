@@ -6,7 +6,6 @@ import pandas as pd
 import streamlit as st
 import yaml
 
-from app.schema import TPC_H_TABLES
 from src.agent.db import get_active_backend_metadata
 from src.agent.golden_test_runner import load_golden_questions, run_golden_tests
 from src.agent.langgraph_sql_agent import SQLAgentConfig, run_sql_agent
@@ -27,6 +26,13 @@ from src.agent.memory_store import (
     update_candidate_proposed_template,
 )
 from src.agent.memory_validation import validate_proposed_template
+from src.config.scenarios import (
+    SCENARIOS,
+    get_active_scenario,
+    get_active_scenario_id,
+    get_scenario_options,
+    set_active_scenario_id,
+)
 from src.llm.model_adapter import (
     DEFAULT_GEMINI_BACKUP_MODEL,
     DEFAULT_GEMINI_PRIMARY_MODEL,
@@ -84,6 +90,8 @@ def maybe_show_chart(df: pd.DataFrame) -> None:
 
 
 def initialize_state() -> None:
+    if "data_scenario" in st.session_state:
+        set_active_scenario_id(st.session_state.data_scenario)
     if "history" not in st.session_state:
         st.session_state.history = []
     st.session_state.setdefault("last_golden_run_id", "")
@@ -174,20 +182,44 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
         )
 
         st.header("Konfiguration")
+        scenario_ids = [scenario.scenario_id for scenario in get_scenario_options()]
+        default_scenario_id = st.session_state.get("data_scenario", get_active_scenario_id())
+        default_index = scenario_ids.index(default_scenario_id) if default_scenario_id in scenario_ids else 0
+        selected_scenario_id = st.selectbox(
+            "Data scenario",
+            scenario_ids,
+            index=default_index,
+            key="data_scenario_selector",
+            format_func=lambda scenario_id: SCENARIOS[scenario_id].label,
+        )
+        previous_scenario_id = st.session_state.get("data_scenario")
+        st.session_state.data_scenario = selected_scenario_id
+        if previous_scenario_id and previous_scenario_id != selected_scenario_id:
+            st.session_state.history = []
+            st.session_state.last_golden_run_id = ""
+            st.session_state.last_selected_question_ids = []
+            st.session_state.last_failed_question_ids = []
+            st.session_state.last_errored_question_ids = []
+            st.session_state.last_golden_result_summary = {}
+            st.session_state.last_golden_results = []
+        set_active_scenario_id(selected_scenario_id)
+        initialize_memory_files()
+        scenario = get_active_scenario()
+
         config = build_streamlit_llm_config()
         try:
             backend_metadata = get_active_backend_metadata()
         except Exception as error:
             backend_metadata = {
-                "backend_name": "unbekannt",
-                "sql_dialect": "unbekannt",
+                **scenario.safe_metadata,
                 "auth_type": "",
-                "allowed_tables": list(TPC_H_TABLES),
             }
             st.error(f"Datenbank-Backend ist nicht korrekt konfiguriert: {error}")
 
-        st.write(f"Ausgewähltes Backend: `{backend_metadata.get('backend_name', '')}`")
+        st.write(f"Active data scenario: `{backend_metadata.get('scenario_label', scenario.label)}`")
+        st.write(f"Backend: `{backend_metadata.get('backend_display_name', backend_metadata.get('backend_name', ''))}`")
         st.write(f"SQL-Dialekt: `{backend_metadata.get('sql_dialect', '')}`")
+        st.write(f"Semantic layer: `{backend_metadata.get('semantic_layer', scenario.semantic_layer_filename)}`")
         if backend_metadata.get("auth_type"):
             st.write(f"Databricks-Auth-Modus: `{backend_metadata.get('auth_type', '')}`")
         st.write(f"LLM-Anbieter: `{config.llm_provider}`")
@@ -204,7 +236,7 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
             st.write(f"Ollama-Host: `{config.ollama_host}`")
 
         st.header("Erlaubte Tabellen")
-        allowed_tables = backend_metadata.get("allowed_tables") or list(TPC_H_TABLES)
+        allowed_tables = backend_metadata.get("allowed_tables") or list(scenario.allowed_tables)
         for table in allowed_tables:
             st.write(f"- `{table}`")
 
@@ -737,7 +769,7 @@ def run_golden_question_ids(
         st.warning("Bitte zuerst mindestens eine Golden-Testfrage auswählen.")
         return
 
-    with st.spinner("Golden Tests werden gegen PostgreSQL ausgeführt..."):
+    with st.spinner(f"Golden Tests werden gegen {get_active_scenario().label} ausgeführt..."):
         batch_run_id, results, summary = run_golden_tests(
             question_ids,
             use_approved_memory=use_approved_memory,
@@ -931,7 +963,11 @@ def render_golden_results(results: list[dict]) -> None:
 
 def render_golden_test_mode_view(config: SQLAgentConfig) -> None:
     st.title("Golden-Testmodus")
-    st.caption("Reiner Evaluationsmodus für Q01 bis Q22. Ergebnisse werden nach evaluation/golden_results.jsonl geschrieben.")
+    scenario = get_active_scenario()
+    st.caption(
+        f"Reiner Evaluationsmodus für {scenario.label}. Ergebnisse werden unter "
+        f"{scenario.evaluation_dir.name}/golden_results.jsonl geschrieben."
+    )
     render_flash()
 
     try:
@@ -1099,13 +1135,16 @@ def main() -> None:
         return
 
     st.title("Agentic AI Datenassistent")
-    st.caption("LangGraph-SQL-Workflow über lokalen TPC-H-Daten mit konfigurierbaren Primary- und Fallback-Modellen.")
+    scenario = get_active_scenario()
+    st.caption(
+        f"LangGraph-SQL-Workflow für {scenario.label} mit konfigurierbaren Primary- und Fallback-Modellen."
+    )
     render_flash()
 
     for index, record in enumerate(st.session_state.history):
         render_record(record, index, config)
 
-    question = st.chat_input("Stelle eine Frage zu den TPC-H-Daten")
+    question = st.chat_input(f"Stelle eine Frage zu {scenario.label}")
     if question:
         with st.spinner("LangGraph-SQL-Workflow wird ausgeführt..."):
             record = run_sql_agent(question, config=config)

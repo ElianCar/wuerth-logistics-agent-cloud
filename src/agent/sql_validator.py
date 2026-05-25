@@ -15,16 +15,20 @@ ALLOWED_TABLES = {
 
 DESTRUCTIVE_KEYWORDS = {
     "ALTER",
+    "CALL",
     "COPY",
     "CREATE",
     "DELETE",
     "DROP",
+    "EXEC",
+    "EXECUTE",
     "GRANT",
     "INSERT",
     "MERGE",
     "REVOKE",
     "TRUNCATE",
     "UPDATE",
+    "VACUUM",
 }
 
 SQL_KEYWORDS = {
@@ -70,6 +74,10 @@ SQL_KEYWORDS = {
     "when",
     "where",
     "with",
+    "try_cast",
+    "to_date",
+    "concat_ws",
+    "decimal",
 }
 
 
@@ -278,6 +286,38 @@ def extract_used_tables(sql: str, schema_context: str = "") -> list[str]:
     return used_tables
 
 
+def has_limit_clause(sql: str) -> bool:
+    return bool(re.search(r"\blimit\s+\d+\b", sql, re.IGNORECASE))
+
+
+def has_aggregation_or_grouping(sql: str) -> bool:
+    if re.search(r"\bgroup\s+by\b", sql, re.IGNORECASE):
+        return True
+    return bool(
+        re.search(
+            r"\b(count|sum|avg|min|max)\s*\(",
+            sql,
+            re.IGNORECASE,
+        )
+    )
+
+
+def validate_limit_safety(sql: str) -> str | None:
+    if has_aggregation_or_grouping(sql) or has_limit_clause(sql):
+        return None
+    return "Breite Zeilenabfragen ohne Aggregation benötigen LIMIT 50."
+
+
+def is_literal_limitation_select(sql: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"\s*select\s+'[^']{1,500}'\s+as\s+limitation\s*",
+            sql,
+            re.IGNORECASE | re.DOTALL,
+        )
+    )
+
+
 def validate_known_columns(
     sql: str,
     schema_columns: dict[str, set[str]],
@@ -351,8 +391,20 @@ def validate_generated_sql(raw_sql: str, schema_context: str = "") -> SQLValidat
             [],
         )
 
+    if not referenced_table_refs and is_literal_limitation_select(cleaned_sql):
+        return SQLValidationResult(cleaned_sql, True, "", [])
+
     if not referenced_table_refs:
         return SQLValidationResult(cleaned_sql, False, "Keine Tabellenreferenz im SQL gefunden.", [])
+
+    limit_error = validate_limit_safety(cleaned_sql)
+    if limit_error:
+        return SQLValidationResult(
+            cleaned_sql,
+            False,
+            limit_error,
+            extract_used_tables(cleaned_sql, schema_context),
+        )
 
     schema_columns = parse_schema_columns(schema_context)
     column_error = validate_known_columns(cleaned_sql, schema_columns, allowed_tables)

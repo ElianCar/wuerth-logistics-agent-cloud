@@ -4,7 +4,7 @@ from typing import Any
 
 from app.db import get_connection
 from app.schema import TPC_H_TABLES, get_schema_text
-from app.semantic_layer import get_semantic_layer_text
+from src.config.scenarios import SCENARIOS, load_semantic_layer_text
 
 
 class PostgresAdapter:
@@ -15,9 +15,12 @@ class PostgresAdapter:
         return "PostgreSQL"
 
     def load_schema_context(self) -> str:
+        scenario = SCENARIOS["demo"]
         schema_text = get_schema_text()
-        semantic_layer_text = get_semantic_layer_text()
+        semantic_layer_text = load_semantic_layer_text(scenario)
         return (
+            f"Scenario: {scenario.scenario_id}\n"
+            f"Dataset ID: {scenario.dataset_id}\n"
             "Backend: postgres\n"
             "SQL dialect: PostgreSQL\n\n"
             f"{schema_text}\n\n"
@@ -55,8 +58,12 @@ class PostgresAdapter:
     def get_safe_metadata(self) -> dict[str, object]:
         return {
             "backend_name": self.get_backend_name(),
+            "backend_display_name": "PostgreSQL demo database",
+            "scenario_id": "demo",
+            "scenario_label": "Demo data",
             "sql_dialect": self.get_sql_dialect(),
             "auth_type": "",
+            "semantic_layer": SCENARIOS["demo"].semantic_layer_filename,
+            "dataset_id": SCENARIOS["demo"].dataset_id,
             "allowed_tables": list(TPC_H_TABLES),
         }
-

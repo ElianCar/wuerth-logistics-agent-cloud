@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from src.backends.config import DatabricksBackendConfig, load_databricks_config
+from src.config.scenarios import get_active_scenario, load_semantic_layer_text
 
 
 ConnectFunc = Callable[..., Any]
@@ -29,7 +30,7 @@ class DatabricksAdapter:
         except ImportError as error:
             raise RuntimeError(
                 "Databricks SQL connector is not installed. "
-                "Install project requirements before using DB_BACKEND=databricks."
+                "Install project requirements before using DATA_SCENARIO=databricks."
             ) from error
         return sql.connect
 
@@ -122,7 +123,11 @@ class DatabricksAdapter:
                 + "."
             )
 
+        scenario = get_active_scenario()
+        semantic_layer_text = load_semantic_layer_text(scenario)
         lines = [
+            f"Scenario: {scenario.scenario_id}",
+            f"Dataset ID: {scenario.dataset_id}",
             "Backend: databricks",
             "SQL dialect: Databricks SQL",
             "",
@@ -133,7 +138,7 @@ class DatabricksAdapter:
             for column_name, data_type in rows_by_table[table_name]:
                 lines.append(f"  - {column_name}: {data_type}")
 
-        lines.extend(["", "Semantic layer:", "(none configured for Databricks backend)"])
+        lines.extend(["", "Semantic layer:", semantic_layer_text])
         return "\n".join(lines)
 
     def execute_sql(self, sql: str, user_question: str = "") -> dict[str, Any]:
@@ -160,8 +165,13 @@ class DatabricksAdapter:
     def get_safe_metadata(self) -> dict[str, object]:
         return {
             "backend_name": self.get_backend_name(),
+            "backend_display_name": "Databricks SQL Warehouse",
+            "scenario_id": "databricks",
+            "scenario_label": "Würth Databricks",
             "sql_dialect": self.get_sql_dialect(),
             "auth_type": self.config.auth_type,
+            "semantic_layer": get_active_scenario().semantic_layer_filename,
+            "dataset_id": get_active_scenario().dataset_id,
             "allowed_tables": list(self.config.safe_allowed_tables),
         }
 

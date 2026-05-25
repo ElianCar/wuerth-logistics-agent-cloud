@@ -1,158 +1,94 @@
-# Agentic AI Chat with your Data Prototype
+# Agentic AI SQL Agent Prototype
 
-This project starts with a local TPC-H database and a simple CLI backend that asks an LLM to generate PostgreSQL SQL. Gemini is the default LLM provider, with Ollama still available for local runs.
+This repository contains the Würth Agentic AI / LangGraph SQL Agent prototype. The app supports two isolated data scenarios:
 
-DuckDB is used to generate the local TPC-H sample data. PostgreSQL is used as the target database for the first backend prototype.
+- **Würth Databricks**: default and primary scenario, backed by Databricks SQL Warehouse.
+- **Demo data**: optional TPC-H demo scenario, backed by the old PostgreSQL demo database.
 
-## First CLI prototype
+The Streamlit UI, LangGraph flow, feedback, logging, repair, fallback, and memory review flows are shared, but scenario-owned data files are separated so demo TPC-H context does not influence Würth SQL generation.
 
-This assumes the local PostgreSQL database `agentic_ai` already exists and contains the TPC-H tables. The database setup commands are documented in `database/README.md`.
+## Scenarios
 
-Install Python dependencies:
-
-```bash
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-Replace the placeholder `GEMINI_API_KEY` value in `.env` with a real Gemini API key before making Gemini calls.
-
-Run the prototype:
-
-```bash
-python main.py
-```
-
-Optional local configuration:
-
-```bash
-cp .env.example .env
-```
-
-Example questions:
+The active scenario is selected in the Streamlit sidebar under **Data scenario**. Initial selection comes from:
 
 ```text
-What is the total revenue?
-What are the top 10 customers by revenue?
-What is the revenue by nation?
-How many orders are there by order status?
-What is the monthly order volume?
+DATA_SCENARIO=databricks
 ```
 
-The CLI LLM path only generates SQL. The backend validates that the SQL is a single `SELECT` statement against the allowed TPC-H tables. PostgreSQL then validates the query with `EXPLAIN`. Only after validation and `EXPLAIN` pass is the SQL executed.
-
-## Run Streamlit frontend
-
-This reuses the same backend modules as the CLI. PostgreSQL should already be running with the TPC-H data loaded. Gemini is used by default.
-
-Install dependencies:
-
-```bash
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-Replace the placeholder `GEMINI_API_KEY` value in `.env` with a real Gemini API key.
-
-Run the Streamlit app:
-
-```bash
-streamlit run streamlit_app.py
-```
-
-Example questions:
+Allowed values:
 
 ```text
-What is the total revenue?
-What are the top 10 customers by revenue?
-What is the revenue by nation?
-How many orders are there by order status?
-What is the monthly order volume?
+databricks
+demo
 ```
 
-The Streamlit frontend shows the user question, deterministic answer summary, result table, generated SQL, used tables, selected model, attempt count, fallback status, graph trace steps, and feedback buttons. Feedback is stored locally in `logs/feedback.csv`.
+If `DATA_SCENARIO` is unset, the app defaults to `databricks`.
 
-## Run LangGraph SQL agent workflow
+## Würth Databricks Scenario
 
-The Streamlit frontend runs a LangGraph SQL workflow with explicit nodes for loading schema context, SQL generation, validation, execution, SQL repair, fallback model switching, and final answer generation.
-
-The app first uses Gemini Flash Lite Preview:
+The Würth scenario exposes only these tables:
 
 ```text
-LLM_PROVIDER=gemini
-GEMINI_PRIMARY_MODEL=gemini-3.1-flash-lite-preview
+workspace.default.datenabzug_projekt_tum_invoices
+workspace.default.datenabzug_projekt_tum_shipments
 ```
 
-If the primary API call fails, returns invalid SQL, fails SQL validation, or fails PostgreSQL execution, the graph tries the primary model up to two times by default. If a different fallback model is configured, it then retries with Gemini Flash:
+The active semantic layer is:
 
 ```text
-GEMINI_BACKUP_MODEL=gemini-2.5-flash
+semantic_layer/databricks/wuerth_semantic_layer.yaml
 ```
 
-To use local Ollama instead, enable `Lokales Ollama verwenden` in the Streamlit sidebar. The Streamlit app keeps the model choices fixed: Gemini uses the configured Gemini primary/fallback models, and Ollama uses `llama3.2:3b` for both primary and fallback.
-
-Run the app:
-
-```bash
-streamlit run streamlit_app.py
-```
-
-Useful local environment variables:
+Required Databricks environment variables:
 
 ```text
-GEMINI_API_KEY=<your-gemini-api-key>
-LLM_PROVIDER=gemini
-GEMINI_PRIMARY_MODEL=gemini-3.1-flash-lite-preview
-GEMINI_BACKUP_MODEL=gemini-2.5-flash
-MAX_PRIMARY_ATTEMPTS=2
-OLLAMA_HOST=http://localhost:11434
-PRIMARY_MODEL=llama3.2:3b
-FALLBACK_MODEL=llama3.2:3b
-LLM_TEMPERATURE=0
-LLM_MAX_OUTPUT_TOKENS=1024
+DATA_SCENARIO=databricks
+SQL_BACKEND=databricks
+DATABRICKS_AUTH_TYPE=oauth
+DATABRICKS_SERVER_HOSTNAME=<your-databricks-server-hostname>
+DATABRICKS_HTTP_PATH=<your-sql-warehouse-http-path>
+DATABRICKS_CATALOG=workspace
+DATABRICKS_SCHEMA=default
+DATABRICKS_ALLOWED_TABLES=workspace.default.datenabzug_projekt_tum_invoices,workspace.default.datenabzug_projekt_tum_shipments
 ```
 
-Every SQL generation attempt is logged to `logs/query_log.csv`. Streamlit feedback is logged to `logs/feedback.csv`.
-
-The feedback controls support correction-driven reruns:
-
-- `Good answer` and `Bad answer` save feedback only.
-- `Retry with comment` sends the original question, previous SQL, previous answer, and your correction comment back through the LangGraph workflow.
-- `Use fallback model` reruns the question with `FALLBACK_MODEL` immediately, optionally using your correction comment.
-
-## Evaluation and logging
-
-Run evaluation:
-
-```bash
-python evaluation/run_evaluation.py
-```
-
-View query logs:
-
-```bash
-cat logs/query_log.csv
-```
-
-View feedback logs:
-
-```bash
-cat logs/feedback.csv
-```
-
-`evaluation/golden_questions.yaml` contains predefined benchmark questions for the TPC-H dataset. `evaluation/run_evaluation.py` tests whether the prototype generates reasonable SQL by checking expected tables, expected SQL keywords, SQL validation, PostgreSQL `EXPLAIN`, and query execution.
-
-`logs/query_log.csv` stores every processed question from Streamlit. `logs/feedback.csv` stores user feedback from the thumbs up/down buttons. These logs support traceability and manual validation while the prototype is still simple and local.
-
-## Database backends
-
-The SQL agent now selects its database backend through `DB_BACKEND`.
+In this organization, personal access tokens are disabled. Use OAuth user-to-machine locally:
 
 ```text
-DB_BACKEND=postgres
+DATABRICKS_AUTH_TYPE=oauth
 ```
 
-PostgreSQL demo mode is the default when `DB_BACKEND` is unset. It preserves the existing local TPC-H demo behavior and uses the existing PostgreSQL settings:
+OAuth machine-to-machine with a service principal is the recommended direction for AWS or Würth-hosted deployment:
+
+```text
+DATABRICKS_AUTH_TYPE=oauth_m2m
+DATABRICKS_HOST=<your-databricks-workspace-url>
+DATABRICKS_CLIENT_ID=<service-principal-client-id>
+DATABRICKS_CLIENT_SECRET=<service-principal-client-secret>
+```
+
+Credentials, hostnames, HTTP paths, tokens, client IDs, and client secrets must never be committed or shown in logs/UI.
+
+## Unsupported Würth KPIs
+
+The current Würth semantic layer explicitly treats these KPIs as unsupported unless additional columns and confirmed business rules are provided:
+
+- S24 compliance
+- on-time delivery rate
+- delivery delay
+- gross profit / Rohertrag
+
+The SQL prompt also warns against raw invoice-to-shipment joins that can multiply measures. Combined invoice and shipment measures must be pre-aggregated first, then joined on `order_number` and `customer = soldtoparty`.
+
+## Demo Data Scenario
+
+The old TPC-H demo is available only by selecting **Demo data** in the sidebar or setting:
+
+```text
+DATA_SCENARIO=demo
+```
+
+Demo PostgreSQL variables:
 
 ```text
 POSTGRES_HOST=localhost
@@ -162,153 +98,133 @@ POSTGRES_USER=postgres
 POSTGRES_PASSWORD=
 ```
 
-The backend structure is:
+The demo semantic layer and memory files live under:
 
 ```text
-src/backends/base.py
-src/backends/config.py
-src/backends/factory.py
-src/backends/demo/postgres_adapter.py
-src/backends/databricks/databricks_adapter.py
+semantic_layer/demo/
+memory/demo/
+evaluation/demo/
 ```
 
-`src/backends/demo` wraps the existing PostgreSQL demo logic. `src/backends/databricks` contains the optional Databricks SQL Warehouse integration. The LangGraph workflow still uses the same load-schema, generate-SQL, validate, execute, repair, fallback, and final-answer nodes.
+## Folder Layout
 
-## Databricks mode
-
-Databricks mode is optional and selected with:
+Scenario-specific files are organized under scenario folders:
 
 ```text
-DB_BACKEND=databricks
+semantic_layer/
+  databricks/wuerth_semantic_layer.yaml
+  demo/tpch_semantic_layer.yaml
+
+memory/
+  databricks/
+  demo/
+
+evaluation/
+  databricks/
+  demo/
+
+scripts/
+  databricks/test_databricks_connection.py
+
+src/backends/
+  databricks/
+  demo/
 ```
 
-Required safe configuration names are listed in `.env.example`. Do not commit real credentials or workspace details. The app must never expose tokens, client secrets, server hostnames, HTTP paths, OAuth values, or full connection strings in logs or UI.
+## Run Locally
 
-For local testing in this organization, use OAuth user-to-machine because personal access tokens are disabled:
-
-```text
-DATABRICKS_AUTH_TYPE=oauth_u2m
-DATABRICKS_SERVER_HOSTNAME=<your-databricks-server-hostname>
-DATABRICKS_HTTP_PATH=<your-sql-warehouse-http-path>
-DATABRICKS_CATALOG=workspace
-DATABRICKS_SCHEMA=default
-DATABRICKS_ALLOWED_TABLES=workspace.default.datenabzug_projekt_tum_shipments,workspace.default.datenabzug_projekt_tum_invoices
-```
-
-PAT mode is available only as an isolated optional path:
-
-```text
-DATABRICKS_AUTH_TYPE=pat
-DATABRICKS_ACCESS_TOKEN=<optional-token>
-```
-
-For AWS or Wuerth-hosted deployment, OAuth machine-to-machine with a service principal is the preferred direction:
-
-```text
-DATABRICKS_AUTH_TYPE=oauth_m2m
-DATABRICKS_HOST=<your-databricks-workspace-url>
-DATABRICKS_CLIENT_ID=<service-principal-client-id>
-DATABRICKS_CLIENT_SECRET=<service-principal-client-secret>
-```
-
-Only the configured allowed tables are exposed to the agent schema context. The intended allowed tables are:
-
-```text
-workspace.default.datenabzug_projekt_tum_shipments
-workspace.default.datenabzug_projekt_tum_invoices
-```
-
-### Databricks TLS certificates
-
-Local Databricks OAuth and SQL Warehouse connections require the Python environment to trust the TLS certificate chain presented by the network. In corporate environments with TLS inspection, this usually means installing the company proxy/root CA certificate into the local trust store or pointing Python at a CA bundle that includes it.
-
-If the smoke test fails with `SSLCertVerificationError` or `self-signed certificate in certificate chain`, create or use a PEM bundle that contains:
-
-```text
-certifi root certificates
-corporate TLS inspection/root CA certificate
-any endpoint protection proxy CA certificate used on the machine
-```
-
-For this local machine, the successful smoke test used a temporary bundle made from the virtualenv `certifi` CA file plus the local endpoint-protection CA bundle. Use environment variables to point Python and requests-compatible libraries at the bundle:
+Install dependencies:
 
 ```bash
-SSL_CERT_FILE=/path/to/company-ca-bundle.pem \
-REQUESTS_CA_BUNDLE=/path/to/company-ca-bundle.pem \
-python scripts/test_databricks_connection.py
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Do not disable TLS verification. Do not commit certificate bundles if they are internal company assets. Prefer installing the corporate root CA through managed device policy or a documented local certificate setup.
-
-Live Databricks tests are intentionally not run during implementation because starting or querying the SQL Warehouse is a manual step and the warehouse auto-stops after a short idle period. When you are ready for live testing, manually start the SQL Warehouse first, then run:
+Copy and fill local environment values:
 
 ```bash
-python scripts/test_databricks_connection.py
+cp .env.example .env
 ```
 
-That script opens the Databricks connection, runs `SELECT 1`, and samples five rows from each allowed table. It prints only safe success messages and row counts.
+Run Streamlit:
 
-## Run with Docker Compose
+```bash
+streamlit run streamlit_app.py
+```
 
-The Docker setup runs Streamlit and PostgreSQL in Docker Compose. The app service reads `.env` through `env_file`, so replace the placeholder Gemini API key before asking questions.
+## Run with Docker
 
-Make sure TPC-H CSV exports exist:
+Default Docker behavior starts only the Streamlit app with Würth Databricks as the selected scenario:
+
+```bash
+docker compose build
+docker compose up
+```
+
+Open:
+
+```text
+http://localhost:8501
+```
+
+The default `docker compose up` does not start PostgreSQL. To use the old demo data in Docker, start the demo profile:
+
+```bash
+docker compose --profile demo up --build
+```
+
+If the demo database needs fresh CSV exports:
 
 ```bash
 source .venv/bin/activate
 python database/export_tpch_to_csv.py
 ```
 
-If you set `LLM_PROVIDER=ollama`, Ollama still runs on the host machine and the Dockerized app connects through `http://host.docker.internal:11434`.
+## Databricks Smoke Test
 
-Start Docker Compose:
-
-```bash
-docker compose up --build
-```
-
-If your Docker install only has the legacy Compose binary, use the same command with `docker-compose`:
+Start the Databricks SQL Warehouse manually first. Then run:
 
 ```bash
-docker-compose up --build
+python scripts/databricks/test_databricks_connection.py
 ```
 
-Open Streamlit:
+The script opens a Databricks connection, runs `SELECT 1`, and runs table reachability checks for the two allowed Würth tables. It prints only safe status messages and row counts.
+
+Live Databricks tests are intentionally not run during normal implementation because the SQL Warehouse is manually started and auto-stops after a short idle period.
+
+## TLS Certificates
+
+Databricks public endpoints normally chain to public certificate authorities. If local or Docker Databricks connections fail with `SSLCertVerificationError` or `self-signed certificate in certificate chain`, the missing trust is usually the Würth/company TLS inspection root CA or endpoint-protection proxy CA, not a Databricks CA.
+
+Install the required corporate root/intermediate CA through the managed OS trust store, or point Python at a PEM bundle that includes:
 
 ```text
-http://localhost:8501
+certifi root certificates
+Würth/company TLS inspection root CA
+endpoint-protection proxy CA if used on the machine
 ```
 
-Stop containers:
+Example:
 
 ```bash
-docker compose down
+SSL_CERT_FILE=/path/to/company-ca-bundle.pem \
+REQUESTS_CA_BUNDLE=/path/to/company-ca-bundle.pem \
+python scripts/databricks/test_databricks_connection.py
 ```
 
-Reset the database completely:
+Do not disable TLS verification. Do not commit internal certificate bundles.
+
+## Verification
+
+Offline checks:
 
 ```bash
-docker compose down -v
+python -m compileall .
+python -m unittest discover -s evaluation -p "test_*.py"
 ```
 
-Then start again:
+Databricks live check, only after manually starting the warehouse:
 
 ```bash
-docker compose up --build
-```
-
-Dockerized PostgreSQL is exposed on host port `5433`, mapped to container port `5432`. Inside Docker, the Streamlit app connects to PostgreSQL at `postgres:5432`.
-
-Database initialization only runs when the `postgres_data` Docker volume is empty. If the CSV files in `database/exports/` change, reset the database with `docker compose down -v` before restarting so PostgreSQL reruns the initialization scripts.
-
-Test the Dockerized PostgreSQL database from your host:
-
-```bash
-psql -h localhost -p 5433 -U postgres -d agentic_ai -c "SELECT COUNT(*) FROM lineitem;"
-```
-
-Password:
-
-```text
-postgres
+python scripts/databricks/test_databricks_connection.py
 ```
