@@ -9,7 +9,8 @@ import yaml
 from app.schema import TPC_H_TABLES
 from src.agent.db import get_active_backend_metadata
 from src.agent.golden_test_runner import load_golden_questions, run_golden_tests
-from src.agent.langgraph_sql_agent import SQLAgentConfig, run_sql_agent
+from src.agent.langgraph_sql_agent import SQLAgentConfig 
+from src.agent.orchestrator import run_orchestrator
 from src.agent.logging_utils import log_feedback
 from src.agent.memory_store import (
     MemoryStoreError,
@@ -233,12 +234,10 @@ def retry_with_comment(record: dict, index: int, comment: str, config: SQLAgentC
 
     write_feedback(record, "neutral", f"retry_with_comment: {comment}")
     with st.spinner("Wiederhole den Lauf mit deiner Korrektur..."):
-        corrected_record = run_sql_agent(
+        corrected_record = run_orchestrator(
             record.get("user_question", ""),
-            config=config,
             previous_failed_sql=record.get("generated_sql", ""),
             previous_final_answer=record.get("final_answer", ""),
-            previous_sql_error="Der Nutzer hat angegeben, dass die vorherige Antwort nicht zur Absicht passte.",
             user_correction=comment.strip(),
         )
     st.session_state.history[index] = corrected_record
@@ -253,13 +252,11 @@ def rerun_with_fallback(
 ) -> None:
     write_feedback(record, "neutral", f"fallback_requested: {comment}")
     with st.spinner("Wiederhole den Lauf mit dem Fallback-Modell..."):
-        fallback_record = run_sql_agent(
+        fallback_record = run_orchestrator(
             record.get("user_question", ""),
-            config=config,
             force_fallback=True,
             previous_failed_sql=record.get("generated_sql", ""),
             previous_final_answer=record.get("final_answer", ""),
-            previous_sql_error="Der Nutzer hat das Fallback-Modell angefordert.",
             user_correction=comment.strip(),
         )
     st.session_state.history[index] = fallback_record
@@ -1108,7 +1105,7 @@ def main() -> None:
     question = st.chat_input("Stelle eine Frage zu den TPC-H-Daten")
     if question:
         with st.spinner("LangGraph-SQL-Workflow wird ausgeführt..."):
-            record = run_sql_agent(question, config=config)
+            record = run_orchestrator(question)
         st.session_state.history.append(record)
         st.rerun()
 
