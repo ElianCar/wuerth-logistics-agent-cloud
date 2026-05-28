@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Literal
 
 import yaml
@@ -10,6 +11,7 @@ from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
+from src.agent.router_template_retriever import find_similar_templates_for_router
 from src.llm.model_adapter import invoke_model, get_provider
 
 
@@ -19,13 +21,26 @@ ROUTER_EXCERPT_PATH = Path(
     os.getenv("ROUTER_EXCERPT_PATH", "semantic_layer/router_excerpt.yaml")
 )
 
+DETERMINISTIC_BLOCK_PATTERNS = (
+    (re.compile(r"\bdrop\s+table\b", re.IGNORECASE), "drop table"),
+    (re.compile(r"\bdelete\s+from\b", re.IGNORECASE), "delete from"),
+    (re.compile(r"\bupdate\s+[a-zA-Z_][a-zA-Z0-9_]*\b", re.IGNORECASE), "update"),
+    (re.compile(r"\binsert\s+into\b", re.IGNORECASE), "insert"),
+    (re.compile(r"\balter\s+table\b", re.IGNORECASE), "alter table"),
+    (re.compile(r"\btruncate\b", re.IGNORECASE), "truncate"),
+    (re.compile(r"\bshow\s+credentials\b", re.IGNORECASE), "show credentials"),
+    (re.compile(r"\breveal\s+(?:the\s+)?api\s+key\b", re.IGNORECASE), "reveal api key"),
+    (re.compile(r"\bignore\s+previous\s+instructions\b", re.IGNORECASE), "ignore previous instructions"),
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RouterState
 #
 # complexity_tier:
-#   "easy" → gemini-2.0-flash-lite  (eine Tabelle, einfache Aggregation)
-#   "hard" → gemini-2.5-flash       (Joins, Zeitreihen, mehrere KPIs)
+#   "easy" → gemini-3.1-flash-lite  (eine Tabelle, einfache Aggregation)
+#   "medium" → gemini-3.1-flash-lite (Ranking, einfache Gruppierung, einfacher JOIN)
+#   "hard" → konfiguriertes Primary-Modell (Zeitreihen, Subqueries, mehrere KPIs)
 #
 # Fallback ist immer gemini-2.5-flash.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -41,11 +56,12 @@ class RouterState(TypedDict, total=False):
     output_mode: str           # table | chart_plus_table | management_summary | technical_detail
     language: str              # de | en
     memory_intent_key: str     # = intent, für Template-Retrieval
-    complexity_tier: str       # "easy" | "hard"
+    complexity_tier: str       # "easy" | "medium" | "hard"
     complexity_reason: str
     constraints: dict          # time_window, grouping_level
     execution_plan: list
     clarification_question: str
+    template_candidates: list[dict[str, Any]]
     _router_raw_response: str
 
 
@@ -61,6 +77,7 @@ def _format_excerpt_for_prompt(excerpt: dict[str, Any]) -> str:
     data_types   = excerpt.get("available_data", [])
     qtypes       = excerpt.get("question_types", {})
     hard_signals = excerpt.get("complexity_signals", {}).get("hard", [])
+    medium_signals = excerpt.get("complexity_signals", {}).get("medium", [])
     easy_signals = excerpt.get("complexity_signals", {}).get("easy", [])
     no_sql       = excerpt.get("no_sql_signals", [])
     blocked      = excerpt.get("blocked", [])
@@ -74,6 +91,7 @@ def _format_excerpt_for_prompt(excerpt: dict[str, Any]) -> str:
         f"DATA CATEGORIES: {', '.join(data_types)}\n"
         f"QUESTION TYPES:\n{qtype_lines}\n"
         f"HARD COMPLEXITY SIGNALS: {', '.join(hard_signals)}\n"
+        f"MEDIUM COMPLEXITY SIGNALS: {', '.join(medium_signals)}\n"
         f"EASY COMPLEXITY SIGNALS: {', '.join(easy_signals)}\n"
         f"NO SQL WHEN QUESTION CONTAINS: {', '.join(no_sql)}\n"
         f"BLOCKED PATTERNS: {', '.join(blocked)}"
@@ -94,7 +112,8 @@ CLASSIFICATION RULES:
 - blocked_or_unsafe: true when blocked patterns appear
 - complexity_tier:
     "easy" → single table, simple aggregation (COUNT/SUM/AVG), no JOIN, no time comparison
-    "hard" → requires JOIN, time series, ranking with subquery, or multiple metrics
+    "medium" → simple ranking, simple grouping, or one straightforward JOIN without subqueries
+    "hard" → requires multiple JOINs, time series/trends, period comparisons, subqueries, or multiple metrics
   When in doubt: "hard".
 - complexity_reason: one short sentence
 - output_mode: "table" | "chart_plus_table" | "management_summary" | "technical_detail"
@@ -116,7 +135,7 @@ JSON:
   "output_mode": "...",
   "language": "...",
   "memory_intent_key": "...",
-  "complexity_tier": "easy|hard",
+  "complexity_tier": "easy|medium|hard",
   "complexity_reason": "...",
   "constraints": {{
     "time_window": null,
@@ -129,7 +148,7 @@ JSON:
 
 def _get_router_model(llm_provider: str) -> str:
     if llm_provider == "gemini":
-        return os.getenv("GEMINI_ROUTER_MODEL", "gemini-2.0-flash-lite")
+        return os.getenv("GEMINI_ROUTER_MODEL", "gemini-3.1-flash-lite")
     return os.getenv("OLLAMA_ROUTER_MODEL", os.getenv("PRIMARY_MODEL", "llama3.2:3b"))
 
 
@@ -143,7 +162,49 @@ def _safe_parse_json(raw: str) -> dict[str, Any]:
     return json.loads(text.strip())
 
 
-def _fallback_state(reason: str) -> dict[str, Any]:
+def _as_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "ja"}:
+            return True
+        if normalized in {"false", "0", "no", "nein"}:
+            return False
+    return bool(value)
+
+
+def _normalize_complexity_tier(value: Any) -> str:
+    tier = str(value or "hard").strip().lower()
+    if tier in {"easy", "medium", "hard"}:
+        return tier
+    return "hard"
+
+
+def deterministic_block_reason(question: str) -> str:
+    for pattern, label in DETERMINISTIC_BLOCK_PATTERNS:
+        if pattern.search(question):
+            return label
+    return ""
+
+
+def _template_candidates(
+    *,
+    question: str,
+    memory_intent_key: str | None,
+    intent: str | None,
+) -> list[dict[str, Any]]:
+    return find_similar_templates_for_router(
+        question,
+        memory_intent_key,
+        intent,
+        limit=3,
+    )
+
+
+def _fallback_state(reason: str, *, question: str = "") -> dict[str, Any]:
     return {
         "intent": "aggregation",
         "needs_sql": True,
@@ -157,6 +218,34 @@ def _fallback_state(reason: str) -> dict[str, Any]:
         "constraints": {"time_window": None, "grouping_level": []},
         "execution_plan": ["retrieve_templates", "run_sql_agent", "run_reporting_agent"],
         "clarification_question": "",
+        "template_candidates": _template_candidates(
+            question=question,
+            memory_intent_key="aggregation",
+            intent="aggregation",
+        ),
+        "_router_raw_response": "",
+    }
+
+
+def _blocked_state(question: str, reason: str) -> dict[str, Any]:
+    return {
+        "intent": "blocked",
+        "needs_sql": False,
+        "needs_clarification": False,
+        "blocked_or_unsafe": True,
+        "output_mode": "technical_detail",
+        "language": "de",
+        "memory_intent_key": "blocked",
+        "complexity_tier": "hard",
+        "complexity_reason": f"Deterministic safety block: {reason}",
+        "constraints": {"time_window": None, "grouping_level": []},
+        "execution_plan": [],
+        "clarification_question": "Diese Anfrage kann aus Sicherheitsgründen nicht verarbeitet werden.",
+        "template_candidates": _template_candidates(
+            question=question,
+            memory_intent_key="blocked",
+            intent="blocked",
+        ),
         "_router_raw_response": "",
     }
 
@@ -166,11 +255,15 @@ def classify_intent(state: RouterState) -> dict[str, Any]:
     llm_provider = state.get("llm_provider", get_provider())
     ollama_host  = state.get("ollama_host", "http://localhost:11434")
 
+    block_reason = deterministic_block_reason(question)
+    if block_reason:
+        return _blocked_state(question, block_reason)
+
     try:
         excerpt      = load_router_excerpt()
         excerpt_text = _format_excerpt_for_prompt(excerpt)
     except Exception as e:
-        return _fallback_state(f"Excerpt konnte nicht geladen werden: {e}")
+        return _fallback_state(f"Excerpt konnte nicht geladen werden: {e}", question=question)
 
     try:
         response = invoke_model(
@@ -182,26 +275,32 @@ def classify_intent(state: RouterState) -> dict[str, Any]:
         raw    = response.response_text
         parsed = _safe_parse_json(raw)
 
-        # Tier normalisieren: alles was nicht "easy" ist → "hard"
-        tier = "easy" if str(parsed.get("complexity_tier", "hard")).lower() == "easy" else "hard"
+        tier = _normalize_complexity_tier(parsed.get("complexity_tier", "hard"))
+        intent = parsed.get("intent", "aggregation")
+        memory_intent_key = parsed.get("memory_intent_key", intent)
 
         return {
-            "intent":                 parsed.get("intent", "aggregation"),
-            "needs_sql":              bool(parsed.get("needs_sql", True)),
-            "needs_clarification":    bool(parsed.get("needs_clarification", False)),
-            "blocked_or_unsafe":      bool(parsed.get("blocked_or_unsafe", False)),
+            "intent":                 intent,
+            "needs_sql":              _as_bool(parsed.get("needs_sql"), True),
+            "needs_clarification":    _as_bool(parsed.get("needs_clarification"), False),
+            "blocked_or_unsafe":      _as_bool(parsed.get("blocked_or_unsafe"), False),
             "output_mode":            parsed.get("output_mode", "table"),
             "language":               parsed.get("language", "de"),
-            "memory_intent_key":      parsed.get("memory_intent_key", parsed.get("intent", "aggregation")),
+            "memory_intent_key":      memory_intent_key,
             "complexity_tier":        tier,
             "complexity_reason":      parsed.get("complexity_reason", ""),
             "constraints":            parsed.get("constraints", {"time_window": None, "grouping_level": []}),
             "execution_plan":         parsed.get("execution_plan", []),
             "clarification_question": parsed.get("clarification_question", ""),
+            "template_candidates":    _template_candidates(
+                question=question,
+                memory_intent_key=memory_intent_key,
+                intent=intent,
+            ),
             "_router_raw_response":   raw,
         }
     except Exception as e:
-        return _fallback_state(f"Parse-Fehler: {e}")
+        return _fallback_state(f"Parse-Fehler: {e}", question=question)
 
 
 def clarification_gate(state: RouterState) -> dict[str, Any]:

@@ -24,6 +24,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable approved memory/templates during the run.",
     )
+    parser.add_argument(
+        "--use-orchestrator",
+        action="store_true",
+        help="Run golden questions through the router orchestrator instead of the direct SQL-agent path.",
+    )
     return parser.parse_args()
 
 
@@ -34,6 +39,7 @@ def main() -> None:
     batch_run_id, results, summary = run_golden_tests(
         question_ids,
         use_approved_memory=not args.no_approved_memory,
+        use_orchestrator=args.use_orchestrator,
     )
 
     print(f"Golden run: {batch_run_id}")

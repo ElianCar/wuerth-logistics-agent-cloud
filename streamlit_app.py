@@ -1,7 +1,3 @@
-from datetime import date, datetime
-from decimal import Decimal
-from numbers import Number
-
 import pandas as pd
 import streamlit as st
 import yaml
@@ -43,45 +39,12 @@ PAGE_MEMORY = "Memory-Prüfung"
 PAGE_TEMPLATES = "Freigegebene Templates"
 
 
-def is_numeric_value(value: object) -> bool:
-    return isinstance(value, (Number, Decimal)) and not isinstance(value, bool)
-
-
 def result_to_dataframe(record: dict) -> pd.DataFrame:
     query_result = record.get("query_result", {})
     return pd.DataFrame(
         query_result.get("rows", []),
         columns=query_result.get("columns", []),
     )
-
-
-def maybe_show_chart(df: pd.DataFrame) -> None:
-    if len(df) <= 1:
-        return
-
-    text_or_date_columns = []
-    numeric_columns = []
-
-    for column in df.columns:
-        values = [value for value in df[column].tolist() if value is not None]
-        if not values:
-            continue
-
-        first_value = values[0]
-        if is_numeric_value(first_value):
-            numeric_columns.append(column)
-        elif isinstance(first_value, (str, date, datetime)):
-            text_or_date_columns.append(column)
-
-    if not text_or_date_columns or not numeric_columns:
-        return
-
-    label_column = text_or_date_columns[0]
-    value_column = numeric_columns[0]
-    chart_df = df[[label_column, value_column]].copy()
-    chart_df[value_column] = chart_df[value_column].astype(float)
-
-    st.bar_chart(chart_df.set_index(label_column)[value_column])
 
 
 def initialize_state() -> None:
@@ -236,7 +199,9 @@ def retry_with_comment(record: dict, index: int, comment: str, config: SQLAgentC
     with st.spinner("Wiederhole den Lauf mit deiner Korrektur..."):
         corrected_record = run_orchestrator(
             record.get("user_question", ""),
+            config=config,
             previous_failed_sql=record.get("generated_sql", ""),
+            previous_sql_error=record.get("sql_error", ""),
             previous_final_answer=record.get("final_answer", ""),
             user_correction=comment.strip(),
         )
@@ -254,8 +219,10 @@ def rerun_with_fallback(
     with st.spinner("Wiederhole den Lauf mit dem Fallback-Modell..."):
         fallback_record = run_orchestrator(
             record.get("user_question", ""),
+            config=config,
             force_fallback=True,
             previous_failed_sql=record.get("generated_sql", ""),
+            previous_sql_error=record.get("sql_error", ""),
             previous_final_answer=record.get("final_answer", ""),
             user_correction=comment.strip(),
         )
@@ -1031,7 +998,6 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
             st.subheader("Ergebnisvorschau")
             df = result_to_dataframe(record)
             st.dataframe(df, use_container_width=True)
-            maybe_show_chart(df)
 
         st.subheader("SQL-Anweisung")
         st.code(record.get("final_sql") or record.get("generated_sql", "") or "(kein SQL erzeugt)", language="sql")
@@ -1105,7 +1071,7 @@ def main() -> None:
     question = st.chat_input("Stelle eine Frage zu den TPC-H-Daten")
     if question:
         with st.spinner("LangGraph-SQL-Workflow wird ausgeführt..."):
-            record = run_orchestrator(question)
+            record = run_orchestrator(question, config=config)
         st.session_state.history.append(record)
         st.rerun()
 

@@ -472,7 +472,16 @@ def run_golden_agent(
     schema_context: str,
     use_approved_memory: bool,
     config: SQLAgentConfig | None,
+    use_orchestrator: bool = False,
 ) -> dict[str, Any]:
+    if use_orchestrator:
+        return run_orchestrator_for_golden(
+            question,
+            schema_context=schema_context,
+            use_approved_memory=use_approved_memory,
+            config=config,
+        )
+
     try:
         return run_sql_agent(
             question.get("question", ""),
@@ -502,6 +511,31 @@ def run_golden_agent(
         )
 
 
+def run_orchestrator_for_golden(
+    question: dict[str, Any],
+    *,
+    schema_context: str,
+    use_approved_memory: bool,
+    config: SQLAgentConfig | None,
+) -> dict[str, Any]:
+    # TODO: Add dependency injection for schema_loader/sql_executor to the
+    # orchestrator so golden tests can use the exact same frozen schema context
+    # as the direct SQL-agent path. Until then this opt-in entry point exercises
+    # router, model selection, SQL agent normalization, and final metadata using
+    # the configured runtime backend.
+    _ = schema_context
+    from src.agent.orchestrator import run_orchestrator
+
+    return run_orchestrator(
+        question.get("question", ""),
+        config=config,
+        run_context="golden_test_orchestrator",
+        use_approved_memory=use_approved_memory,
+        enable_memory_candidate_generation=False,
+        log_to_query_log=False,
+    )
+
+
 def evaluate_golden_question(
     question: dict[str, Any],
     *,
@@ -509,6 +543,7 @@ def evaluate_golden_question(
     schema_context: str,
     use_approved_memory: bool,
     config: SQLAgentConfig | None = None,
+    use_orchestrator: bool = False,
 ) -> dict[str, Any]:
     started_at = perf_counter()
     started_at_iso = current_timestamp()
@@ -552,6 +587,7 @@ def evaluate_golden_question(
             schema_context=schema_context,
             use_approved_memory=use_approved_memory,
             config=config,
+            use_orchestrator=use_orchestrator,
         )
     except Exception as error:
         return build_error_result(
@@ -672,6 +708,7 @@ def run_golden_tests(
     *,
     use_approved_memory: bool = True,
     config: SQLAgentConfig | None = None,
+    use_orchestrator: bool = False,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     question_map = load_golden_question_map()
     selected_ids = [question_id.upper() for question_id in question_ids if question_id.upper() in question_map]
@@ -687,6 +724,7 @@ def run_golden_tests(
                 schema_context=schema_context,
                 use_approved_memory=use_approved_memory,
                 config=config,
+                use_orchestrator=use_orchestrator,
             )
         except Exception as error:
             question = question_map[question_id]

@@ -68,6 +68,7 @@ class SQLAgentState(TypedDict, total=False):
     use_approved_memory: bool
     enable_memory_candidate_generation: bool
     log_to_query_log: bool
+    language: str
 
 
 @dataclass(frozen=True)
@@ -459,19 +460,33 @@ def build_sql_agent_graph(
         }
 
     def generate_final_answer(state: SQLAgentState) -> dict[str, Any]:
+        language = str(state.get("language", "de")).lower()
+
         if state.get("schema_load_failed"):
             return {
-                "final_answer": state.get("final_answer", "Das Datenbankschema konnte nicht geladen werden."),
+                "final_answer": state.get(
+                    "final_answer",
+                    "The database schema could not be loaded."
+                    if language == "en"
+                    else "Das Datenbankschema konnte nicht geladen werden.",
+                ),
                 "result_status": "fehlgeschlagen",
                 "trace_steps": append_trace(state, "Finale Antwort meldet Fehler beim Laden des Schemas"),
             }
 
         if not state.get("execution_success"):
-            return {
-                "final_answer": (
+            if language == "en":
+                final_answer = (
+                    "I could not create a valid executable SQL query. "
+                    f"Last error: {state.get('sql_error', 'unknown error')}"
+                )
+            else:
+                final_answer = (
                     "Ich konnte keine gültige ausführbare SQL-Abfrage erzeugen. "
                     f"Letzter Fehler: {state.get('sql_error', 'unbekannter Fehler')}"
-                ),
+                )
+            return {
+                "final_answer": final_answer,
                 "result_status": "fehlgeschlagen",
                 "trace_steps": append_trace(state, "Finale Antwort meldet SQL-Fehler"),
             }
@@ -481,7 +496,13 @@ def build_sql_agent_graph(
         rows = query_result.get("rows", [])
         row_count = int(query_result.get("row_count", 0))
 
-        if row_count == 0:
+        if language == "en" and row_count == 0:
+            final_answer = "The query returned no rows."
+        elif language == "en" and row_count == 1 and len(columns) == 1:
+            final_answer = f"The answer is {rows[0][0]}."
+        elif language == "en":
+            final_answer = f"The query returned {row_count} rows."
+        elif row_count == 0:
             final_answer = "Die Abfrage lieferte keine Zeilen."
         elif row_count == 1 and len(columns) == 1:
             final_answer = f"Die Antwort ist {rows[0][0]}."
@@ -565,6 +586,7 @@ def build_sql_agent_graph(
 def run_sql_agent(
     user_question: str,
     *,
+    run_id: str | None = None,
     config: SQLAgentConfig | None = None,
     force_fallback: bool = False,
     previous_failed_sql: str = "",
@@ -575,6 +597,7 @@ def run_sql_agent(
     use_approved_memory: bool = True,
     enable_memory_candidate_generation: bool = True,
     log_to_query_log: bool = True,
+    language: str = "",
     schema_loader: SchemaLoader = load_schema_context,
     sql_generator: SQLGenerator = default_sql_generator,
     sql_executor: SQLExecutor = execute_read_only_sql,
@@ -582,7 +605,7 @@ def run_sql_agent(
 ) -> SQLAgentState:
     agent_config = config or SQLAgentConfig.from_env()
     selected_model = agent_config.fallback_model if force_fallback else agent_config.primary_model
-    run_id = generate_run_id()
+    run_id = run_id or generate_run_id()
     started_at = perf_counter()
     effective_attempt_logger = attempt_logger if log_to_query_log else noop_attempt_logger
     graph = build_sql_agent_graph(
@@ -631,6 +654,7 @@ def run_sql_agent(
         "use_approved_memory": use_approved_memory,
         "enable_memory_candidate_generation": enable_memory_candidate_generation,
         "log_to_query_log": log_to_query_log,
+        "language": language,
     }
     final_state: SQLAgentState = graph.invoke(initial_state, {"recursion_limit": 30})
     latency_seconds = perf_counter() - started_at
@@ -661,6 +685,7 @@ def run_sql_agent(
             "use_approved_memory": use_approved_memory,
             "enable_memory_candidate_generation": enable_memory_candidate_generation,
             "log_to_query_log": log_to_query_log,
+            "language": language,
         }
     )
 

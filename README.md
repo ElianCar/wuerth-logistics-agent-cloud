@@ -120,6 +120,16 @@ The feedback controls support correction-driven reruns:
 - `Retry with comment` sends the original question, previous SQL, previous answer, and your correction comment back through the LangGraph workflow.
 - `Use fallback model` reruns the question with `FALLBACK_MODEL` immediately, optionally using your correction comment.
 
+## Routing control layer
+
+Streamlit now calls `run_orchestrator`, which runs a router before the existing LangGraph SQL agent. The router is a control layer only: it classifies intent, SQL need, clarification need, obvious unsafe requests, complexity tier, output mode, language, and a memory intent key. It does not generate SQL, validate SQL, execute SQL, or approve memory templates.
+
+Router decisions can stop the workflow before SQL generation when a request is blocked, too vague, or does not require SQL. For SQL questions, the orchestrator uses the router complexity tier for model selection and then calls the public `run_sql_agent` wrapper so the existing SQL validation, execution, repair, fallback, normalization, and query logging behavior is preserved.
+
+The router also exposes `template_candidates` through `src/agent/router_template_retriever.py`. This is currently a placeholder that always returns an empty list and has no side effects. It is designed to be replaced later by a vector-space or embedding-based cosine-similarity retriever. Retrieved templates are not implemented yet and cannot influence SQL generation, SQL validation, or SQL execution.
+
+Golden tests keep the direct SQL-agent path by default. Use `python evaluation/run_evaluation.py --use-orchestrator Q01` to exercise the opt-in router-plus-SQL path during evaluation.
+
 ## Evaluation and logging
 
 Run evaluation:
