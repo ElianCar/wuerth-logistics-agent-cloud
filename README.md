@@ -26,6 +26,25 @@ wuerth_local
 
 The local Docker Compose workflow starts PostgreSQL by default. `SQL_BACKEND=postgres` is the expected backend for local prototype use.
 
+## Routing Control Layer
+
+Streamlit calls `run_orchestrator(...)`, not the SQL agent directly. The orchestrator runs the router first, then calls the public SQL agent path when SQL is needed.
+
+Flow:
+
+```text
+User question
+-> Streamlit
+-> run_orchestrator(...)
+-> Router LangGraph
+-> SQL Agent LangGraph when SQL is needed
+-> Streamlit result rendering
+```
+
+The router classifies intent, SQL need, clarification need, obvious unsafe requests, complexity tier, output mode, language, constraints, execution plan, and memory intent key. It does not generate SQL, validate SQL, execute SQL, create templates, approve templates, or bypass SQL validation.
+
+`src/agent/router_template_retriever.py` is currently a future-compatible placeholder. It returns an empty list and has no side effects. Template creation remains human gated through the successful-run/manual-review memory flow.
+
 ## Demo PostgreSQL Scenario
 
 Demo mode uses the existing TPC-H tables:
@@ -81,7 +100,7 @@ wuerth.invoices
 wuerth.shipments
 ```
 
-The active Würth semantic layer is the existing Würth semantic layer file, updated for the local PostgreSQL CSV scenario:
+The active Würth semantic layer is:
 
 ```text
 semantic_layer/databricks/wuerth_semantic_layer.yaml

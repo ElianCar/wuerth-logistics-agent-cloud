@@ -1,0 +1,33 @@
+data_domain: relational business data / supply chain
+
+available_data:
+  - transactional_records   # Belege, Aufträge, Bestellpositionen
+  - operational_records     # Lieferungen, Mengen, Bewegungsdaten
+
+question_types:
+  aggregation:
+    needs_sql: true
+    complexity: easy      # SUM/COUNT/AVG auf einer Tabelle
+  ranking:
+    needs_sql: true
+    complexity: medium    # TOP-N, ORDER BY + LIMIT, ggf. einfache Gruppierung
+  time_series:
+    needs_sql: true
+    complexity: hard      # GROUP BY Datum, Zeitfenster, Trend
+  cross_table:
+    needs_sql: true
+    complexity: medium    # einfacher JOIN über wenige Tabellen
+  explanation:
+    needs_sql: false
+    complexity: none      # Definitionen, Erklärungen — kein SQL nötig
+
+complexity_signals:
+  hard:  [join, vergleich, entwicklung, trend, über zeit, mehrere, anteil, zeitreihe, pro monat, wöchentlich, compare, over time, per month, breakdown, by nation, by customer, by region]
+  medium: [top, ranking, order by, limit, gruppe, gruppierung, je, pro, nach, by, per, join, kunde, customer, lieferant, supplier, nation, region]
+  easy:  [wie viele, summe, gesamt, höchste, niedrigste, liste, total, highest, lowest, count, durchschnitt, average, show all, alle]
+
+no_sql_signals:
+  [bedeutet, definiere, erkläre, was ist, wie funktioniert, what is, explain, define, describe, was bedeutet]
+
+blocked:
+  [drop, delete, truncate, update, insert, alter, passwort, password, credentials, pg_, information_schema, admin, root]
