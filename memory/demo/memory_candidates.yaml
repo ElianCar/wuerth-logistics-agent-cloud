@@ -1,0 +1,250 @@
+candidates:
+- candidate_id: cand_20260511_200023_3e9e
+  scenario: demo
+  dataset_id: demo_tpch
+  run_id: run_20260511_200000_19c9
+  feedback_id: null
+  status: pending_review
+  is_active: false
+  candidate_type: solution_template
+  created_at: '2026-05-11T20:00:23'
+  updated_at: '2026-05-11T20:00:23'
+  original_question: please give me all suppliers with nation United States WITH orders
+    more than 400000
+  generated_answer: The query returned 2 rows.
+  generated_sql: "SELECT\n  s.s_name\nFROM supplier AS s\nJOIN nation AS n\n  ON s.s_nationkey\
+    \ = n.n_nationkey\nJOIN orders AS o\n  ON o.o_custkey = s.s_suppkey\nWHERE\n \
+    \ n.n_name = 'UNITED STATES' AND o.o_totalprice > 300000\nLIMIT 50"
+  final_sql: "SELECT\n  s.s_name\nFROM supplier AS s\nJOIN nation AS n\n  ON s.s_nationkey\
+    \ = n.n_nationkey\nJOIN orders AS o\n  ON o.o_custkey = s.s_suppkey\nWHERE\n \
+    \ n.n_name = 'UNITED STATES' AND o.o_totalprice > 300000\nLIMIT 50"
+  model_primary: gemini-2.5-flash-lite
+  model_used: gemini-2.5-flash-lite
+  fallback_used: false
+  validation_success: true
+  execution_success: true
+  error_type: null
+  error_message: null
+  row_count: 2
+  source_tables: &id001
+  - nation
+  - orders
+  - supplier
+  created_from_positive_feedback: false
+  feedback:
+    rating: null
+    comment: null
+    corrected_sql: null
+    expected_answer: null
+  proposed_template:
+    intent: please give me all suppliers with nation United States WITH orders more
+      than 400000
+    trigger_phrases:
+    - please give me all suppliers with nation United States WITH orders more than
+      400000
+    - please give me all suppliers with nation united states with orders more than
+      400000
+    - give me all suppliers with nation united states with orders more than 400000
+    required_tables: *id001
+    metric_definitions: {}
+    join_logic: []
+    sql_skeleton: "SELECT\n  s.s_name\nFROM supplier AS s\nJOIN nation AS n\n  ON\
+      \ s.s_nationkey = n.n_nationkey\nJOIN orders AS o\n  ON o.o_custkey = s.s_suppkey\n\
+      WHERE\n  n.n_name = 'UNITED STATES' AND o.o_totalprice > 300000\nLIMIT 50"
+    notes: Automatically generated candidate from successful run. Requires manual
+      review.
+  review:
+    reviewed_by: null
+    reviewed_at: null
+    review_comment: null
+    rejection_reason: null
+    approved_template_id: null
+- candidate_id: cand_20260512_211516_4e8d
+  scenario: demo
+  dataset_id: demo_tpch
+  run_id: run_20260512_211455_4adc
+  feedback_id: null
+  status: approved
+  is_active: false
+  candidate_type: solution_template
+  created_at: '2026-05-12T21:15:16'
+  updated_at: '2026-05-12T21:16:11'
+  original_question: 'bitte zeige mir alle Nationen an '
+  generated_answer: Die Abfrage lieferte 25 Zeilen.
+  generated_sql: SELECT n_name, n_regionkey FROM nation LIMIT 50
+  final_sql: SELECT n_name, n_regionkey FROM nation LIMIT 50
+  model_primary: llama3.2:3b
+  model_used: llama3.2:3b
+  fallback_used: false
+  validation_success: true
+  execution_success: true
+  error_type: null
+  error_message: null
+  row_count: 25
+  source_tables:
+  - nation
+  created_from_positive_feedback: false
+  feedback:
+    rating: null
+    comment: null
+    corrected_sql: null
+    expected_answer: null
+  proposed_template:
+    intent: bitte zeige mir alle Nationen an
+    trigger_phrases:
+    - bitte zeige mir alle Nationen an
+    - bitte zeige mir alle nationen an
+    required_tables:
+    - nation
+    metric_definitions: {}
+    join_logic: []
+    sql_skeleton: SELECT n_name, n_regionkey FROM nation LIMIT 50
+    notes: Automatically generated candidate from successful run. Requires manual
+      review.
+  review:
+    reviewed_by: manual_review
+    reviewed_at: '2026-05-12T21:16:11'
+    review_comment: null
+    rejection_reason: null
+    approved_template_id: tmpl_bitte_zeige_mir_alle_nationen_an_20260512_211611_5485
+- candidate_id: cand_20260513_060902_896b
+  scenario: demo
+  dataset_id: demo_tpch
+  run_id: run_20260513_054331_d9c8
+  feedback_id: null
+  status: approved
+  is_active: false
+  candidate_type: solution_template
+  created_at: '2026-05-13T06:09:02'
+  updated_at: '2026-05-13T06:09:42'
+  original_question: bitte gib mir alle nationen
+  generated_answer: Die Abfrage lieferte 25 Zeilen.
+  generated_sql: SELECT n_name, n_regionkey FROM nation LIMIT 50
+  final_sql: SELECT n_name, n_regionkey FROM nation LIMIT 50
+  model_primary: llama3.2:3b
+  model_used: llama3.2:3b
+  fallback_used: false
+  validation_success: true
+  execution_success: true
+  error_type: null
+  error_message: null
+  row_count: 25
+  source_tables:
+  - nation
+  created_from_positive_feedback: false
+  feedback:
+    rating: null
+    comment: null
+    corrected_sql: null
+    expected_answer: null
+  proposed_template:
+    intent: bitte gib mir alle nationen
+    trigger_phrases:
+    - bitte gib mir alle nationen
+    required_tables:
+    - nation
+    metric_definitions: {}
+    join_logic: []
+    sql_skeleton: SELECT n_name, n_regionkey FROM nation LIMIT 50
+    notes: Automatically generated candidate from successful run. Requires manual
+      review.
+  review:
+    reviewed_by: manual_review
+    reviewed_at: '2026-05-13T06:09:42'
+    review_comment: null
+    rejection_reason: null
+    approved_template_id: tmpl_bitte_gib_mir_alle_nationen_20260513_060942_dae5
+- candidate_id: cand_20260519_112120_4b99
+  scenario: demo
+  dataset_id: demo_tpch
+  run_id: run_20260519_112110_f6dc
+  feedback_id: null
+  status: pending_review
+  is_active: false
+  candidate_type: solution_template
+  created_at: '2026-05-19T11:21:20'
+  updated_at: '2026-05-19T11:21:20'
+  original_question: 'bitte gib mir Alle Nationen '
+  generated_answer: Die Abfrage lieferte 25 Zeilen.
+  generated_sql: SELECT n_name, n_regionkey FROM nation LIMIT 50
+  final_sql: SELECT n_name, n_regionkey FROM nation LIMIT 50
+  model_primary: gemini-3.1-flash-lite
+  model_used: gemini-3.1-flash-lite
+  fallback_used: false
+  validation_success: true
+  execution_success: true
+  error_type: null
+  error_message: null
+  row_count: 25
+  source_tables: &id002
+  - nation
+  created_from_positive_feedback: false
+  feedback:
+    rating: null
+    comment: null
+    corrected_sql: null
+    expected_answer: null
+  proposed_template:
+    intent: bitte gib mir Alle Nationen
+    trigger_phrases:
+    - bitte gib mir Alle Nationen
+    - bitte gib mir alle nationen
+    required_tables: *id002
+    metric_definitions: {}
+    join_logic: []
+    sql_skeleton: SELECT n_name, n_regionkey FROM nation LIMIT 50
+    notes: Automatically generated candidate from successful run. Requires manual
+      review.
+  review:
+    reviewed_by: null
+    reviewed_at: null
+    review_comment: null
+    rejection_reason: null
+    approved_template_id: null
+- candidate_id: cand_20260519_123118_d2cd
+  scenario: demo
+  dataset_id: demo_tpch
+  run_id: run_20260519_123023_4ee0
+  feedback_id: null
+  status: approved
+  is_active: false
+  candidate_type: solution_template
+  created_at: '2026-05-19T12:31:18'
+  updated_at: '2026-05-19T12:31:54'
+  original_question: 'bitte gib mir alle nationen aus '
+  generated_answer: Die Abfrage lieferte 25 Zeilen.
+  generated_sql: SELECT n_name, n_regionkey FROM nation LIMIT 50
+  final_sql: SELECT n_name, n_regionkey FROM nation LIMIT 50
+  model_primary: gemini-3.1-flash-lite
+  model_used: gemini-3.1-flash-lite
+  fallback_used: false
+  validation_success: true
+  execution_success: true
+  error_type: null
+  error_message: null
+  row_count: 25
+  source_tables:
+  - nation
+  created_from_positive_feedback: false
+  feedback:
+    rating: null
+    comment: null
+    corrected_sql: null
+    expected_answer: null
+  proposed_template:
+    intent: bitte gib mir alle nationen aus
+    trigger_phrases:
+    - bitte gib mir alle nationen aus
+    required_tables:
+    - nation
+    metric_definitions: {}
+    join_logic: []
+    sql_skeleton: SELECT n_name, n_regionkey FROM nation LIMIT 50
+    notes: Automatically generated candidate from successful run. Requires manual
+      review.
+  review:
+    reviewed_by: manual_review
+    reviewed_at: '2026-05-19T12:31:54'
+    review_comment: null
+    rejection_reason: null
+    approved_template_id: tmpl_bitte_gib_mir_alle_nationen_aus_20260519_123154_491b

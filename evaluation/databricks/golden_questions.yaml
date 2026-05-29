@@ -1,0 +1,53 @@
+questions:
+  - question_id: W01
+    title: Fakturierter Umsatz pro Kalendermonat
+    question: Zeige den gesamten fakturierten Umsatz pro Kalendermonat.
+    expected_behavior: >
+      Use only workspace.default.datenabzug_projekt_tum_invoices. Aggregate
+      SUM(turnover_inv) by calendar_yearmonth, or DATE_TRUNC on calendar_day.
+  - question_id: W02
+    title: Top Kunden nach fakturiertem Umsatz
+    question: Welche 10 Kunden haben den höchsten fakturierten Umsatz?
+    expected_behavior: >
+      Use only workspace.default.datenabzug_projekt_tum_invoices. Aggregate
+      SUM(turnover_inv), GROUP BY customer, ORDER BY descending revenue, LIMIT 10.
+  - question_id: W03
+    title: Lieferungen je Versandstelle
+    question: Zeige die Anzahl unterschiedlicher Lieferungen je Versandstelle.
+    expected_behavior: >
+      Use only workspace.default.datenabzug_projekt_tum_shipments. Use
+      COUNT(DISTINCT delivery_number) grouped by shipping_point.
+  - question_id: W04
+    title: Gelieferte Menge je Lieferart
+    question: Zeige die gelieferte Menge je Lieferart.
+    expected_behavior: >
+      Use only workspace.default.datenabzug_projekt_tum_shipments. Use
+      SUM(actual_quantity_delivered_in_sales_units) grouped by delivery_type.
+  - question_id: W05
+    title: Fracht- und Verpackungskosten je Versandstelle
+    question: Zeige die Frachtkosten und Verpackungskosten je Versandstelle.
+    expected_behavior: >
+      Use only workspace.default.datenabzug_projekt_tum_shipments. Aggregate
+      SUM(TRY_CAST(freight_costs AS DECIMAL(...))) and
+      SUM(TRY_CAST(packing_costs AS DECIMAL(...))) grouped by shipping_point.
+  - question_id: W06
+    title: Umsatz, Liefermenge und Lieferungen je Auftrag und Kunde
+    question: Zeige Umsatz, gelieferte Menge und Anzahl Lieferungen je Auftrag und Kunde.
+    expected_behavior: >
+      Pre aggregate invoices by order_number and customer. Pre aggregate shipments by
+      order_number and soldtoparty. Join the aggregates afterwards on order_number and
+      customer = soldtoparty.
+  - question_id: W07
+    title: S24 Compliance Rate
+    question: Zeige die S24 Compliance Rate je Versandstelle.
+    expected_behavior: >
+      Do not generate business SQL. Explain that S24 compliance is unsupported because
+      the required SLA, promised delivery, or requested delivery columns and business rules
+      are not available.
+  - question_id: W08
+    title: Rohertrag pro Versandstelle und Artikel
+    question: Zeige den Rohertrag pro Versandstelle und Artikel.
+    expected_behavior: >
+      Do not generate gross profit SQL. Explain that gross profit is unsupported because
+      no gross profit or cost-of-goods field exists, and revenue allocation to shipping point
+      or article requires confirmed business logic.

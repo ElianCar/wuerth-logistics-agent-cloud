@@ -1,5 +1,7 @@
 templates:
 - template_id: tmpl_bitte_zeige_mir_alle_nationen_an_20260512_211611_5485
+  scenario: demo
+  dataset_id: demo_tpch
   version: 1
   status: approved
   is_active: true
@@ -32,6 +34,8 @@ templates:
     model_used: llama3.2:3b
     fallback_used: false
 - template_id: tmpl_tpch_q1_summed_price_report_20260512_231500_manual
+  scenario: demo
+  dataset_id: demo_tpch
   version: 1
   status: approved
   is_active: true
@@ -79,6 +83,8 @@ templates:
     model_used: llama3.2:3b
     fallback_used: false
 - template_id: tmpl_bitte_gib_mir_alle_nationen_20260513_060942_dae5
+  scenario: demo
+  dataset_id: demo_tpch
   version: 1
   status: approved
   is_active: true
@@ -104,6 +110,8 @@ templates:
     model_used: llama3.2:3b
     fallback_used: false
 - template_id: tmpl_bitte_gib_mir_alle_nationen_aus_20260519_123154_491b
+  scenario: demo
+  dataset_id: demo_tpch
   version: 1
   status: approved
   is_active: true

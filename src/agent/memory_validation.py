@@ -24,6 +24,7 @@ FORBIDDEN_SQL_KEYWORDS = {
     "DELETE",
     "DROP",
     "EXEC",
+    "EXECUTE",
     "GRANT",
     "INSERT",
     "MERGE",
@@ -48,8 +49,8 @@ def validate_sql_skeleton(sql: str, schema_context: str | None = None) -> list[s
             f"sql_skeleton enthält ein verbotenes Schlüsselwort: {forbidden_match.group(1).upper()}."
         )
 
-    if not re.match(r"^\s*select\b", cleaned_sql, re.IGNORECASE):
-        errors.append("sql_skeleton muss mit SELECT beginnen.")
+    if not re.match(r"^\s*(select|with)\b", cleaned_sql, re.IGNORECASE):
+        errors.append("sql_skeleton muss mit SELECT oder WITH beginnen.")
 
     if schema_context is None:
         try:

@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from app.db import get_connection
-from app.schema import TPC_H_TABLES, get_schema_text
-from app.semantic_layer import get_semantic_layer_text
+from app.schema import get_schema_text_for_tables
+from src.config.scenarios import get_active_scenario, load_semantic_layer_text
 
 
 class PostgresAdapter:
@@ -15,9 +15,12 @@ class PostgresAdapter:
         return "PostgreSQL"
 
     def load_schema_context(self) -> str:
-        schema_text = get_schema_text()
-        semantic_layer_text = get_semantic_layer_text()
+        scenario = get_active_scenario()
+        schema_text = get_schema_text_for_tables(scenario.allowed_tables)
+        semantic_layer_text = load_semantic_layer_text(scenario)
         return (
+            f"Scenario: {scenario.scenario_id}\n"
+            f"Dataset ID: {scenario.dataset_id}\n"
             "Backend: postgres\n"
             "SQL dialect: PostgreSQL\n\n"
             f"{schema_text}\n\n"
@@ -53,10 +56,15 @@ class PostgresAdapter:
             }
 
     def get_safe_metadata(self) -> dict[str, object]:
+        scenario = get_active_scenario()
         return {
             "backend_name": self.get_backend_name(),
+            "backend_display_name": scenario.backend_display_name,
+            "scenario_id": scenario.scenario_id,
+            "scenario_label": scenario.label,
             "sql_dialect": self.get_sql_dialect(),
             "auth_type": "",
-            "allowed_tables": list(TPC_H_TABLES),
+            "semantic_layer": scenario.semantic_layer_filename,
+            "dataset_id": scenario.dataset_id,
+            "allowed_tables": list(scenario.allowed_tables),
         }
-

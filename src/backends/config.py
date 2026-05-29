@@ -4,15 +4,20 @@ from dataclasses import dataclass, field
 import os
 import re
 
+from src.config.scenarios import get_active_scenario
 
-DEFAULT_BACKEND = "postgres"
+
 POSTGRES_BACKEND = "postgres"
 DATABRICKS_BACKEND = "databricks"
 SUPPORTED_BACKENDS = {POSTGRES_BACKEND, DATABRICKS_BACKEND}
 SUPPORTED_DATABRICKS_AUTH_TYPES = {"oauth_u2m", "oauth_m2m", "pat"}
+AUTH_TYPE_ALIASES = {
+    "oauth": "oauth_u2m",
+    "databricks-oauth": "oauth_u2m",
+}
 DEFAULT_DATABRICKS_ALLOWED_TABLES = (
-    "workspace.default.datenabzug_projekt_tum_shipments",
     "workspace.default.datenabzug_projekt_tum_invoices",
+    "workspace.default.datenabzug_projekt_tum_shipments",
 )
 
 
@@ -53,7 +58,7 @@ def _env(name: str) -> str:
 
 
 def get_configured_backend_name() -> str:
-    return (_env("DB_BACKEND") or DEFAULT_BACKEND).lower()
+    return get_active_scenario().backend_name
 
 
 def _missing(required_names: list[str]) -> list[str]:
@@ -104,8 +109,9 @@ def _parse_allowed_tables(catalog: str, schema: str) -> tuple[str, ...]:
 
 def load_databricks_config() -> DatabricksBackendConfig:
     auth_type = (_env("DATABRICKS_AUTH_TYPE") or "oauth_u2m").lower()
+    auth_type = AUTH_TYPE_ALIASES.get(auth_type, auth_type)
     if auth_type not in SUPPORTED_DATABRICKS_AUTH_TYPES:
-        supported = ", ".join(sorted(SUPPORTED_DATABRICKS_AUTH_TYPES))
+        supported = ", ".join(["oauth", *sorted(SUPPORTED_DATABRICKS_AUTH_TYPES)])
         raise BackendConfigError(f"Unsupported DATABRICKS_AUTH_TYPE. Use one of: {supported}.")
 
     required = [
@@ -130,13 +136,23 @@ def load_databricks_config() -> DatabricksBackendConfig:
     _validate_identifier(catalog, "DATABRICKS_CATALOG")
     _validate_identifier(schema, "DATABRICKS_SCHEMA")
 
+    allowed_tables = _parse_allowed_tables(catalog, schema)
+    scenario_allowed_tables = set(get_active_scenario().allowed_tables)
+    disallowed_tables = [table for table in allowed_tables if table not in scenario_allowed_tables]
+    if disallowed_tables:
+        raise BackendConfigError(
+            "DATABRICKS_ALLOWED_TABLES contains tables outside the active scenario allowlist: "
+            + ", ".join(disallowed_tables)
+            + "."
+        )
+
     return DatabricksBackendConfig(
         auth_type=auth_type,
         server_hostname=_env("DATABRICKS_SERVER_HOSTNAME"),
         http_path=_env("DATABRICKS_HTTP_PATH"),
         catalog=catalog.lower(),
         schema=schema.lower(),
-        allowed_tables=_parse_allowed_tables(catalog, schema),
+        allowed_tables=allowed_tables,
         access_token=_env("DATABRICKS_ACCESS_TOKEN") or _env("DATABRICKS_TOKEN"),
         host=_env("DATABRICKS_HOST"),
         client_id=_env("DATABRICKS_CLIENT_ID"),
@@ -148,7 +164,7 @@ def load_backend_settings() -> BackendSettings:
     backend_name = get_configured_backend_name()
     if backend_name not in SUPPORTED_BACKENDS:
         supported = ", ".join(sorted(SUPPORTED_BACKENDS))
-        raise BackendConfigError(f"Unsupported DB_BACKEND '{backend_name}'. Use one of: {supported}.")
+        raise BackendConfigError(f"Unsupported data scenario backend '{backend_name}'. Use one of: {supported}.")
 
     if backend_name == DATABRICKS_BACKEND:
         return BackendSettings(
@@ -161,11 +177,17 @@ def load_backend_settings() -> BackendSettings:
 
 def get_safe_backend_metadata() -> dict[str, object]:
     backend_name = get_configured_backend_name()
+    scenario = get_active_scenario()
     metadata: dict[str, object] = {
         "backend_name": backend_name,
-        "sql_dialect": "Databricks SQL" if backend_name == DATABRICKS_BACKEND else "PostgreSQL",
+        "backend_display_name": scenario.backend_display_name,
+        "scenario_id": scenario.scenario_id,
+        "scenario_label": scenario.label,
+        "semantic_layer": scenario.semantic_layer_filename,
+        "dataset_id": scenario.dataset_id,
+        "sql_dialect": scenario.sql_dialect,
         "auth_type": "",
-        "allowed_tables": [],
+        "allowed_tables": list(scenario.allowed_tables),
     }
 
     if backend_name == DATABRICKS_BACKEND:
@@ -174,4 +196,3 @@ def get_safe_backend_metadata() -> dict[str, object]:
         metadata["allowed_tables"] = list(config.safe_allowed_tables)
 
     return metadata
-

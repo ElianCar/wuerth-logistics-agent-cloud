@@ -57,6 +57,7 @@ def read_csv_rows(path: Path) -> list[dict]:
 
 
 def main() -> None:
+    os.environ["DATA_SCENARIO"] = "demo"
     os.environ["LLM_PROVIDER"] = "gemini"
     os.environ["GEMINI_API_KEY"] = "key"
     os.environ["GEMINI_PRIMARY_MODEL"] = "gemini-2.5-flash-lite"

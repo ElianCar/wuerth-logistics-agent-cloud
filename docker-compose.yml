@@ -18,6 +18,27 @@ services:
       timeout: 5s
       retries: 10
 
+  wuerth_ingest:
+    build: .
+    container_name: agentic_ai_wuerth_ingest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATA_SCENARIO: ${DATA_SCENARIO:-demo}
+      SQL_BACKEND: ${SQL_BACKEND:-postgres}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: agentic_ai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./database/exports:/app/database/exports:ro
+    command: ["python", "scripts/ingest_wuerth_csv_to_postgres.py", "--if-present"]
+    restart: "no"
+
   app:
     build: .
     container_name: agentic_ai_streamlit
@@ -29,8 +50,10 @@ services:
       - ./logs:/app/logs
       - ./memory:/app/memory
       - ./evaluation:/app/evaluation
+      - ./database/exports:/app/database/exports:ro
     environment:
-      DB_BACKEND: postgres
+      DATA_SCENARIO: ${DATA_SCENARIO:-demo}
+      SQL_BACKEND: ${SQL_BACKEND:-postgres}
       GEMINI_ROUTER_MODEL: gemini-3.1-flash-lite
       GEMINI_EASY_MODEL: gemini-3.1-flash-lite
       GEMINI_MEDIUM_MODEL: gemini-3.1-flash-lite
@@ -43,11 +66,13 @@ services:
       OLLAMA_MODEL: llama3.2:3b
       PRIMARY_MODEL: llama3.2:3b
       FALLBACK_MODEL: llama3.2:3b
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      wuerth_ingest:
+        condition: service_completed_successfully
 
 volumes:
   postgres_data:

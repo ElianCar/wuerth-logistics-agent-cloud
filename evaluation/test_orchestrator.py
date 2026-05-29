@@ -95,6 +95,14 @@ class OrchestratorTests(unittest.TestCase):
         result, sql_mock = self.run_with_fake_router(router_state())
 
         sql_mock.assert_called_once()
+        router_context = sql_mock.call_args.kwargs["router_context"]
+        self.assertEqual(router_context["intent"], "aggregation")
+        self.assertEqual(router_context["needs_sql"], True)
+        self.assertEqual(router_context["output_mode"], "table")
+        self.assertEqual(router_context["language"], "de")
+        self.assertEqual(router_context["constraints"], {"time_window": None, "grouping_level": []})
+        self.assertEqual(router_context["execution_plan"], ["retrieve_templates", "run_sql_agent"])
+        self.assertEqual(router_context["template_candidates"], [])
         for field in (
             "final_sql",
             "generated_sql",
@@ -210,13 +218,14 @@ class OrchestratorTests(unittest.TestCase):
         called_config = sql_mock.call_args.kwargs["config"]
         self.assertEqual(called_config.primary_model, "hard-primary")
 
-    def test_memory_intent_key_is_preserved_but_not_passed_to_sql_agent(self) -> None:
+    def test_memory_intent_key_is_preserved_as_router_context_metadata(self) -> None:
         result, sql_mock = self.run_with_fake_router(
             router_state(memory_intent_key="ranking", intent="ranking")
         )
 
         self.assertEqual(result["memory_intent_key"], "ranking")
         self.assertNotIn("memory_intent_key", sql_mock.call_args.kwargs)
+        self.assertEqual(sql_mock.call_args.kwargs["router_context"]["memory_intent_key"], "ranking")
 
     def test_router_logging_handles_empty_template_candidate_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

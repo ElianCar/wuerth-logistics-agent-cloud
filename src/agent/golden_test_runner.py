@@ -11,19 +11,14 @@ from typing import Any
 import yaml
 
 from app.db import get_connection
-from src.agent.db import load_schema_context
+from src.agent.db import execute_read_only_sql, get_active_backend_metadata, load_schema_context
 from src.agent.id_utils import generate_run_id
 from src.agent.langgraph_sql_agent import SQLAgentConfig, run_sql_agent
 from src.agent.logging_utils import current_timestamp
 from src.agent.sql_validator import validate_generated_sql
+from src.config.scenarios import get_active_scenario
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EVALUATION_DIR = PROJECT_ROOT / "evaluation"
-GOLDEN_QUESTIONS_PATH = EVALUATION_DIR / "golden_questions.yaml"
-SOLUTION_SQL_DIR = EVALUATION_DIR / "solution_sql"
-GOLDEN_RESULTS_PATH = EVALUATION_DIR / "golden_results.jsonl"
-BACKEND_NAME = "postgresql"
 DEFAULT_COMPARE_CONFIG: dict[str, Any] = {
     "ignore_column_names": True,
     "ignore_row_order": True,
@@ -31,6 +26,30 @@ DEFAULT_COMPARE_CONFIG: dict[str, Any] = {
     "require_same_row_count": True,
     "require_same_column_count": True,
 }
+
+
+def evaluation_dir() -> Path:
+    return get_active_scenario().evaluation_dir
+
+
+def golden_questions_path() -> Path:
+    return evaluation_dir() / "golden_questions.yaml"
+
+
+def solution_sql_dir() -> Path:
+    return evaluation_dir() / "solution_sql"
+
+
+def golden_results_path() -> Path:
+    return evaluation_dir() / "golden_results.jsonl"
+
+
+def active_backend_name() -> str:
+    try:
+        metadata = get_active_backend_metadata()
+    except Exception:
+        return get_active_scenario().backend_name
+    return str(metadata.get("backend_name") or get_active_scenario().backend_name)
 
 
 def question_sort_key(question: dict[str, Any]) -> int:
@@ -41,8 +60,9 @@ def question_sort_key(question: dict[str, Any]) -> int:
         return 999
 
 
-def load_golden_questions(path: Path = GOLDEN_QUESTIONS_PATH) -> list[dict[str, Any]]:
-    with path.open("r", encoding="utf-8") as file:
+def load_golden_questions(path: Path | None = None) -> list[dict[str, Any]]:
+    resolved_path = path or golden_questions_path()
+    with resolved_path.open("r", encoding="utf-8") as file:
         data = yaml.safe_load(file) or {}
 
     if isinstance(data, dict):
@@ -70,12 +90,15 @@ def read_solution_sql(question: dict[str, Any]) -> str:
     sql_file = str(question.get("solution_sql_file") or "").strip()
     if not sql_file:
         raise RuntimeError(f"{question.get('question_id', '')} has no solution_sql_file.")
-    path = SOLUTION_SQL_DIR / sql_file
+    path = solution_sql_dir() / sql_file
     return path.read_text(encoding="utf-8").strip()
 
 
 def execute_read_only_sql_full(sql: str, user_question: str = "") -> dict[str, Any]:
     cleaned_sql = sql.strip().rstrip(";").strip()
+    if get_active_scenario().backend_name != "postgres":
+        return execute_read_only_sql(cleaned_sql, user_question)
+
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute("SET TRANSACTION READ ONLY")
@@ -459,7 +482,7 @@ def build_error_result(
         "execution_errors": {failure_type: failure_reason} if "execution" in failure_type else {},
         "model_used": agent_state.get("model_used") or agent_state.get("selected_model", ""),
         "memory_templates_enabled": use_approved_memory,
-        "backend": BACKEND_NAME,
+        "backend": active_backend_name(),
         "timestamp": started_at_iso,
         "agent_result_status": agent_state.get("result_status", ""),
         "agent_trace_steps": agent_state.get("trace_steps", []),
@@ -665,7 +688,7 @@ def evaluate_golden_question(
         "execution_errors": {},
         "model_used": agent_state.get("model_used") or agent_state.get("selected_model", ""),
         "memory_templates_enabled": use_approved_memory,
-        "backend": BACKEND_NAME,
+        "backend": active_backend_name(),
         "timestamp": started_at_iso,
         "agent_result_status": agent_state.get("result_status", ""),
         "agent_trace_steps": agent_state.get("trace_steps", []),
@@ -673,8 +696,9 @@ def evaluate_golden_question(
 
 
 def append_golden_result(result: dict[str, Any]) -> None:
-    GOLDEN_RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with GOLDEN_RESULTS_PATH.open("a", encoding="utf-8") as file:
+    path = golden_results_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as file:
         file.write(json.dumps(to_jsonable(result), sort_keys=True) + "\n")
 
 

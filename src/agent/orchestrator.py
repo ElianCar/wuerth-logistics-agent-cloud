@@ -155,6 +155,23 @@ def _router_template_candidate_scores(candidates: list[dict[str, Any]]) -> str:
     return "|".join(scores)
 
 
+def _build_router_context(state: OrchestratorState) -> dict[str, Any]:
+    return {
+        "intent": state.get("intent", ""),
+        "needs_sql": state.get("needs_sql", True),
+        "needs_clarification": state.get("needs_clarification", False),
+        "blocked_or_unsafe": state.get("blocked_or_unsafe", False),
+        "output_mode": state.get("output_mode", ""),
+        "language": state.get("language", ""),
+        "memory_intent_key": state.get("memory_intent_key", ""),
+        "complexity_tier": state.get("complexity_tier", ""),
+        "complexity_reason": state.get("complexity_reason", ""),
+        "constraints": state.get("constraints", {}),
+        "execution_plan": state.get("execution_plan", []),
+        "template_candidates": state.get("template_candidates", []),
+    }
+
+
 def run_router_node(state: OrchestratorState) -> dict[str, Any]:
     router_input: RouterState = {
         "user_question": state.get("user_question", ""),
@@ -242,6 +259,7 @@ def run_sql_agent_node(state: OrchestratorState) -> dict[str, Any]:
         # observable in the orchestrator result and must not influence SQL.
         trace_extension.append("Router context preserved for downstream reporting/template retrieval.")
 
+    router_context = _build_router_context(state)
     result = run_sql_agent(
         state.get("user_question", ""),
         run_id=state.get("run_id"),
@@ -258,6 +276,7 @@ def run_sql_agent_node(state: OrchestratorState) -> dict[str, Any]:
         ),
         log_to_query_log=bool(state.get("log_to_query_log", True)),
         language=state.get("language", ""),
+        router_context=router_context,
     )
 
     return {
@@ -457,6 +476,20 @@ def _run_forced_fallback(
         llm_provider=config.llm_provider,
         ollama_host=config.ollama_host,
     )
+    forced_router_context = {
+        "intent": "forced_fallback",
+        "needs_sql": True,
+        "needs_clarification": False,
+        "blocked_or_unsafe": False,
+        "output_mode": "table",
+        "language": "",
+        "memory_intent_key": "",
+        "complexity_tier": "hard",
+        "complexity_reason": "force_fallback",
+        "constraints": {},
+        "execution_plan": ["run_sql_agent"],
+        "template_candidates": [],
+    }
     result = run_sql_agent(
         user_question,
         run_id=run_id,
@@ -472,6 +505,7 @@ def _run_forced_fallback(
             initial.get("enable_memory_candidate_generation", True)
         ),
         log_to_query_log=bool(initial.get("log_to_query_log", True)),
+        router_context=forced_router_context,
     )
     trace = [
         "Router skipped because force_fallback=True.",

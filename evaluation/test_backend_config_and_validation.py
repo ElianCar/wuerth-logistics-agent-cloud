@@ -9,6 +9,7 @@ from src.backends.config import BackendConfigError, load_backend_settings, load_
 from src.backends.databricks.databricks_adapter import DatabricksAdapter
 from src.backends.config import DatabricksBackendConfig
 from src.backends.demo.postgres_adapter import PostgresAdapter
+from src.config.scenarios import reset_active_scenario_id
 
 
 DATABRICKS_SCHEMA_CONTEXT = """Backend: databricks
@@ -29,7 +30,8 @@ Semantic layer:
 
 def databricks_env(**overrides: str) -> dict[str, str]:
     env = {
-        "DB_BACKEND": "databricks",
+        "DATA_SCENARIO": "databricks",
+        "SQL_BACKEND": "databricks",
         "DATABRICKS_AUTH_TYPE": "oauth_u2m",
         "DATABRICKS_SERVER_HOSTNAME": "placeholder-host",
         "DATABRICKS_HTTP_PATH": "placeholder-path",
@@ -76,14 +78,30 @@ def raise_connection_error(**_kwargs: object) -> FakeConnection:
 
 
 class BackendConfigAndValidationTests(unittest.TestCase):
-    def test_unset_backend_defaults_to_postgres(self) -> None:
+    def setUp(self) -> None:
+        reset_active_scenario_id()
+
+    def tearDown(self) -> None:
+        reset_active_scenario_id()
+
+    def test_unset_scenario_defaults_to_demo_postgres(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             settings = load_backend_settings()
 
         self.assertEqual(settings.backend_name, "postgres")
 
+    def test_demo_scenario_selects_postgres_backend(self) -> None:
+        with patch.dict(os.environ, {"DATA_SCENARIO": "demo"}, clear=True):
+            settings = load_backend_settings()
+        self.assertEqual(settings.backend_name, "postgres")
+
+    def test_wuerth_local_scenario_selects_postgres_backend(self) -> None:
+        with patch.dict(os.environ, {"DATA_SCENARIO": "wuerth_local"}, clear=True):
+            settings = load_backend_settings()
+        self.assertEqual(settings.backend_name, "postgres")
+
     def test_databricks_missing_required_values_returns_safe_error(self) -> None:
-        with patch.dict(os.environ, {"DB_BACKEND": "databricks"}, clear=True):
+        with patch.dict(os.environ, {"DATA_SCENARIO": "databricks"}, clear=True):
             with self.assertRaises(BackendConfigError) as context:
                 load_backend_settings()
 
@@ -117,9 +135,9 @@ class BackendConfigAndValidationTests(unittest.TestCase):
 
     def test_validator_allows_approved_databricks_table_forms(self) -> None:
         sql_forms = [
-            "SELECT shipment_id FROM workspace.default.datenabzug_projekt_tum_shipments",
-            "SELECT s.shipment_id FROM default.datenabzug_projekt_tum_shipments AS s",
-            "SELECT shipment_id FROM datenabzug_projekt_tum_shipments",
+            "SELECT shipment_id FROM workspace.default.datenabzug_projekt_tum_shipments LIMIT 50",
+            "SELECT s.shipment_id FROM default.datenabzug_projekt_tum_shipments AS s LIMIT 50",
+            "SELECT shipment_id FROM datenabzug_projekt_tum_shipments LIMIT 50",
         ]
 
         for sql in sql_forms:
@@ -136,6 +154,23 @@ class BackendConfigAndValidationTests(unittest.TestCase):
         self.assertFalse(result.is_valid)
         self.assertIn("Unbekannte oder nicht erlaubte Tabellenreferenz", result.error)
 
+    def test_validator_blocks_tpch_tables_in_databricks_context(self) -> None:
+        result = validate_generated_sql(
+            "SELECT COUNT(*) FROM lineitem",
+            DATABRICKS_SCHEMA_CONTEXT,
+        )
+
+        self.assertFalse(result.is_valid)
+        self.assertIn("Unbekannte oder nicht erlaubte Tabellenreferenz", result.error)
+
+    def test_validator_allows_invoice_aggregation_in_databricks_context(self) -> None:
+        result = validate_generated_sql(
+            "SELECT SUM(amount) AS total_amount FROM workspace.default.datenabzug_projekt_tum_invoices",
+            DATABRICKS_SCHEMA_CONTEXT,
+        )
+
+        self.assertTrue(result.is_valid, result.error)
+
     def test_validator_blocks_destructive_sql(self) -> None:
         result = validate_generated_sql(
             "MERGE INTO workspace.default.datenabzug_projekt_tum_shipments USING source ON 1 = 1",
@@ -143,6 +178,24 @@ class BackendConfigAndValidationTests(unittest.TestCase):
         )
 
         self.assertFalse(result.is_valid)
+
+    def test_validator_blocks_unlimited_row_level_query(self) -> None:
+        result = validate_generated_sql(
+            "SELECT shipment_id FROM workspace.default.datenabzug_projekt_tum_shipments",
+            DATABRICKS_SCHEMA_CONTEXT,
+        )
+
+        self.assertFalse(result.is_valid)
+        self.assertIn("LIMIT 50", result.error)
+
+    def test_validator_allows_literal_limitation_message(self) -> None:
+        result = validate_generated_sql(
+            "SELECT 'S24 compliance is unsupported because required SLA columns are missing.' AS limitation",
+            DATABRICKS_SCHEMA_CONTEXT,
+        )
+
+        self.assertTrue(result.is_valid, result.error)
+        self.assertEqual(result.used_tables, [])
 
     def test_postgres_adapter_wraps_existing_backend(self) -> None:
         adapter = PostgresAdapter()

@@ -15,6 +15,7 @@ from src.agent.id_utils import generate_run_id
 from src.agent.logging_utils import infer_error_type, log_query_attempt, log_query_run
 from src.agent.memory_retriever import load_approved_solution_templates
 from src.agent.sql_validator import validate_generated_sql
+from src.config.scenarios import get_active_scenario
 from src.llm.model_adapter import (
     DEFAULT_GEMINI_BACKUP_MODEL,
     DEFAULT_GEMINI_PRIMARY_MODEL,
@@ -69,6 +70,7 @@ class SQLAgentState(TypedDict, total=False):
     enable_memory_candidate_generation: bool
     log_to_query_log: bool
     language: str
+    router_context: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -169,6 +171,58 @@ def extract_context_value(schema_context: str, key: str, default: str) -> str:
     return default
 
 
+def build_scenario_sql_rules() -> str:
+    scenario = get_active_scenario()
+    if scenario.scenario_id == "wuerth_local":
+        allowed_tables = "\n".join(f"- {table}" for table in scenario.allowed_tables)
+        return f"""Würth local PostgreSQL scenario rules:
+- Generate PostgreSQL SQL only.
+- Use only these local Würth PostgreSQL tables:
+{allowed_tables}
+- Use explicit joins.
+- Use aliases i for invoices and s for shipments when joining the two tables.
+- Do not use TPC-H demo tables.
+- Do not use Databricks catalog names or Databricks-only syntax such as TRY_CAST.
+- Freight cost is available in wuerth.shipments.freight_costs and can be summed directly.
+- Revenue/turnover columns are not present in the current local invoice CSV. If the user asks for revenue, turnover, Umsatz, or invoice value, return a single literal limitation query in this shape: SELECT 'The requested revenue metric is unsupported because no revenue or turnover column is present in the local Würth invoice CSV.' AS limitation
+- Packing cost columns are not present in the current local shipment CSV. If the user asks for packing cost, return a single literal limitation query in this shape: SELECT 'The requested packing cost metric is unsupported because no packing cost column is present in the local Würth shipment CSV.' AS limitation
+- The project join keys are order_number, customer equals shiptoparty, and material_price equals customer_material. The material mapping is based on current CSV column names and needs business confirmation.
+- Invoices and shipments do not match perfectly one to one because invoicing and shipping can occur at different times.
+- For combined invoice and shipment questions, pre aggregate invoices first, pre aggregate shipments first, then join the aggregates on order_number, customer = shiptoparty, and material_price = customer_material where the material key is relevant.
+- Do not sum raw joined invoice and shipment rows directly.
+- Use LEFT JOIN or anti join patterns when the user asks for unmatched invoice or shipment records.
+"""
+
+    if scenario.scenario_id == "databricks":
+        allowed_tables = "\n".join(f"- {table}" for table in scenario.allowed_tables)
+        return f"""Databricks scenario rules:
+- Generate Databricks SQL only.
+- Use fully qualified table names.
+- Use only these Würth tables:
+{allowed_tables}
+- Use explicit joins.
+- Use aliases i for invoices and s for shipments when joining the two tables.
+- Use TRY_CAST for freight_costs and packing_costs before numeric aggregation.
+- Use calendar_day as the default invoice reporting date.
+- Use shipment_date as the default shipment date.
+- Do not use TPC-H tables.
+- Do not use PostgreSQL-specific syntax.
+- Do not use information_schema for business questions.
+- For combined invoice and shipment questions involving sums or counts from both tables, pre aggregate invoices first, pre aggregate shipments first, then join the aggregates on order_number and customer = soldtoparty.
+- Do not sum raw joined invoice and shipment rows directly.
+- For direct delivery count, use COUNT(DISTINCT CASE WHEN flag_direct_delivery = 'X' THEN delivery_number END).
+- For direct delivery share, use COUNT(DISTINCT CASE WHEN flag_direct_delivery = 'X' THEN delivery_number END) * 1.0 / COUNT(DISTINCT delivery_number).
+- Do not invent business-table SQL for S24 compliance, on-time delivery rate, delivery delay, or gross profit/Rohertrag. For these unsupported KPIs, return a single literal limitation query in this shape: SELECT 'The requested KPI is unsupported because the required columns or business rules are not available.' AS limitation
+"""
+
+    return """Demo data scenario rules:
+- Preserve the existing PostgreSQL demo SQL behavior.
+- Use only the demo TPC-H tables exposed in the schema context.
+- For revenue, use SUM(l_extendedprice * (1 - l_discount)) unless otherwise stated.
+- Do not use Würth Databricks table names in demo mode.
+"""
+
+
 def build_sql_prompt(state: SQLAgentState) -> str:
     repair_context = ""
     correction_context = ""
@@ -207,6 +261,7 @@ User correction:
     schema_context = state.get("schema_context", "")
     sql_dialect = extract_context_value(schema_context, "SQL dialect", "PostgreSQL")
     backend_name = extract_context_value(schema_context, "Backend", "postgres")
+    scenario_rules = build_scenario_sql_rules()
 
     return f"""You are a {sql_dialect} SQL generator.
 
@@ -217,10 +272,11 @@ Generate exactly one read-only SELECT query. A WITH common table expression is a
 Do not use DROP, DELETE, UPDATE, INSERT, ALTER, TRUNCATE, COPY, CREATE, MERGE, GRANT, or REVOKE.
 Use only the provided tables and columns.
 Prefer explicit JOIN syntax.
-Do not add a LIMIT clause unless the user explicitly asks for a limit, top-N, or bottom-N result.
-For revenue, use SUM(l_extendedprice * (1 - l_discount)) unless otherwise stated.
+Add LIMIT 50 for broad row-level queries that are not aggregations.
 Active backend: {backend_name}
 SQL dialect: {sql_dialect}
+
+{scenario_rules}
 
 Database and semantic context:
 {schema_context}
@@ -598,6 +654,7 @@ def run_sql_agent(
     enable_memory_candidate_generation: bool = True,
     log_to_query_log: bool = True,
     language: str = "",
+    router_context: dict[str, Any] | None = None,
     schema_loader: SchemaLoader = load_schema_context,
     sql_generator: SQLGenerator = default_sql_generator,
     sql_executor: SQLExecutor = execute_read_only_sql,
@@ -655,6 +712,7 @@ def run_sql_agent(
         "enable_memory_candidate_generation": enable_memory_candidate_generation,
         "log_to_query_log": log_to_query_log,
         "language": language,
+        "router_context": router_context or {},
     }
     final_state: SQLAgentState = graph.invoke(initial_state, {"recursion_limit": 30})
     latency_seconds = perf_counter() - started_at
@@ -686,6 +744,7 @@ def run_sql_agent(
             "enable_memory_candidate_generation": enable_memory_candidate_generation,
             "log_to_query_log": log_to_query_log,
             "language": language,
+            "router_context": router_context or final_state.get("router_context", {}),
         }
     )
 
