@@ -1,45 +1,190 @@
 # Agentic AI SQL Agent Prototype
 
-This repository contains the Würth Agentic AI / LangGraph SQL Agent prototype. The app supports two isolated data scenarios:
+This repository contains the Würth Agentic AI / LangGraph SQL Agent prototype.
 
-- **Würth Databricks**: default and primary scenario, backed by Databricks SQL Warehouse.
-- **Demo data**: optional TPC-H demo scenario, backed by the old PostgreSQL demo database.
+The normal local prototype uses PostgreSQL for both supported local data scenarios:
 
-The Streamlit UI, LangGraph flow, feedback, logging, repair, fallback, and memory review flows are shared, but scenario-owned data files are separated so demo TPC-H context does not influence Würth SQL generation.
+- **Demo data**: TPC-H tables in the PostgreSQL `public` schema.
+- **Würth local CSV data**: Würth invoice and shipment CSV exports imported into PostgreSQL schema `wuerth`.
 
-## Scenarios
+Databricks code is kept as optional/legacy integration code, but Databricks is not required for the normal local Docker workflow.
+
+## Local Data Scenarios
 
 The active scenario is selected in the Streamlit sidebar under **Data scenario**. Initial selection comes from:
 
 ```text
-DATA_SCENARIO=databricks
+DATA_SCENARIO=demo
 ```
 
-Allowed values:
+Supported local values:
 
 ```text
-databricks
 demo
+wuerth_local
 ```
 
-If `DATA_SCENARIO` is unset, the app defaults to `databricks`.
+The local Docker Compose workflow starts PostgreSQL by default. `SQL_BACKEND=postgres` is the expected backend for local prototype use.
 
-## Würth Databricks Scenario
+## Demo PostgreSQL Scenario
 
-The Würth scenario exposes only these tables:
+Demo mode uses the existing TPC-H tables:
 
 ```text
-workspace.default.datenabzug_projekt_tum_invoices
-workspace.default.datenabzug_projekt_tum_shipments
+region
+nation
+supplier
+customer
+part
+partsupp
+orders
+lineitem
 ```
 
-The active semantic layer is:
+The active demo semantic layer is:
+
+```text
+semantic_layer/demo/tpch_semantic_layer.yaml
+```
+
+## Würth Local PostgreSQL Scenario
+
+Place the Würth CSV files under:
+
+```text
+database/exports/Wuerth
+```
+
+The loader also accepts the lowercase path:
+
+```text
+database/exports/wuerth
+```
+
+Expected files:
+
+```text
+Wuerth_invoices.csv
+Wuerth_shipments.csv
+```
+
+Docker runs the ingestion script before Streamlit starts:
+
+```text
+scripts/ingest_wuerth_csv_to_postgres.py
+```
+
+The script creates:
+
+```text
+wuerth.invoices
+wuerth.shipments
+```
+
+The active Würth semantic layer is the existing Würth semantic layer file, updated for the local PostgreSQL CSV scenario:
 
 ```text
 semantic_layer/databricks/wuerth_semantic_layer.yaml
 ```
 
-Required Databricks environment variables:
+The current local CSV files expose these join-key candidates:
+
+```text
+Order Number: invoices.order_number = shipments.order_number
+Customer to Ship to Party: invoices.customer = shipments.shiptoparty
+Material key candidate: invoices.material_price = shipments.customer_material
+```
+
+The material-key mapping is based on the current CSV column names and still needs business confirmation because neither file contains a column literally named `material_number`.
+
+Important process warning: invoices and shipments may not match one to one because invoicing and shipping can happen with time delays. For combined invoice/shipment analysis, aggregate invoices first, aggregate shipments first, and then join the aggregates. Do not sum measures after a raw many-to-many join.
+
+Current source-data limitation: the local CSV files currently do not contain a revenue/turnover column in invoices or a packing-cost column in shipments. The semantic layer marks those KPIs as unsupported until the columns are provided. Freight cost is available as `wuerth.shipments.freight_costs`.
+
+## Run With Docker
+
+Copy environment defaults:
+
+```bash
+cp .env.example .env
+```
+
+Start the local stack:
+
+```bash
+docker compose up --build
+```
+
+Open:
+
+```text
+http://localhost:8501
+```
+
+Select **Demo data** or **Würth local CSV data** in the sidebar.
+
+To start directly in Würth local mode:
+
+```bash
+DATA_SCENARIO=wuerth_local docker compose up --build
+```
+
+## Manual Ingestion
+
+When PostgreSQL is running locally, the Würth import can be run manually:
+
+```bash
+python scripts/ingest_wuerth_csv_to_postgres.py
+```
+
+Docker container values are:
+
+```text
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+POSTGRES_DB=agentic_ai
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+```
+
+Local host defaults are in `.env.example`.
+
+## Validation
+
+Validate CSV files, scenario config, semantic layer wiring, and database tables:
+
+```bash
+python scripts/validate_wuerth_local_setup.py
+```
+
+Validate only file/config/semantic-layer checks without a database:
+
+```bash
+python scripts/validate_wuerth_local_setup.py --skip-db
+```
+
+General checks:
+
+```bash
+python -m compileall app src scripts streamlit_app.py evaluation
+python -m unittest discover -s evaluation -p "test_*.py"
+```
+
+Run the existing LangGraph smoke test:
+
+```bash
+python evaluation/run_langgraph_smoke_tests.py
+```
+
+Run Würth local golden questions after CSV ingestion:
+
+```bash
+DATA_SCENARIO=wuerth_local python evaluation/run_evaluation.py W01 W02 W03 W04 W05
+```
+
+## Optional Databricks
+
+Databricks remains available only when explicitly configured:
 
 ```text
 DATA_SCENARIO=databricks
@@ -49,182 +194,6 @@ DATABRICKS_SERVER_HOSTNAME=<your-databricks-server-hostname>
 DATABRICKS_HTTP_PATH=<your-sql-warehouse-http-path>
 DATABRICKS_CATALOG=workspace
 DATABRICKS_SCHEMA=default
-DATABRICKS_ALLOWED_TABLES=workspace.default.datenabzug_projekt_tum_invoices,workspace.default.datenabzug_projekt_tum_shipments
 ```
 
-In this organization, personal access tokens are disabled. Use OAuth user-to-machine locally:
-
-```text
-DATABRICKS_AUTH_TYPE=oauth
-```
-
-OAuth machine-to-machine with a service principal is the recommended direction for AWS or Würth-hosted deployment:
-
-```text
-DATABRICKS_AUTH_TYPE=oauth_m2m
-DATABRICKS_HOST=<your-databricks-workspace-url>
-DATABRICKS_CLIENT_ID=<service-principal-client-id>
-DATABRICKS_CLIENT_SECRET=<service-principal-client-secret>
-```
-
-Credentials, hostnames, HTTP paths, tokens, client IDs, and client secrets must never be committed or shown in logs/UI.
-
-## Unsupported Würth KPIs
-
-The current Würth semantic layer explicitly treats these KPIs as unsupported unless additional columns and confirmed business rules are provided:
-
-- S24 compliance
-- on-time delivery rate
-- delivery delay
-- gross profit / Rohertrag
-
-The SQL prompt also warns against raw invoice-to-shipment joins that can multiply measures. Combined invoice and shipment measures must be pre-aggregated first, then joined on `order_number` and `customer = soldtoparty`.
-
-## Demo Data Scenario
-
-The old TPC-H demo is available only by selecting **Demo data** in the sidebar or setting:
-
-```text
-DATA_SCENARIO=demo
-```
-
-Demo PostgreSQL variables:
-
-```text
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_DB=agentic_ai
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=
-```
-
-The demo semantic layer and memory files live under:
-
-```text
-semantic_layer/demo/
-memory/demo/
-evaluation/demo/
-```
-
-## Folder Layout
-
-Scenario-specific files are organized under scenario folders:
-
-```text
-semantic_layer/
-  databricks/wuerth_semantic_layer.yaml
-  demo/tpch_semantic_layer.yaml
-
-memory/
-  databricks/
-  demo/
-
-evaluation/
-  databricks/
-  demo/
-
-scripts/
-  databricks/test_databricks_connection.py
-
-src/backends/
-  databricks/
-  demo/
-```
-
-## Run Locally
-
-Install dependencies:
-
-```bash
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-Copy and fill local environment values:
-
-```bash
-cp .env.example .env
-```
-
-Run Streamlit:
-
-```bash
-streamlit run streamlit_app.py
-```
-
-## Run with Docker
-
-Default Docker behavior starts only the Streamlit app with Würth Databricks as the selected scenario:
-
-```bash
-docker compose build
-docker compose up
-```
-
-Open:
-
-```text
-http://localhost:8501
-```
-
-The default `docker compose up` does not start PostgreSQL. To use the old demo data in Docker, start the demo profile:
-
-```bash
-docker compose --profile demo up --build
-```
-
-If the demo database needs fresh CSV exports:
-
-```bash
-source .venv/bin/activate
-python database/export_tpch_to_csv.py
-```
-
-## Databricks Smoke Test
-
-Start the Databricks SQL Warehouse manually first. Then run:
-
-```bash
-python scripts/databricks/test_databricks_connection.py
-```
-
-The script opens a Databricks connection, runs `SELECT 1`, and runs table reachability checks for the two allowed Würth tables. It prints only safe status messages and row counts.
-
-Live Databricks tests are intentionally not run during normal implementation because the SQL Warehouse is manually started and auto-stops after a short idle period.
-
-## TLS Certificates
-
-Databricks public endpoints normally chain to public certificate authorities. If local or Docker Databricks connections fail with `SSLCertVerificationError` or `self-signed certificate in certificate chain`, the missing trust is usually the Würth/company TLS inspection root CA or endpoint-protection proxy CA, not a Databricks CA.
-
-Install the required corporate root/intermediate CA through the managed OS trust store, or point Python at a PEM bundle that includes:
-
-```text
-certifi root certificates
-Würth/company TLS inspection root CA
-endpoint-protection proxy CA if used on the machine
-```
-
-Example:
-
-```bash
-SSL_CERT_FILE=/path/to/company-ca-bundle.pem \
-REQUESTS_CA_BUNDLE=/path/to/company-ca-bundle.pem \
-python scripts/databricks/test_databricks_connection.py
-```
-
-Do not disable TLS verification. Do not commit internal certificate bundles.
-
-## Verification
-
-Offline checks:
-
-```bash
-python -m compileall .
-python -m unittest discover -s evaluation -p "test_*.py"
-```
-
-Databricks live check, only after manually starting the warehouse:
-
-```bash
-python scripts/databricks/test_databricks_connection.py
-```
+Do not commit credentials, hostnames, HTTP paths, tokens, client IDs, client secrets, or internal certificates.

@@ -1,7 +1,7 @@
-from src.config.scenarios import SCENARIOS, load_semantic_layer_text
+from src.config.scenarios import get_active_scenario, load_semantic_layer_text
 
-SEMANTIC_LAYER_PATH = SCENARIOS["demo"].semantic_layer_path
+SEMANTIC_LAYER_PATH = get_active_scenario().semantic_layer_path
 
 
 def get_semantic_layer_text() -> str:
-    return load_semantic_layer_text(SCENARIOS["demo"])
+    return load_semantic_layer_text(get_active_scenario())

@@ -9,6 +9,7 @@ from src.backends.config import BackendConfigError, load_backend_settings, load_
 from src.backends.databricks.databricks_adapter import DatabricksAdapter
 from src.backends.config import DatabricksBackendConfig
 from src.backends.demo.postgres_adapter import PostgresAdapter
+from src.config.scenarios import reset_active_scenario_id
 
 
 DATABRICKS_SCHEMA_CONTEXT = """Backend: databricks
@@ -77,15 +78,25 @@ def raise_connection_error(**_kwargs: object) -> FakeConnection:
 
 
 class BackendConfigAndValidationTests(unittest.TestCase):
-    def test_unset_scenario_defaults_to_databricks_and_requires_config(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaises(BackendConfigError) as context:
-                load_backend_settings()
+    def setUp(self) -> None:
+        reset_active_scenario_id()
 
-        self.assertIn("Missing Databricks configuration", str(context.exception))
+    def tearDown(self) -> None:
+        reset_active_scenario_id()
+
+    def test_unset_scenario_defaults_to_demo_postgres(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = load_backend_settings()
+
+        self.assertEqual(settings.backend_name, "postgres")
 
     def test_demo_scenario_selects_postgres_backend(self) -> None:
         with patch.dict(os.environ, {"DATA_SCENARIO": "demo"}, clear=True):
+            settings = load_backend_settings()
+        self.assertEqual(settings.backend_name, "postgres")
+
+    def test_wuerth_local_scenario_selects_postgres_backend(self) -> None:
+        with patch.dict(os.environ, {"DATA_SCENARIO": "wuerth_local"}, clear=True):
             settings = load_backend_settings()
         self.assertEqual(settings.backend_name, "postgres")
 

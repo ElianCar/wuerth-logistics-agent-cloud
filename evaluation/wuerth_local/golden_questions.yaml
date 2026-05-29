@@ -1,0 +1,48 @@
+questions:
+  - question_id: W01
+    title: Total revenue from invoices
+    question: What is the total revenue from invoices?
+    solution_sql_file: w01_total_revenue_limitation.sql
+    expected_behavior: >
+      Revenue should normally come from the invoice table, but the current local invoice CSV has
+      no revenue, turnover, invoice amount, or currency column. Return an explicit limitation.
+    max_preview_rows: 20
+
+  - question_id: W02
+    title: Total freight and packing costs
+    question: What are the total freight costs and packing costs?
+    solution_sql_file: w02_freight_and_packing_costs.sql
+    expected_behavior: >
+      Use wuerth.shipments for freight_costs. Packing costs are not present in the current local
+      shipment CSV, so expose that limitation instead of inventing a packing cost.
+    compare:
+      ignore_column_names: false
+      numeric_tolerance: 0.001
+    max_preview_rows: 20
+
+  - question_id: W03
+    title: Revenue, freight cost and packing cost by order number
+    question: Show revenue, freight cost and packing cost by order number.
+    solution_sql_file: w03_revenue_freight_packing_limitation.sql
+    expected_behavior: >
+      The requested combination needs missing revenue and packing cost columns. Return an explicit
+      limitation until those columns are available in the local CSV exports.
+    max_preview_rows: 20
+
+  - question_id: W04
+    title: Invoice records without matching shipment records
+    question: Which order numbers have invoice records but no matching shipment records?
+    solution_sql_file: w04_invoices_without_shipments.sql
+    expected_behavior: >
+      Pre-aggregate invoice and shipment keys first. Match on order_number, customer = shiptoparty,
+      and material_price = customer_material. Return invoice-side keys without a shipment match.
+    max_preview_rows: 50
+
+  - question_id: W05
+    title: Shipment records without matching invoice records
+    question: Which order numbers have shipment records but no matching invoice records?
+    solution_sql_file: w05_shipments_without_invoices.sql
+    expected_behavior: >
+      Pre-aggregate shipment and invoice keys first. Match on order_number, shiptoparty = customer,
+      and customer_material = material_price. Return shipment-side keys without an invoice match.
+    max_preview_rows: 50

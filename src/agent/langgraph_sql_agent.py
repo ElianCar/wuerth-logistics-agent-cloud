@@ -171,6 +171,26 @@ def extract_context_value(schema_context: str, key: str, default: str) -> str:
 
 def build_scenario_sql_rules() -> str:
     scenario = get_active_scenario()
+    if scenario.scenario_id == "wuerth_local":
+        allowed_tables = "\n".join(f"- {table}" for table in scenario.allowed_tables)
+        return f"""Würth local PostgreSQL scenario rules:
+- Generate PostgreSQL SQL only.
+- Use only these local Würth PostgreSQL tables:
+{allowed_tables}
+- Use explicit joins.
+- Use aliases i for invoices and s for shipments when joining the two tables.
+- Do not use TPC-H demo tables.
+- Do not use Databricks catalog names or Databricks-only syntax such as TRY_CAST.
+- Freight cost is available in wuerth.shipments.freight_costs and can be summed directly.
+- Revenue/turnover columns are not present in the current local invoice CSV. If the user asks for revenue, turnover, Umsatz, or invoice value, return a single literal limitation query in this shape: SELECT 'The requested revenue metric is unsupported because no revenue or turnover column is present in the local Würth invoice CSV.' AS limitation
+- Packing cost columns are not present in the current local shipment CSV. If the user asks for packing cost, return a single literal limitation query in this shape: SELECT 'The requested packing cost metric is unsupported because no packing cost column is present in the local Würth shipment CSV.' AS limitation
+- The project join keys are order_number, customer equals shiptoparty, and material_price equals customer_material. The material mapping is based on current CSV column names and needs business confirmation.
+- Invoices and shipments do not match perfectly one to one because invoicing and shipping can occur at different times.
+- For combined invoice and shipment questions, pre aggregate invoices first, pre aggregate shipments first, then join the aggregates on order_number, customer = shiptoparty, and material_price = customer_material where the material key is relevant.
+- Do not sum raw joined invoice and shipment rows directly.
+- Use LEFT JOIN or anti join patterns when the user asks for unmatched invoice or shipment records.
+"""
+
     if scenario.scenario_id == "databricks":
         allowed_tables = "\n".join(f"- {table}" for table in scenario.allowed_tables)
         return f"""Databricks scenario rules:
