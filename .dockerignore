@@ -5,6 +5,8 @@ __pycache__
 .env
 logs
 database/tpch.duckdb
+database/exports/wuerth
+database/exports/Wuerth
 *.duckdb
 .DS_Store
 .pytest_cache

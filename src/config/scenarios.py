@@ -14,6 +14,11 @@ DATABRICKS_ALLOWED_TABLES = (
     "workspace.default.datenabzug_projekt_tum_shipments",
 )
 
+WUERTH_LOCAL_ALLOWED_TABLES = (
+    "wuerth.invoices",
+    "wuerth.shipments",
+)
+
 DEMO_ALLOWED_TABLES = (
     "region",
     "nation",
@@ -25,8 +30,9 @@ DEMO_ALLOWED_TABLES = (
     "lineitem",
 )
 
-SUPPORTED_SCENARIOS = {"databricks", "demo"}
-DEFAULT_SCENARIO_ID = "databricks"
+LOCAL_SCENARIO_OPTIONS = ("demo", "wuerth_local")
+SUPPORTED_SCENARIOS = {"databricks", "demo", "wuerth_local"}
+DEFAULT_SCENARIO_ID = "demo"
 
 _active_scenario_id: ContextVar[str | None] = ContextVar("active_data_scenario", default=None)
 
@@ -75,6 +81,18 @@ SCENARIOS: dict[str, ScenarioConfig] = {
         dataset_id="wuerth_shipment_invoice_v1",
         allowed_tables=DATABRICKS_ALLOWED_TABLES,
     ),
+    "wuerth_local": ScenarioConfig(
+        scenario_id="wuerth_local",
+        label="Würth local CSV data",
+        backend_name="postgres",
+        backend_display_name="PostgreSQL Würth local database",
+        sql_dialect="PostgreSQL",
+        semantic_layer_path=PROJECT_ROOT / "semantic_layer" / "databricks" / "wuerth_semantic_layer.yaml",
+        memory_dir=PROJECT_ROOT / "memory" / "wuerth_local",
+        evaluation_dir=PROJECT_ROOT / "evaluation" / "wuerth_local",
+        dataset_id="wuerth_local_shipment_invoice_csv_v1",
+        allowed_tables=WUERTH_LOCAL_ALLOWED_TABLES,
+    ),
     "demo": ScenarioConfig(
         scenario_id="demo",
         label="Demo data",
@@ -121,12 +139,16 @@ def set_active_scenario_id(scenario_id: str) -> None:
     _active_scenario_id.set(normalize_scenario_id(scenario_id))
 
 
+def reset_active_scenario_id() -> None:
+    _active_scenario_id.set(None)
+
+
 def get_active_scenario() -> ScenarioConfig:
     return SCENARIOS[get_active_scenario_id()]
 
 
 def get_scenario_options() -> list[ScenarioConfig]:
-    return [SCENARIOS["databricks"], SCENARIOS["demo"]]
+    return [SCENARIOS[scenario_id] for scenario_id in LOCAL_SCENARIO_OPTIONS]
 
 
 def load_semantic_layer_text(scenario: ScenarioConfig | None = None) -> str:
