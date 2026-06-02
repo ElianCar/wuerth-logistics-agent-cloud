@@ -44,6 +44,32 @@ PAGE_GOLDEN = "Golden-Testmodus"
 PAGE_MEMORY = "Memory-Prüfung"
 PAGE_TEMPLATES = "Freigegebene Templates"
 
+_STEP_LABELS: dict[str, str] = {
+    "run_router": "Anfrage analysieren",
+    "select_model": "Modell auswählen",
+    "terminal_response": "Direkte Antwort erstellen",
+    "load_schema": "Datenbankschema laden",
+    "generate_sql": "SQL generieren",
+    "validate_sql": "SQL validieren",
+    "execute_sql": "SQL ausführen",
+    "repair_sql": "SQL reparieren",
+    "switch_model": "Auf Fallback-Modell wechseln",
+    "generate_final_answer": "Antwort formulieren",
+}
+
+_STEP_SYMBOLS: dict[str, str] = {
+    "run_router": "⊙",
+    "select_model": "⚙",
+    "terminal_response": "◉",
+    "load_schema": "≡",
+    "generate_sql": "✎",
+    "validate_sql": "✓",
+    "execute_sql": "▶",
+    "repair_sql": "↺",
+    "switch_model": "⇄",
+    "generate_final_answer": "◉",
+}
+
 
 def result_to_dataframe(record: dict) -> pd.DataFrame:
     query_result = record.get("query_result", {})
@@ -227,8 +253,24 @@ def retry_with_comment(record: dict, index: int, comment: str, config: SQLAgentC
         st.warning("Bitte zuerst eine kurze Korrektur eingeben.")
         return
 
+    _steps_log: list[dict] = []
     write_feedback(record, "neutral", f"retry_with_comment: {comment}")
-    with st.spinner("Wiederhole den Lauf mit deiner Korrektur..."):
+    with st.status("Wiederhole den Lauf mit deiner Korrektur...", expanded=True) as _retry_status:
+        def _retry_on_step(node: str, duration: float, metadata: dict) -> None:
+            symbol = _STEP_SYMBOLS.get(node, "·")
+            label = _STEP_LABELS.get(node, node)
+            _retry_status.write(f"{symbol} {label}   {duration:.1f}s")
+            if node == "run_router":
+                intent = metadata.get("intent", "")
+                tier = metadata.get("complexity_tier", "")
+                reason = metadata.get("complexity_reason", "")
+                if intent:
+                    _retry_status.write(f"  Intent: {intent}")
+                if tier or reason:
+                    _retry_status.write(f"  Complexity: {tier} – {reason}")
+            _steps_log.append({"node": node, "label": label, "symbol": symbol,
+                                "duration": duration, "metadata": metadata})
+
         corrected_record = run_orchestrator(
             record.get("user_question", ""),
             config=config,
@@ -236,7 +278,10 @@ def retry_with_comment(record: dict, index: int, comment: str, config: SQLAgentC
             previous_sql_error=record.get("sql_error", ""),
             previous_final_answer=record.get("final_answer", ""),
             user_correction=comment.strip(),
+            step_callback=_retry_on_step,
         )
+        _retry_status.update(label="Fertig ✓", state="complete", expanded=False)
+    corrected_record["agent_step_log"] = _steps_log
     st.session_state.history[index] = corrected_record
     st.rerun()
 
@@ -247,8 +292,16 @@ def rerun_with_fallback(
     config: SQLAgentConfig,
     comment: str = "",
 ) -> None:
+    _steps_log: list[dict] = []
     write_feedback(record, "neutral", f"fallback_requested: {comment}")
-    with st.spinner("Wiederhole den Lauf mit dem Fallback-Modell..."):
+    with st.status("Wiederhole den Lauf mit dem Fallback-Modell...", expanded=True) as _fb_status:
+        def _fb_on_step(node: str, duration: float, metadata: dict) -> None:
+            symbol = _STEP_SYMBOLS.get(node, "·")
+            label = _STEP_LABELS.get(node, node)
+            _fb_status.write(f"{symbol} {label}   {duration:.1f}s")
+            _steps_log.append({"node": node, "label": label, "symbol": symbol,
+                                "duration": duration, "metadata": metadata})
+
         fallback_record = run_orchestrator(
             record.get("user_question", ""),
             config=config,
@@ -257,7 +310,10 @@ def rerun_with_fallback(
             previous_sql_error=record.get("sql_error", ""),
             previous_final_answer=record.get("final_answer", ""),
             user_correction=comment.strip(),
+            step_callback=_fb_on_step,
         )
+        _fb_status.update(label="Fertig ✓", state="complete", expanded=False)
+    fallback_record["agent_step_log"] = _steps_log
     st.session_state.history[index] = fallback_record
     st.rerun()
 
@@ -1016,6 +1072,36 @@ def render_golden_test_mode_view(config: SQLAgentConfig) -> None:
     render_golden_results(st.session_state.last_golden_results)
 
 
+def render_step_log(record: dict) -> None:
+    step_log = record.get("agent_step_log", [])
+    if not step_log:
+        trace = record.get("trace_steps", [])
+        if trace:
+            with st.expander("Ablaufschritte", expanded=False):
+                for step in trace:
+                    st.markdown(f"- {step}")
+        return
+
+    with st.expander("Ablaufschritte", expanded=False):
+        for step in step_log:
+            symbol = step.get("symbol", "·")
+            label = step.get("label", step.get("node", ""))
+            duration = step.get("duration", 0.0)
+            st.markdown(
+                f"{symbol}&nbsp; {label} &nbsp;&nbsp; `{duration:.1f}s`",
+                unsafe_allow_html=True,
+            )
+            meta = step.get("metadata", {})
+            if step.get("node") == "run_router":
+                intent = meta.get("intent", "")
+                tier = meta.get("complexity_tier", "")
+                reason = meta.get("complexity_reason", "")
+                if intent:
+                    st.caption(f"Intent: {intent}")
+                if tier or reason:
+                    st.caption(f"Complexity: {tier} – {reason}")
+
+
 def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
     with st.chat_message("user"):
         st.caption("Frage")
@@ -1050,9 +1136,7 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
             st.subheader("SQL-Fehler")
             st.error(record["sql_error"])
 
-        with st.expander("Ablaufschritte", expanded=False):
-            for step in record.get("trace_steps", []):
-                st.markdown(f"- {step}")
+        render_step_log(record)
 
         if record.get("user_correction"):
             st.subheader("Nutzerkorrektur")
@@ -1109,8 +1193,31 @@ def main() -> None:
 
     question = st.chat_input(f"Stelle eine Frage zu {scenario.label}")
     if question:
-        with st.spinner("LangGraph-SQL-Workflow wird ausgeführt..."):
-            record = run_orchestrator(question, config=config)
+        _steps_log: list[dict] = []
+        with st.status("LangGraph-SQL-Workflow wird ausgeführt...", expanded=True) as status:
+            def _on_step(node_name: str, duration: float, metadata: dict) -> None:
+                symbol = _STEP_SYMBOLS.get(node_name, "·")
+                label = _STEP_LABELS.get(node_name, node_name)
+                status.write(f"{symbol} {label}   {duration:.1f}s")
+                if node_name == "run_router":
+                    intent = metadata.get("intent", "")
+                    tier = metadata.get("complexity_tier", "")
+                    reason = metadata.get("complexity_reason", "")
+                    if intent:
+                        status.write(f"  Intent: {intent}")
+                    if tier or reason:
+                        status.write(f"  Complexity: {tier} – {reason}")
+                _steps_log.append({
+                    "node": node_name,
+                    "label": label,
+                    "symbol": symbol,
+                    "duration": duration,
+                    "metadata": metadata,
+                })
+
+            record = run_orchestrator(question, config=config, step_callback=_on_step)
+            status.update(label="Fertig ✓", state="complete", expanded=False)
+        record["agent_step_log"] = _steps_log
         st.session_state.history.append(record)
         st.rerun()
 
