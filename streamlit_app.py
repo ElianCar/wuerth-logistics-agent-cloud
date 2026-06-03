@@ -1,3 +1,5 @@
+import uuid
+
 import pandas as pd
 import streamlit as st
 import yaml
@@ -45,6 +47,41 @@ PAGE_MEMORY = "Memory-Prüfung"
 PAGE_TEMPLATES = "Freigegebene Templates"
 
 
+def _new_chat_id() -> str:
+    return str(uuid.uuid4())
+
+
+def _make_chat(name: str = "") -> dict:
+    return {"name": name, "history": []}
+
+
+def active_history() -> list[dict]:
+    return st.session_state.chats[st.session_state.active_chat_id]["history"]
+
+
+def _render_chat_sidebar_css() -> None:
+    st.markdown(
+        """
+        <style>
+        section[data-testid="stSidebar"] [data-testid="stHorizontalBlock"]
+            [data-testid="stColumn"]:first-child div[data-testid="stButton"] button {
+            font-size: 0.78rem;
+            text-align: left;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        section[data-testid="stSidebar"] [data-testid="stHorizontalBlock"]
+            [data-testid="stColumn"]:last-child button {
+            justify-content: center !important;
+            padding: 4px 0 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def result_to_dataframe(record: dict) -> pd.DataFrame:
     query_result = record.get("query_result", {})
     return pd.DataFrame(
@@ -56,8 +93,14 @@ def result_to_dataframe(record: dict) -> pd.DataFrame:
 def initialize_state() -> None:
     if "data_scenario" in st.session_state:
         set_active_scenario_id(st.session_state.data_scenario)
-    if "history" not in st.session_state:
-        st.session_state.history = []
+    if "chats" not in st.session_state:
+        first_id = _new_chat_id()
+        st.session_state.chats = {first_id: _make_chat()}
+        st.session_state.active_chat_id = first_id
+    if st.session_state.get("active_chat_id") not in st.session_state.get("chats", {}):
+        st.session_state.active_chat_id = next(iter(st.session_state.chats))
+    st.session_state.setdefault("editing_chat_id", None)
+    st.session_state.setdefault("confirm_delete_chat_id", None)
     st.session_state.setdefault("last_golden_run_id", "")
     st.session_state.setdefault("last_selected_question_ids", [])
     st.session_state.setdefault("last_failed_question_ids", [])
@@ -145,6 +188,60 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
             label_visibility="collapsed",
         )
 
+        _render_chat_sidebar_css()
+        st.header("Chats")
+        if st.button("+ Neuer Chat", use_container_width=True):
+            new_id = _new_chat_id()
+            st.session_state.chats[new_id] = _make_chat()
+            st.session_state.active_chat_id = new_id
+            st.rerun()
+        for chat_id, chat in list(st.session_state.chats.items()):
+            is_editing = st.session_state.editing_chat_id == chat_id
+            confirming = st.session_state.confirm_delete_chat_id == chat_id
+
+            if is_editing:
+                new_name = st.text_input(
+                    "Name",
+                    value=chat["name"],
+                    key=f"rename_input_{chat_id}",
+                    label_visibility="collapsed",
+                )
+                c1, c2 = st.columns(2)
+                if c1.button("Speichern", key=f"confirm_{chat_id}", use_container_width=True):
+                    chat["name"] = new_name.strip() or chat["name"]
+                    st.session_state.editing_chat_id = None
+                    st.rerun()
+                if c2.button("Abbrechen", key=f"cancel_{chat_id}", use_container_width=True):
+                    st.session_state.editing_chat_id = None
+                    st.rerun()
+            elif confirming:
+                st.warning(f"„{chat['name'] or 'Neuer Chat'}\" löschen?")
+                c1, c2 = st.columns(2)
+                if c1.button("Ja, löschen", key=f"confirm_del_{chat_id}", type="primary", use_container_width=True):
+                    del st.session_state.chats[chat_id]
+                    if st.session_state.active_chat_id == chat_id:
+                        st.session_state.active_chat_id = next(iter(st.session_state.chats))
+                    st.session_state.confirm_delete_chat_id = None
+                    st.session_state.editing_chat_id = None
+                    st.rerun()
+                if c2.button("Abbrechen", key=f"cancel_del_{chat_id}", use_container_width=True):
+                    st.session_state.confirm_delete_chat_id = None
+                    st.rerun()
+            else:
+                label = chat["name"] or "Neuer Chat"
+                cols = st.columns([5, 1])
+                if cols[0].button(label, key=f"select_{chat_id}", use_container_width=True):
+                    st.session_state.active_chat_id = chat_id
+                    st.rerun()
+                with cols[1].popover(" ", use_container_width=True):
+                    if st.button("Umbenennen", key=f"edit_{chat_id}", use_container_width=True):
+                        st.session_state.editing_chat_id = chat_id
+                        st.rerun()
+                    if len(st.session_state.chats) > 1:
+                        if st.button("Löschen", key=f"del_{chat_id}", use_container_width=True):
+                            st.session_state.confirm_delete_chat_id = chat_id
+                            st.rerun()
+
         st.header("Konfiguration")
         scenario_ids = [scenario.scenario_id for scenario in get_scenario_options()]
         default_scenario_id = st.session_state.get("data_scenario", get_active_scenario_id())
@@ -159,7 +256,11 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
         previous_scenario_id = st.session_state.get("data_scenario")
         st.session_state.data_scenario = selected_scenario_id
         if previous_scenario_id and previous_scenario_id != selected_scenario_id:
-            st.session_state.history = []
+            first_id = _new_chat_id()
+            st.session_state.chats = {first_id: _make_chat()}
+            st.session_state.active_chat_id = first_id
+            st.session_state.confirm_delete_chat_id = None
+            st.session_state.editing_chat_id = None
             st.session_state.last_golden_run_id = ""
             st.session_state.last_selected_question_ids = []
             st.session_state.last_failed_question_ids = []
@@ -237,7 +338,7 @@ def retry_with_comment(record: dict, index: int, comment: str, config: SQLAgentC
             previous_final_answer=record.get("final_answer", ""),
             user_correction=comment.strip(),
         )
-    st.session_state.history[index] = corrected_record
+    active_history()[index] = corrected_record
     st.rerun()
 
 
@@ -258,7 +359,7 @@ def rerun_with_fallback(
             previous_final_answer=record.get("final_answer", ""),
             user_correction=comment.strip(),
         )
-    st.session_state.history[index] = fallback_record
+    active_history()[index] = fallback_record
     st.rerun()
 
 
@@ -1104,14 +1205,17 @@ def main() -> None:
     )
     render_flash()
 
-    for index, record in enumerate(st.session_state.history):
+    for index, record in enumerate(active_history()):
         render_record(record, index, config)
 
     question = st.chat_input(f"Stelle eine Frage zu {scenario.label}")
     if question:
         with st.spinner("LangGraph-SQL-Workflow wird ausgeführt..."):
             record = run_orchestrator(question, config=config)
-        st.session_state.history.append(record)
+        active_history().append(record)
+        chat = st.session_state.chats[st.session_state.active_chat_id]
+        if len(active_history()) == 1:
+            chat["name"] = question[:30] + "..." if len(question) > 30 else question
         st.rerun()
 
 
