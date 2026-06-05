@@ -11,6 +11,7 @@ from typing_extensions import TypedDict
 from src.agent.id_utils import generate_run_id
 from src.agent.langgraph_sql_agent import SQLAgentConfig, run_sql_agent
 from src.agent.logging_utils import append_csv_row, current_timestamp, get_log_dir
+from src.agent.reporting_agent import build_reporting_result
 from src.agent.router import RouterState, build_router_graph
 from src.llm.model_adapter import get_provider
 
@@ -84,6 +85,8 @@ class OrchestratorState(TypedDict, total=False):
     final_answer: str
     answer: str
     schema_load_failed: bool
+    chart_spec: dict[str, Any]
+    reporting_result: dict[str, Any]
 
     previous_failed_sql: str
     previous_sql_error: str
@@ -169,6 +172,85 @@ def _build_router_context(state: OrchestratorState) -> dict[str, Any]:
         "constraints": state.get("constraints", {}),
         "execution_plan": state.get("execution_plan", []),
         "template_candidates": state.get("template_candidates", []),
+    }
+
+
+def _build_reporting_result(
+    *,
+    user_question: str,
+    router_context: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        return build_reporting_result(
+            user_question=user_question,
+            router_state=router_context,
+            sql=str(result.get("final_sql") or result.get("generated_sql") or ""),
+            query_result=result.get("query_result", {}),
+            row_count=int(result.get("row_count", 0) or 0),
+            source_tables=list(result.get("source_tables", [])),
+            execution_success=bool(result.get("execution_success", False)),
+            validation_success=bool(result.get("validation_success", result.get("sql_valid", False))),
+            language=str(router_context.get("language") or "de"),
+        )
+    except Exception as error:
+        return _reporting_failure_result(result=result, error=error)
+
+
+def _reporting_failure_result(*, result: dict[str, Any], error: Exception) -> dict[str, Any]:
+    query_result = result.get("query_result", {}) if isinstance(result.get("query_result", {}), dict) else {}
+    columns = [str(column) for column in query_result.get("columns", []) or []]
+    row_count = int(result.get("row_count", query_result.get("row_count", 0)) or 0)
+    chart_plan = {
+        "chart_type": "none",
+        "x_axis": None,
+        "y_axis": None,
+        "series": None,
+        "title": "",
+        "x_label": "",
+        "y_label": "",
+        "unit": "",
+        "reason": "Reporting construction failed.",
+        "confidence": 0.0,
+        "render_allowed": False,
+        "warnings": ["Reporting construction failed."],
+        "orientation": "vertical",
+        "category_order": [],
+        "x_type": "",
+        "y_type": "",
+        "value_axis_starts_at_zero": False,
+        "display_row_limit": 50,
+        "truncated": False,
+        "note": "",
+        "sort": {"mode": "none", "explicit": False},
+    }
+    return {
+        "summary": "",
+        "interpretation": "",
+        "caveats": [],
+        "chart_plan": chart_plan,
+        "table_plan": {
+            "render_allowed": bool(columns and row_count),
+            "row_count": row_count,
+            "columns": columns,
+            "preserve_sql_order": True,
+        },
+        "kpi_cards": [],
+        "display_notes": [],
+        "audit": {
+            "reporting_failed": True,
+            "reporting_error_type": type(error).__name__,
+            "reporting_error_message": str(error),
+            "sql_success": bool(
+                result.get("execution_success", False)
+                and result.get("validation_success", result.get("sql_valid", False))
+            ),
+            "row_count": row_count,
+            "chart_type": "none",
+            "rows_visualized": 0,
+            "warnings": ["Reporting construction failed."],
+            "table_order_preserved": True,
+        },
     }
 
 
@@ -278,10 +360,17 @@ def run_sql_agent_node(state: OrchestratorState) -> dict[str, Any]:
         language=state.get("language", ""),
         router_context=router_context,
     )
+    reporting_result = _build_reporting_result(
+        user_question=state.get("user_question", ""),
+        router_context=router_context,
+        result=result,
+    )
 
     return {
         **result,
         "answer": result.get("final_answer", ""),
+        "chart_spec": reporting_result["chart_plan"],
+        "reporting_result": reporting_result,
         "trace_steps": [*trace, *trace_extension, *result.get("trace_steps", [])],
     }
 
@@ -309,7 +398,7 @@ def terminal_response(state: OrchestratorState) -> dict[str, Any]:
         status = "no_sql_needed"
         error_type = ""
 
-    return {
+    terminal_result = {
         "final_answer": answer,
         "answer": answer,
         "execution_success": False,
@@ -326,6 +415,17 @@ def terminal_response(state: OrchestratorState) -> dict[str, Any]:
         "result_status": status,
         "error_type": error_type,
         "error_message": "",
+    }
+    router_context = _build_router_context(state)
+    reporting_result = _build_reporting_result(
+        user_question=state.get("user_question", ""),
+        router_context=router_context,
+        result=terminal_result,
+    )
+    return {
+        **terminal_result,
+        "chart_spec": reporting_result["chart_plan"],
+        "reporting_result": reporting_result,
     }
 
 
@@ -507,6 +607,11 @@ def _run_forced_fallback(
         log_to_query_log=bool(initial.get("log_to_query_log", True)),
         router_context=forced_router_context,
     )
+    reporting_result = _build_reporting_result(
+        user_question=user_question,
+        router_context=forced_router_context,
+        result=result,
+    )
     trace = [
         "Router skipped because force_fallback=True.",
         *result.get("trace_steps", []),
@@ -528,6 +633,8 @@ def _run_forced_fallback(
         "fallback_model": config.fallback_model,
         "max_primary_attempts": config.max_primary_attempts,
         "template_candidates": [],
+        "chart_spec": reporting_result["chart_plan"],
+        "reporting_result": reporting_result,
         "answer": result.get("final_answer", ""),
         "trace_steps": trace,
     }

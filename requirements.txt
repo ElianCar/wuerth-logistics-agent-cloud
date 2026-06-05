@@ -1,3 +1,4 @@
+altair
 duckdb
 databricks-sdk
 databricks-sql-connector

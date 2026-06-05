@@ -1,3 +1,4 @@
+import altair as alt
 import pandas as pd
 import streamlit as st
 import yaml
@@ -51,6 +52,106 @@ def result_to_dataframe(record: dict) -> pd.DataFrame:
         query_result.get("rows", []),
         columns=query_result.get("columns", []),
     )
+
+
+def render_chart_from_spec(record: dict, df: pd.DataFrame) -> None:
+    chart_spec = record.get("chart_spec")
+    if not isinstance(chart_spec, dict) or not chart_spec.get("render_allowed"):
+        return
+
+    chart_type = str(chart_spec.get("chart_type", "none"))
+    x_axis = chart_spec.get("x_axis")
+    y_axis = chart_spec.get("y_axis")
+    if chart_type not in {"bar", "line"} or not x_axis or not y_axis:
+        return
+    if x_axis not in df.columns or y_axis not in df.columns:
+        st.warning("Die Visualisierung konnte nicht gerendert werden, weil Spalten im Ergebnis fehlen.")
+        return
+
+    x_label = str(chart_spec.get("x_label") or x_axis)
+    y_label = str(chart_spec.get("y_label") or y_axis)
+    unit = str(chart_spec.get("unit") or "")
+    display_y_label = f"{y_label} ({unit})" if unit else y_label
+    display_row_limit = int(chart_spec.get("display_row_limit") or len(df))
+    chart_df = df[[x_axis, y_axis]].head(display_row_limit).copy()
+    chart_df["_chart_category"] = chart_df[x_axis].astype(str)
+    chart_df["_chart_value"] = pd.to_numeric(chart_df[y_axis], errors="coerce")
+    chart_df["_row_order"] = range(len(chart_df))
+    chart_df = chart_df.dropna(subset=["_chart_value"])
+    if chart_df.empty:
+        return
+
+    category_order = [str(value) for value in chart_spec.get("category_order", [])]
+    if not category_order:
+        category_order = list(dict.fromkeys(chart_df["_chart_category"].tolist()))
+
+    st.subheader("Visualisierung")
+    title = str(chart_spec.get("title") or "")
+    if title:
+        st.caption(title)
+    note = str(chart_spec.get("note") or "")
+    if note:
+        st.caption(note)
+
+    tooltip = [
+        alt.Tooltip("_chart_category:N", title=x_label),
+        alt.Tooltip("_chart_value:Q", title=display_y_label),
+    ]
+    base_chart = alt.Chart(chart_df)
+    if chart_type == "bar":
+        if str(chart_spec.get("orientation") or "vertical") == "horizontal":
+            chart = base_chart.mark_bar().encode(
+                y=alt.Y("_chart_category:N", sort=category_order, title=x_label),
+                x=alt.X("_chart_value:Q", scale=alt.Scale(zero=True), title=display_y_label),
+                tooltip=tooltip,
+            )
+        else:
+            chart = base_chart.mark_bar().encode(
+                x=alt.X("_chart_category:N", sort=category_order, title=x_label),
+                y=alt.Y("_chart_value:Q", scale=alt.Scale(zero=True), title=display_y_label),
+                tooltip=tooltip,
+            )
+        st.altair_chart(chart, use_container_width=True)
+    elif chart_type == "line":
+        chart = base_chart.mark_line(point=True).encode(
+            x=alt.X("_chart_category:N", sort=category_order, title=x_label),
+            y=alt.Y("_chart_value:Q", title=display_y_label),
+            order=alt.Order("_row_order:Q"),
+            tooltip=tooltip,
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+
+def render_reporting_summary(record: dict) -> None:
+    reporting = record.get("reporting_result")
+    if not isinstance(reporting, dict):
+        return
+
+    summary = str(reporting.get("summary") or "").strip()
+    if not summary:
+        return
+
+    st.subheader("Management-Zusammenfassung")
+    st.markdown(summary)
+
+    kpi_cards = reporting.get("kpi_cards", [])
+    if isinstance(kpi_cards, list) and kpi_cards:
+        columns = st.columns(min(len(kpi_cards), 4))
+        for index, card in enumerate(kpi_cards[:4]):
+            if not isinstance(card, dict):
+                continue
+            columns[index].metric(str(card.get("label", "Kennzahl")), str(card.get("value", "")))
+
+
+def render_reporting_audit(record: dict) -> None:
+    reporting = record.get("reporting_result")
+    if not isinstance(reporting, dict):
+        return
+    audit = reporting.get("audit")
+    if not isinstance(audit, dict):
+        return
+    with st.expander("Reporting-Audit", expanded=False):
+        st.json(audit, expanded=False)
 
 
 def initialize_state() -> None:
@@ -1026,6 +1127,7 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
 
         st.subheader("Antwort")
         st.write(record.get("final_answer") or "Es wurde keine Antwort erzeugt.")
+        render_reporting_summary(record)
 
         query_result = record.get("query_result", {})
         rows = query_result.get("rows", [])
@@ -1034,6 +1136,7 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
             st.subheader("Ergebnisvorschau")
             df = result_to_dataframe(record)
             st.dataframe(df, use_container_width=True)
+            render_chart_from_spec(record, df)
 
         st.subheader("SQL-Anweisung")
         st.code(record.get("final_sql") or record.get("generated_sql", "") or "(kein SQL erzeugt)", language="sql")
@@ -1053,6 +1156,8 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
         with st.expander("Ablaufschritte", expanded=False):
             for step in record.get("trace_steps", []):
                 st.markdown(f"- {step}")
+
+        render_reporting_audit(record)
 
         if record.get("user_correction"):
             st.subheader("Nutzerkorrektur")
