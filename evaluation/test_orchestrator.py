@@ -227,6 +227,128 @@ class OrchestratorTests(unittest.TestCase):
         self.assertNotIn("memory_intent_key", sql_mock.call_args.kwargs)
         self.assertEqual(sql_mock.call_args.kwargs["router_context"]["memory_intent_key"], "ranking")
 
+    def test_chart_spec_is_added_after_successful_sql_when_router_requests_chart(self) -> None:
+        result, _sql_mock = self.run_with_fake_router(
+            router_state(output_mode="chart_plus_table"),
+            sql_result(
+                query_result={
+                    "columns": ["region", "total_revenue"],
+                    "rows": [("EUROPE", 10), ("ASIA", 8)],
+                    "row_count": 2,
+                },
+                row_count=2,
+            ),
+        )
+
+        chart_spec = result["chart_spec"]
+        self.assertTrue(chart_spec["render_allowed"])
+        self.assertEqual(chart_spec["chart_type"], "bar")
+        self.assertEqual(chart_spec["x_axis"], "region")
+        self.assertEqual(chart_spec["y_axis"], "total_revenue")
+        self.assertEqual(chart_spec["category_order"], ["EUROPE", "ASIA"])
+        self.assertIn("reporting_result", result)
+        self.assertIn("Kurzantwort", result["reporting_result"]["summary"])
+        self.assertEqual(result["reporting_result"]["audit"]["chart_order"], "sql_result_order")
+
+    def test_chart_spec_is_non_renderable_when_router_requests_table_only(self) -> None:
+        result, _sql_mock = self.run_with_fake_router(
+            router_state(output_mode="table"),
+            sql_result(
+                query_result={
+                    "columns": ["region", "total_revenue"],
+                    "rows": [("EUROPE", 10), ("ASIA", 8)],
+                    "row_count": 2,
+                },
+                row_count=2,
+            ),
+        )
+
+        chart_spec = result["chart_spec"]
+        self.assertFalse(chart_spec["render_allowed"])
+        self.assertEqual(chart_spec["chart_type"], "none")
+
+    def test_reporting_failure_preserves_successful_sql_result(self) -> None:
+        sql_output = sql_result(
+            final_sql="SELECT COUNT(*) AS order_count FROM orders",
+            query_result={"columns": ["order_count"], "rows": [(42,)], "row_count": 1},
+            row_count=1,
+            final_answer="Die Antwort ist 42.",
+        )
+        sql_mock = Mock(return_value=sql_output)
+        with patch("src.agent.orchestrator._get_compiled_router", return_value=FakeRouter(router_state())), patch(
+            "src.agent.orchestrator.run_sql_agent",
+            sql_mock,
+        ), patch("src.agent.orchestrator.build_reporting_result", side_effect=RuntimeError("reporting boom")):
+            result = orchestrator.run_orchestrator(
+                "Wie viele Bestellungen gibt es?",
+                config=test_config(),
+                log_to_query_log=False,
+            )
+
+        self.assertEqual(result["final_sql"], "SELECT COUNT(*) AS order_count FROM orders")
+        self.assertEqual(result["final_answer"], "Die Antwort ist 42.")
+        self.assertTrue(result["execution_success"])
+        self.assertFalse(result["chart_spec"]["render_allowed"])
+        self.assertEqual(result["chart_spec"]["chart_type"], "none")
+        self.assertEqual(result["reporting_result"]["summary"], "")
+        self.assertEqual(result["reporting_result"]["kpi_cards"], [])
+        self.assertTrue(result["reporting_result"]["audit"]["reporting_failed"])
+        self.assertEqual(result["reporting_result"]["audit"]["reporting_error_type"], "RuntimeError")
+
+    def test_reporting_failure_does_not_hide_sql_error_flow(self) -> None:
+        sql_output = sql_result(
+            generated_sql="SELECT broken",
+            final_sql="",
+            query_result={"columns": [], "rows": [], "row_count": 0},
+            row_count=0,
+            validation_success=False,
+            execution_success=False,
+            result_status="failed",
+            final_answer="SQL failed.",
+            sql_error="syntax error near broken",
+            error_type="sql_validation",
+        )
+        sql_mock = Mock(return_value=sql_output)
+        with patch("src.agent.orchestrator._get_compiled_router", return_value=FakeRouter(router_state())), patch(
+            "src.agent.orchestrator.run_sql_agent",
+            sql_mock,
+        ), patch("src.agent.orchestrator.build_reporting_result", side_effect=RuntimeError("reporting boom")):
+            result = orchestrator.run_orchestrator(
+                "Wie viele Bestellungen gibt es?",
+                config=test_config(),
+                log_to_query_log=False,
+            )
+
+        self.assertFalse(result["execution_success"])
+        self.assertFalse(result["validation_success"])
+        self.assertEqual(result["sql_error"], "syntax error near broken")
+        self.assertEqual(result["error_type"], "sql_validation")
+        self.assertFalse(result["chart_spec"]["render_allowed"])
+        self.assertTrue(result["reporting_result"]["audit"]["reporting_failed"])
+        self.assertFalse(result["reporting_result"]["audit"]["sql_success"])
+
+    def test_reporting_failure_preserves_terminal_response(self) -> None:
+        with patch(
+            "src.agent.orchestrator._get_compiled_router",
+            return_value=FakeRouter(
+                router_state(
+                    needs_sql=False,
+                    needs_clarification=True,
+                    clarification_question="Welche Kennzahl meinst du?",
+                )
+            ),
+        ), patch("src.agent.orchestrator.build_reporting_result", side_effect=RuntimeError("reporting boom")):
+            result = orchestrator.run_orchestrator(
+                "Berichte über alles.",
+                config=test_config(),
+                log_to_query_log=False,
+            )
+
+        self.assertEqual(result["result_status"], "clarification_needed")
+        self.assertEqual(result["final_answer"], "Welche Kennzahl meinst du?")
+        self.assertFalse(result["chart_spec"]["render_allowed"])
+        self.assertTrue(result["reporting_result"]["audit"]["reporting_failed"])
+
     def test_router_logging_handles_empty_template_candidate_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             sql_mock = Mock(return_value=sql_result())
