@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from time import perf_counter
-from typing import Any, Callable, Literal, TypedDict
+from typing import Any, Callable, Literal, Optional, TypedDict
 
 import yaml
 
@@ -112,6 +112,7 @@ SchemaLoader = Callable[[], str]
 SQLGenerator = Callable[[str, str, str, str], str]
 SQLExecutor = Callable[[str, str], dict[str, Any]]
 AttemptLogger = Callable[..., None]
+StepCallback = Callable[[str, float, "dict[str, Any]"], None]
 
 
 def noop_attempt_logger(**_kwargs: Any) -> None:
@@ -353,11 +354,21 @@ def build_sql_agent_graph(
     sql_generator: SQLGenerator = default_sql_generator,
     sql_executor: SQLExecutor = execute_read_only_sql,
     attempt_logger: AttemptLogger = log_query_attempt,
+    step_callback: StepCallback | None = None,
 ):
+    def _notify_end(node_name: str, start_time: float, metadata: dict[str, Any] | None = None) -> None:
+        if step_callback is not None:
+            try:
+                step_callback(node_name, perf_counter() - start_time, metadata or {})
+            except Exception:
+                pass
+
     def load_schema(state: SQLAgentState) -> dict[str, Any]:
+        _start = perf_counter()
         try:
             schema_context = schema_loader()
         except Exception as error:
+            _notify_end("load_schema", _start)
             return {
                 "schema_load_failed": True,
                 "sql_error": str(error),
@@ -365,6 +376,7 @@ def build_sql_agent_graph(
                 "trace_steps": append_trace(state, "Schema laden fehlgeschlagen"),
             }
 
+        _notify_end("load_schema", _start)
         return {
             "schema_context": schema_context,
             "schema_load_failed": False,
@@ -372,6 +384,7 @@ def build_sql_agent_graph(
         }
 
     def generate_sql(state: SQLAgentState) -> dict[str, Any]:
+        _start = perf_counter()
         attempt_number = int(state.get("attempt_number", 0)) + 1
         total_attempts = int(state.get("total_attempts", 0)) + 1
         working_state: SQLAgentState = {
@@ -406,6 +419,7 @@ def build_sql_agent_graph(
             sql_error = str(error)
             trace_message = f"SQL-Generierung in Versuch {attempt_number} mit {selected_model} fehlgeschlagen"
 
+        _notify_end("generate_sql", _start)
         return {
             "attempt_number": attempt_number,
             "total_attempts": total_attempts,
@@ -418,6 +432,7 @@ def build_sql_agent_graph(
         }
 
     def validate_sql(state: SQLAgentState) -> dict[str, Any]:
+        _start = perf_counter()
         if state.get("sql_error") and not state.get("generated_sql"):
             update: dict[str, Any] = {
                 "sql_valid": False,
@@ -434,6 +449,7 @@ def build_sql_agent_graph(
                 row_count=0,
                 attempt_logger=attempt_logger,
             )
+            _notify_end("validate_sql", _start)
             return update
 
         validation = validate_generated_sql(
@@ -460,9 +476,11 @@ def build_sql_agent_graph(
                 attempt_logger=attempt_logger,
             )
 
+        _notify_end("validate_sql", _start)
         return update
 
     def execute_sql(state: SQLAgentState) -> dict[str, Any]:
+        _start = perf_counter()
         try:
             query_result = sql_executor(
                 state.get("generated_sql", ""),
@@ -482,6 +500,7 @@ def build_sql_agent_graph(
                 row_count=row_count,
                 attempt_logger=attempt_logger,
             )
+            _notify_end("execute_sql", _start)
             return update
         except Exception as error:
             update = {
@@ -497,29 +516,37 @@ def build_sql_agent_graph(
                 row_count=0,
                 attempt_logger=attempt_logger,
             )
+            _notify_end("execute_sql", _start)
             return update
 
     def repair_sql(state: SQLAgentState) -> dict[str, Any]:
-        return {
+        _start = perf_counter()
+        result = {
             "previous_failed_sql": state.get("generated_sql", ""),
             "trace_steps": append_trace(state, "SQL-Reparatur hat fehlgeschlagenes SQL und Fehler für einen weiteren Versuch vorbereitet"),
         }
+        _notify_end("repair_sql", _start)
+        return result
 
     def switch_model(state: SQLAgentState) -> dict[str, Any]:
+        _start = perf_counter()
         fallback_model = state.get("fallback_model", "qwen2.5-coder:7b")
-        return {
+        result = {
             "selected_model": fallback_model,
             "attempt_number": 0,
             "fallback_used": True,
             "previous_failed_sql": state.get("generated_sql", ""),
             "trace_steps": append_trace(state, f"Modellwechsel auf {fallback_model}"),
         }
+        _notify_end("switch_model", _start)
+        return result
 
     def generate_final_answer(state: SQLAgentState) -> dict[str, Any]:
+        _start = perf_counter()
         language = str(state.get("language", "de")).lower()
 
         if state.get("schema_load_failed"):
-            return {
+            result = {
                 "final_answer": state.get(
                     "final_answer",
                     "The database schema could not be loaded."
@@ -529,6 +556,8 @@ def build_sql_agent_graph(
                 "result_status": "fehlgeschlagen",
                 "trace_steps": append_trace(state, "Finale Antwort meldet Fehler beim Laden des Schemas"),
             }
+            _notify_end("generate_final_answer", _start)
+            return result
 
         if not state.get("execution_success"):
             if language == "en":
@@ -541,11 +570,13 @@ def build_sql_agent_graph(
                     "Ich konnte keine gültige ausführbare SQL-Abfrage erzeugen. "
                     f"Letzter Fehler: {state.get('sql_error', 'unbekannter Fehler')}"
                 )
-            return {
+            result = {
                 "final_answer": final_answer,
                 "result_status": "fehlgeschlagen",
                 "trace_steps": append_trace(state, "Finale Antwort meldet SQL-Fehler"),
             }
+            _notify_end("generate_final_answer", _start)
+            return result
 
         query_result = state.get("query_result", {})
         columns = query_result.get("columns", [])
@@ -572,11 +603,13 @@ def build_sql_agent_graph(
         else:
             result_status = "nach Reparatur erfolgreich"
 
-        return {
+        result = {
             "final_answer": final_answer,
             "result_status": result_status,
             "trace_steps": append_trace(state, f"Finale Antwort erzeugt: {result_status}"),
         }
+        _notify_end("generate_final_answer", _start)
+        return result
 
     def route_after_load_schema(state: SQLAgentState) -> Literal["generate_sql", "generate_final_answer"]:
         if state.get("schema_load_failed"):
@@ -659,6 +692,7 @@ def run_sql_agent(
     sql_generator: SQLGenerator = default_sql_generator,
     sql_executor: SQLExecutor = execute_read_only_sql,
     attempt_logger: AttemptLogger = log_query_attempt,
+    step_callback: StepCallback | None = None,
 ) -> SQLAgentState:
     agent_config = config or SQLAgentConfig.from_env()
     selected_model = agent_config.fallback_model if force_fallback else agent_config.primary_model
@@ -670,6 +704,7 @@ def run_sql_agent(
         sql_generator=sql_generator,
         sql_executor=sql_executor,
         attempt_logger=effective_attempt_logger,
+        step_callback=step_callback,
     )
     initial_state: SQLAgentState = {
         "run_id": run_id,
