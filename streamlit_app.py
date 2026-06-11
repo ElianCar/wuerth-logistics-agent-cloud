@@ -32,11 +32,15 @@ from src.config.scenarios import (
     set_active_scenario_id,
 )
 from src.llm.model_adapter import (
+    DEFAULT_ANTHROPIC_FALLBACK_MODEL,
+    DEFAULT_ANTHROPIC_MEDIUM_MODEL,
     DEFAULT_GEMINI_BACKUP_MODEL,
     DEFAULT_GEMINI_PRIMARY_MODEL,
     DEFAULT_OLLAMA_BACKUP_MODEL,
     DEFAULT_OLLAMA_MODEL,
+    anthropic_api_key_is_placeholder,
     gemini_api_key_is_placeholder,
+    get_provider,
 )
 
 
@@ -215,7 +219,6 @@ def render_flash() -> None:
 
 def build_streamlit_llm_config() -> SQLAgentConfig:
     env_config = SQLAgentConfig.from_env()
-    gemini_config = SQLAgentConfig.from_provider("gemini")
     ollama_config = SQLAgentConfig.from_provider("ollama")
 
     st.session_state.setdefault(
@@ -226,7 +229,7 @@ def build_streamlit_llm_config() -> SQLAgentConfig:
     use_local_ollama = st.toggle(
         "Lokales Ollama verwenden",
         key="use_local_ollama",
-        help="Wenn aktiv, nutzt der Workflow lokale Ollama-Modelle für Primary und Fallback. Sonst wird die Gemini API genutzt.",
+        help="Wenn aktiv, nutzt der Workflow lokale Ollama-Modelle für Primary und Fallback. Sonst wird der konfigurierte LLM-Anbieter genutzt.",
     )
 
     if use_local_ollama:
@@ -238,13 +241,7 @@ def build_streamlit_llm_config() -> SQLAgentConfig:
             ollama_host=ollama_config.ollama_host,
         )
 
-    return SQLAgentConfig(
-        primary_model=gemini_config.primary_model or DEFAULT_GEMINI_PRIMARY_MODEL,
-        fallback_model=gemini_config.fallback_model or DEFAULT_GEMINI_BACKUP_MODEL,
-        max_primary_attempts=gemini_config.max_primary_attempts,
-        llm_provider="gemini",
-        ollama_host=ollama_config.ollama_host,
-    )
+    return env_config
 
 
 def apply_app_styles() -> None:
@@ -317,7 +314,13 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
         st.write(f"Primäres Modell: `{config.primary_model}`")
         st.write(f"Fallback-Modell: `{config.fallback_model}`")
         st.write(f"Max. primäre Versuche: `{config.max_primary_attempts}`")
-        if config.llm_provider == "gemini":
+        if config.llm_provider == "anthropic":
+            if anthropic_api_key_is_placeholder():
+                st.warning(
+                    "ANTHROPIC_API_KEY ist nicht gesetzt. Trage deinen Key in `.env` ein, "
+                    "bevor Fragen gestellt werden."
+                )
+        elif config.llm_provider == "gemini":
             if gemini_api_key_is_placeholder():
                 st.warning(
                     "GEMINI_API_KEY ist noch auf `key` gesetzt. Ersetze den Wert in `.env` "
@@ -1201,6 +1204,12 @@ def render_step_log(record: dict) -> None:
                     st.caption(f"Intent: {intent}")
                 if tier or reason:
                     st.caption(f"Complexity: {tier} – {reason}")
+            if step.get("node") == "select_model":
+                primary = meta.get("primary", "")
+                tier = meta.get("tier", "")
+                if primary:
+                    suffix = f" ({tier})" if tier else ""
+                    st.caption(f"Modell: {primary}{suffix}")
 
 
 def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
@@ -1312,6 +1321,12 @@ def main() -> None:
                         status.write(f"  Intent: {intent}")
                     if tier or reason:
                         status.write(f"  Complexity: {tier} – {reason}")
+                if node_name == "select_model":
+                    primary = metadata.get("primary", "")
+                    tier = metadata.get("tier", "")
+                    if primary:
+                        suffix = f" ({tier})" if tier else ""
+                        status.write(f"  Modell: {primary}{suffix}")
                 _steps_log.append({
                     "node": node_name,
                     "label": label,
