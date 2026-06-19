@@ -377,6 +377,7 @@ def _run_sql_agent_node_impl(state: OrchestratorState, step_callback: StepCallba
         user_question=state.get("user_question", ""),
         router_context=router_context,
         result=result,
+    )
 
     return {
         **result,
