@@ -14,6 +14,10 @@ DEFAULT_GEMINI_PRIMARY_MODEL = "gemini-3.1-flash-lite-preview"
 DEFAULT_GEMINI_BACKUP_MODEL = "gemini-2.5-flash"
 DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
 DEFAULT_OLLAMA_BACKUP_MODEL = "llama3.2:3b"
+DEFAULT_ANTHROPIC_EASY_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_ANTHROPIC_MEDIUM_MODEL = "claude-sonnet-4-6"
+DEFAULT_ANTHROPIC_HARD_MODEL = "claude-opus-4-8"
+DEFAULT_ANTHROPIC_FALLBACK_MODEL = "claude-sonnet-4-6"
 PLACEHOLDER_API_KEY = "key"
 
 
@@ -42,14 +46,20 @@ def get_provider(provider: str | None = None) -> str:
 
 
 def get_primary_model(provider: str | None = None) -> str:
-    if get_provider(provider) == "gemini":
+    selected_provider = get_provider(provider)
+    if selected_provider == "gemini":
         return os.getenv("GEMINI_PRIMARY_MODEL", DEFAULT_GEMINI_PRIMARY_MODEL)
+    if selected_provider == "anthropic":
+        return os.getenv("ANTHROPIC_PRIMARY_MODEL", DEFAULT_ANTHROPIC_MEDIUM_MODEL)
     return os.getenv("PRIMARY_MODEL") or os.getenv("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL
 
 
 def get_backup_model(provider: str | None = None) -> str:
-    if get_provider(provider) == "gemini":
+    selected_provider = get_provider(provider)
+    if selected_provider == "gemini":
         return os.getenv("GEMINI_BACKUP_MODEL", DEFAULT_GEMINI_BACKUP_MODEL)
+    if selected_provider == "anthropic":
+        return os.getenv("ANTHROPIC_FALLBACK_MODEL", DEFAULT_ANTHROPIC_FALLBACK_MODEL)
     return os.getenv("FALLBACK_MODEL", DEFAULT_OLLAMA_BACKUP_MODEL)
 
 
@@ -70,6 +80,15 @@ def gemini_api_key_is_placeholder() -> bool:
     return not api_key or api_key == PLACEHOLDER_API_KEY
 
 
+def get_anthropic_api_key() -> str:
+    return os.getenv("ANTHROPIC_API_KEY") or ""
+
+
+def anthropic_api_key_is_placeholder() -> bool:
+    api_key = get_anthropic_api_key().strip()
+    return not api_key or api_key == PLACEHOLDER_API_KEY
+
+
 def get_llm(
     model_name: str | None = None,
     *,
@@ -81,11 +100,13 @@ def get_llm(
 
     if selected_provider == "gemini":
         return _get_gemini_llm(selected_model)
+    if selected_provider == "anthropic":
+        return _get_anthropic_llm(selected_model)
     if selected_provider == "ollama":
         return _get_ollama_llm(selected_model, ollama_host=ollama_host)
 
     raise ModelAdapterError(
-        f"Unsupported LLM_PROVIDER '{selected_provider}'. Use 'gemini' or 'ollama'."
+        f"Unsupported LLM_PROVIDER '{selected_provider}'. Use 'anthropic', 'gemini', or 'ollama'."
     )
 
 
@@ -170,6 +191,29 @@ def _get_gemini_llm(model_name: str) -> Any:
         temperature=get_temperature(),
         max_output_tokens=get_max_output_tokens(),
         max_retries=0,
+    )
+
+
+def _get_anthropic_llm(model_name: str) -> Any:
+    api_key = get_anthropic_api_key().strip()
+    if not api_key:
+        raise ModelAdapterError(
+            "ANTHROPIC_API_KEY is not set. "
+            "Add ANTHROPIC_API_KEY=<your-key> to .env before using the Anthropic provider."
+        )
+
+    try:
+        from langchain_anthropic import ChatAnthropic
+    except ImportError as error:
+        raise ModelAdapterError(
+            "Missing Anthropic dependency. Install requirements.txt so langchain-anthropic is available."
+        ) from error
+
+    return ChatAnthropic(
+        model=model_name,
+        api_key=api_key,
+        temperature=get_temperature(),
+        max_tokens=get_max_output_tokens(),
     )
 
 
