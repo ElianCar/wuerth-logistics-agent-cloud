@@ -71,6 +71,7 @@ class SQLAgentState(TypedDict, total=False):
     log_to_query_log: bool
     language: str
     router_context: dict[str, Any]
+    chat_context: str
 
 
 @dataclass(frozen=True)
@@ -259,6 +260,9 @@ User correction:
     if bool(state.get("use_approved_memory", True)):
         approved_template_context = format_approved_template_context(state["user_question"])
 
+    raw_chat_context = state.get("chat_context", "")
+    chat_context_block = f"{raw_chat_context}\n\n" if raw_chat_context else ""
+
     schema_context = state.get("schema_context", "")
     sql_dialect = extract_context_value(schema_context, "SQL dialect", "PostgreSQL")
     backend_name = extract_context_value(schema_context, "Backend", "postgres")
@@ -284,7 +288,7 @@ Database and semantic context:
 {approved_template_context}
 {repair_context}
 {correction_context}
-User question:
+{chat_context_block}User question:
 {state["user_question"]}
 """
 
@@ -688,6 +692,7 @@ def run_sql_agent(
     log_to_query_log: bool = True,
     language: str = "",
     router_context: dict[str, Any] | None = None,
+    chat_context: str = "",
     schema_loader: SchemaLoader = load_schema_context,
     sql_generator: SQLGenerator = default_sql_generator,
     sql_executor: SQLExecutor = execute_read_only_sql,
@@ -748,6 +753,7 @@ def run_sql_agent(
         "log_to_query_log": log_to_query_log,
         "language": language,
         "router_context": router_context or {},
+        "chat_context": chat_context,
     }
     final_state: SQLAgentState = graph.invoke(initial_state, {"recursion_limit": 30})
     latency_seconds = perf_counter() - started_at
