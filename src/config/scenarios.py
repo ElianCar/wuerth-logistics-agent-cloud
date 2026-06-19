@@ -30,7 +30,7 @@ DEMO_ALLOWED_TABLES = (
     "lineitem",
 )
 
-LOCAL_SCENARIO_OPTIONS = ("demo", "wuerth_local")
+LOCAL_SCENARIO_OPTIONS = ("demo", "wuerth_local", "databricks")
 SUPPORTED_SCENARIOS = {"databricks", "demo", "wuerth_local"}
 DEFAULT_SCENARIO_ID = "demo"
 

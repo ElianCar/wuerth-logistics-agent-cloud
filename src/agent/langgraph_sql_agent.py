@@ -17,6 +17,8 @@ from src.agent.memory_retriever import load_approved_solution_templates
 from src.agent.sql_validator import validate_generated_sql
 from src.config.scenarios import get_active_scenario
 from src.llm.model_adapter import (
+    DEFAULT_ANTHROPIC_FALLBACK_MODEL,
+    DEFAULT_ANTHROPIC_MEDIUM_MODEL,
     DEFAULT_GEMINI_BACKUP_MODEL,
     DEFAULT_GEMINI_PRIMARY_MODEL,
     DEFAULT_OLLAMA_BACKUP_MODEL,
@@ -89,7 +91,11 @@ class SQLAgentConfig:
     @classmethod
     def from_provider(cls, llm_provider: str) -> "SQLAgentConfig":
         llm_provider = get_provider(llm_provider)
-        if llm_provider == "gemini":
+        if llm_provider == "anthropic":
+            primary_model = os.getenv("ANTHROPIC_PRIMARY_MODEL", DEFAULT_ANTHROPIC_MEDIUM_MODEL)
+            fallback_model = os.getenv("ANTHROPIC_FALLBACK_MODEL", DEFAULT_ANTHROPIC_FALLBACK_MODEL)
+            max_primary_attempts = int(os.getenv("MAX_PRIMARY_ATTEMPTS", "2"))
+        elif llm_provider == "gemini":
             primary_model = os.getenv("GEMINI_PRIMARY_MODEL", DEFAULT_GEMINI_PRIMARY_MODEL)
             fallback_model = os.getenv("GEMINI_BACKUP_MODEL", DEFAULT_GEMINI_BACKUP_MODEL)
             max_primary_attempts = int(os.getenv("MAX_PRIMARY_ATTEMPTS", "2"))
@@ -98,7 +104,7 @@ class SQLAgentConfig:
             fallback_model = os.getenv("FALLBACK_MODEL", DEFAULT_OLLAMA_BACKUP_MODEL)
             max_primary_attempts = int(os.getenv("MAX_PRIMARY_ATTEMPTS", "2"))
         else:
-            raise ValueError(f"Unsupported LLM provider '{llm_provider}'. Use 'gemini' or 'ollama'.")
+            raise ValueError(f"Unsupported LLM provider '{llm_provider}'. Use 'anthropic', 'gemini', or 'ollama'.")
 
         return cls(
             primary_model=primary_model,
@@ -205,8 +211,10 @@ def build_scenario_sql_rules() -> str:
 - Use explicit joins.
 - Use aliases i for invoices and s for shipments when joining the two tables.
 - Use TRY_CAST for freight_costs and packing_costs before numeric aggregation.
-- Use calendar_day as the default invoice reporting date.
-- Use shipment_date as the default shipment date.
+- Use order_date as the default invoice date column for date filtering (Auftragsdatum). There is NO calendar_day column — never use it.
+- There is no date column in the shipments table. Do not filter shipments by date.
+- Produkt / Artikel / Produktnummer / Material maps to invoices.material_price (invoice side) and shipments.customer_material (shipment side). There is NO column called "product" — never use it.
+- Lieferpositionen / Lieferungen / delivery positions = COUNT(DISTINCT delivery_number) from shipments.
 - Do not use TPC-H tables.
 - Do not use PostgreSQL-specific syntax.
 - Do not use information_schema for business questions.

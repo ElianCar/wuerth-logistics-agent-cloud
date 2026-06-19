@@ -22,9 +22,12 @@ dataset:
     - wuerth.invoices
     - wuerth.shipments
   important_warning: >
-    The current local CSV files do not contain a revenue, turnover, invoice amount, packing cost,
-    calendar day, shipment date, plant, shipping point, or statistics currency column. Do not invent
+    The current data does not contain a revenue, turnover, invoice amount, packing cost,
+    shipment date, plant, shipping point, or statistics currency column. Do not invent
     these fields. Return an explicit limitation for questions that require missing columns.
+    CRITICAL — calendar_day does NOT exist in any table. Never use calendar_day in a WHERE
+    clause or SELECT. For date filtering on invoices use order_date (= Auftragsdatum) instead.
+    For date filtering on shipments there is no date column available.
   process_warning: >
     Invoices and shipments do not always match one to one because invoicing and shipping can happen
     with time delays. Joins can be non-perfect and many-to-many. Aggregate each table to the requested
@@ -48,11 +51,20 @@ tables:
       - Matching invoice-side records to shipment-side records
     columns:
       order_date:
-        business_name: Order date
+        business_name: Order date / Auftragsdatum
         data_type: date
         semantic_type: date
         nullable: true
-        description: Date of the original order in the invoice extract.
+        description: >
+          Date of the original order in the invoice extract. This is the correct column for
+          filtering by date, time period, month, or year on the invoice side. There is no
+          column named calendar_day, Kalendertag, shipment_date, or Lieferdatum in this table —
+          always use order_date for invoice-side date filtering.
+        aliases:
+          - Auftragsdatum
+          - Bestelldatum
+          - order date
+          - date
       order_reason_statistic:
         business_name: Statistical order reason
         data_type: text
@@ -75,10 +87,20 @@ tables:
         nullable: true
         description: Order item/position identifier. Do not join this to shipments.number_delivery_items.
       sales_area:
-        business_name: Sales area
+        business_name: Sales area / Vertriebszentrum
         data_type: text
         semantic_type: organizational_code
         nullable: true
+        description: >
+          Organizational sales area or distribution center identifier. In Würth's German
+          business context this field is referred to as Vertriebszentrum or Vertriebsgebiet.
+          Use this column when the user asks about a Vertriebszentrum, distribution center,
+          sales area, or sales region. Do NOT use shipments columns for this purpose.
+        aliases:
+          - Vertriebszentrum
+          - Vertriebsgebiet
+          - Verkaufsgebiet
+          - distribution center
       order_entry_date:
         business_name: Order entry date
         data_type: date
@@ -101,15 +123,22 @@ tables:
         semantic_type: categorical_code
         nullable: true
       material_price:
-        business_name: Material number candidate
+        business_name: Produktnummer / Material number
         data_type: text
-        semantic_type: material_identifier_candidate
+        semantic_type: product_identifier
         nullable: true
-        join_role: required_join_key_pending_confirmation
+        join_role: required_join_key
         description: >
-          Current invoice-side material-like field. The file does not contain a column literally named
-          material_number. Use as the local material join candidate only with the caveat that business
-          confirmation is still needed.
+          Confirmed invoice-side product number (Produktnummer). Use this column when the user asks
+          about Produkt, Artikel, Produktnummer, Material, or product. This is the correct join key
+          to shipments.customer_material. Do NOT use a column called "product" — it does not exist.
+        aliases:
+          - Produkt
+          - Produktnummer
+          - Artikel
+          - Material
+          - Materialnummer
+          - product
         maps_to:
           - table: shipments
             column: customer_material
@@ -155,14 +184,21 @@ tables:
         nullable: true
         default_aggregation: sum
       customer_material:
-        business_name: Customer material / material number candidate
+        business_name: Produktnummer / Customer material number
         data_type: text
-        semantic_type: material_identifier_candidate
+        semantic_type: product_identifier
         nullable: true
-        join_role: required_join_key_pending_confirmation
+        join_role: required_join_key
         description: >
-          Current shipment-side material-like field. Use as the local material join candidate for
-          invoices.material_price only with the caveat that business confirmation is still needed.
+          Confirmed shipment-side product number (Produktnummer). Maps to invoices.material_price.
+          Use for grouping by Produkt, Artikel, or Produktnummer on the shipment side.
+        aliases:
+          - Produkt
+          - Produktnummer
+          - Artikel
+          - Material
+          - Materialnummer
+          - product
       priority_of_delivery:
         business_name: Delivery priority
         data_type: text
@@ -191,11 +227,21 @@ tables:
           Additional shipment customer party field. The current project instruction maps invoices.customer
           to shiptoparty, not soldtoparty. Use soldtoparty only if the user explicitly asks for sold-to-party.
       delivery_number:
-        business_name: Delivery number
+        business_name: Liefernummer / Delivery number
         data_type: text
         semantic_type: delivery_identifier
         nullable: true
         default_aggregation: count_distinct
+        description: >
+          Unique delivery identifier. Lieferpositionen (delivery positions) = COUNT(DISTINCT delivery_number).
+          Always use COUNT(DISTINCT delivery_number) when the user asks for Lieferpositionen, Lieferungen,
+          or number of deliveries.
+        aliases:
+          - Liefernummer
+          - Lieferposition
+          - Lieferpositionen
+          - delivery position
+          - deliveries
       freight_costs:
         business_name: Freight costs
         data_type: numeric
@@ -409,6 +455,8 @@ sql_generation_guidance:
     - Use wuerth.invoices for invoice-side order, customer, market segment, sales area, order reason, and order date questions.
     - Do not use material_price as a monetary price.
     - Do not answer revenue questions with a numeric query until a real revenue column is available.
+    - CRITICAL - date columns: The invoice table has order_date and order_entry_date. There is NO calendar_day, Kalendertag, shipment_date, shipping_date, or Lieferdatum column. Never generate a WHERE clause using calendar_day — always use order_date for date filtering.
+    - CRITICAL - Vertriebszentrum: The sales_area column contains Vertriebszentrum / distribution center codes. Never use a shipments column for Vertriebszentrum filtering.
   shipment_table:
     - Use wuerth.shipments for delivery count, delivered quantity, delivery type, party fields, and freight cost.
     - Use SUM(freight_costs) for freight cost.

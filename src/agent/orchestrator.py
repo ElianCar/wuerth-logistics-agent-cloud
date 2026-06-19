@@ -18,6 +18,13 @@ from src.llm.model_adapter import get_provider
 load_dotenv()
 
 
+ANTHROPIC_TIER_MODELS = {
+    "easy": os.getenv("ANTHROPIC_EASY_MODEL", "claude-haiku-4-5-20251001"),
+    "medium": os.getenv("ANTHROPIC_MEDIUM_MODEL", "claude-sonnet-4-6"),
+    "hard": os.getenv("ANTHROPIC_HARD_MODEL", "claude-opus-4-8"),
+}
+ANTHROPIC_FALLBACK_MODEL = os.getenv("ANTHROPIC_FALLBACK_MODEL", "claude-sonnet-4-6")
+
 GEMINI_TIER_MODELS = {
     "easy": os.getenv("GEMINI_EASY_MODEL", "gemini-3.1-flash-lite"),
     "medium": os.getenv(
@@ -132,6 +139,8 @@ def _coerce_sql_config(config: Any | None) -> SQLAgentConfig:
 def _tier_primary_model(config: SQLAgentConfig, tier: str) -> str:
     provider = get_provider(config.llm_provider)
     tier = tier if tier in {"easy", "medium", "hard"} else "hard"
+    if provider == "anthropic":
+        return ANTHROPIC_TIER_MODELS.get(tier) or config.primary_model
     if provider == "gemini":
         return GEMINI_TIER_MODELS.get(tier) or config.primary_model
     return OLLAMA_TIER_MODELS.get(tier) or config.primary_model
@@ -482,7 +491,11 @@ def build_orchestrator_graph(step_callback: StepCallback | None = None):
     def _select_model_with_callback(state: OrchestratorState) -> dict[str, Any]:
         _start = perf_counter()
         result = select_model(state)
-        _notify_end("select_model", _start)
+        _notify_end("select_model", _start, {
+            "primary": result.get("primary_model", ""),
+            "fallback": result.get("fallback_model", ""),
+            "tier": state.get("complexity_tier", ""),
+        })
         return result
 
     def _terminal_response_with_callback(state: OrchestratorState) -> dict[str, Any]:
