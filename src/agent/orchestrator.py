@@ -41,6 +41,7 @@ OLLAMA_FALLBACK_MODEL = os.getenv("OLLAMA_FALLBACK_MODEL", "llama3.1:8b")
 class OrchestratorState(TypedDict, total=False):
     run_id: str
     user_question: str
+    chat_context: str
     llm_provider: str
     ollama_host: str
 
@@ -277,6 +278,7 @@ def run_sql_agent_node(state: OrchestratorState) -> dict[str, Any]:
         log_to_query_log=bool(state.get("log_to_query_log", True)),
         language=state.get("language", ""),
         router_context=router_context,
+        chat_context=state.get("chat_context", ""),
     )
 
     return {
@@ -432,10 +434,12 @@ def _initial_state(
     use_approved_memory: bool,
     enable_memory_candidate_generation: bool,
     log_to_query_log: bool,
+    chat_context: str = "",
 ) -> OrchestratorState:
     return {
         "run_id": run_id,
         "user_question": user_question,
+        "chat_context": chat_context,
         "llm_provider": config.llm_provider,
         "ollama_host": config.ollama_host,
         "trace_steps": [],
@@ -546,6 +550,7 @@ def run_orchestrator(
     use_approved_memory: bool = True,
     enable_memory_candidate_generation: bool = True,
     log_to_query_log: bool = True,
+    chat_context: str = "",
 ) -> OrchestratorState:
     sql_config = _coerce_sql_config(config)
     run_id = generate_run_id()
@@ -563,6 +568,7 @@ def run_orchestrator(
         use_approved_memory=use_approved_memory,
         enable_memory_candidate_generation=enable_memory_candidate_generation,
         log_to_query_log=log_to_query_log,
+        chat_context=chat_context,
     )
 
     if force_fallback:

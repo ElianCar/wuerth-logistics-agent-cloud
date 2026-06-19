@@ -1,3 +1,4 @@
+import io
 import uuid
 
 import pandas as pd
@@ -57,6 +58,46 @@ def _make_chat(name: str = "") -> dict:
 
 def active_history() -> list[dict]:
     return st.session_state.chats[st.session_state.active_chat_id]["history"]
+
+
+_STOP_WORDS = {
+    "wie", "was", "wer", "wo", "wann", "warum", "welche", "welcher", "welches",
+    "welchen", "welchem", "zeige", "zeig", "gib", "mir", "bitte", "kannst", "du",
+    "die", "der", "das", "den", "dem", "des", "ein", "eine", "einen", "einem",
+    "eines", "ist", "sind", "gibt", "es", "ich", "all", "alle", "viele", "viel",
+    "mal", "bitte", "noch", "schon", "doch", "auch", "nur", "mehr", "weniger",
+    "möchte", "möchten", "würde", "würden", "hätte", "hätten", "kann", "können",
+}
+
+
+def _auto_chat_name(question: str) -> str:
+    words = question.split()
+    kept = [w.strip("?!.,;:") for w in words if w.lower().strip("?!.,;:") not in _STOP_WORDS]
+    chosen = kept[:3]
+    return " ".join(chosen) if chosen else question[:20]
+
+
+def _build_chat_context(history: list[dict]) -> str:
+    lines = ["Bisheriger Gesprächsverlauf:"]
+    for record in history:
+        q = record.get("user_question", "").strip()
+        sql = (record.get("final_sql") or record.get("generated_sql", "")).strip()
+        success = record.get("execution_success", False)
+        row_count = record.get("row_count")
+        a = record.get("final_answer", "").strip()
+
+        if q:
+            lines.append(f"F: {q}")
+        if sql:
+            lines.append(f"SQL: {sql}")
+        status = "Erfolg" if success else "Fehlgeschlagen"
+        if row_count is not None:
+            status += f", {row_count} Zeile(n)"
+        lines.append(f"Status: {status}")
+        if a:
+            lines.append(f"A: {a}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 def _render_chat_sidebar_css() -> None:
@@ -1136,6 +1177,27 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
             df = result_to_dataframe(record)
             st.dataframe(df, use_container_width=True)
 
+            col_csv, col_xlsx = st.columns(2)
+            csv_data = df.to_csv(index=False).encode("utf-8")
+            col_csv.download_button(
+                "Als CSV exportieren",
+                data=csv_data,
+                file_name=f"ergebnis_{record.get('run_id', index)}.csv",
+                mime="text/csv",
+                key=f"export_csv_{index}",
+                use_container_width=True,
+            )
+            xlsx_buffer = io.BytesIO()
+            df.to_excel(xlsx_buffer, index=False)
+            col_xlsx.download_button(
+                "Als Excel exportieren",
+                data=xlsx_buffer.getvalue(),
+                file_name=f"ergebnis_{record.get('run_id', index)}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"export_xlsx_{index}",
+                use_container_width=True,
+            )
+
         st.subheader("SQL-Anweisung")
         st.code(record.get("final_sql") or record.get("generated_sql", "") or "(kein SQL erzeugt)", language="sql")
 
@@ -1205,17 +1267,30 @@ def main() -> None:
     )
     render_flash()
 
-    for index, record in enumerate(active_history()):
+    history = active_history()
+    for index, record in enumerate(history):
         render_record(record, index, config)
+
+    context_key = f"send_context_{st.session_state.active_chat_id}"
+    if history:
+        st.checkbox(
+            "Chatkontext mitsenden",
+            key=context_key,
+            help="Sendet den bisherigen Gesprächsverlauf als Kontext mit — nützlich für Folgefragen.",
+        )
 
     question = st.chat_input(f"Stelle eine Frage zu {scenario.label}")
     if question:
+        chat_context = ""
+        if st.session_state.get(context_key) and history:
+            chat_context = _build_chat_context(history)
         with st.spinner("LangGraph-SQL-Workflow wird ausgeführt..."):
-            record = run_orchestrator(question, config=config)
+            record = run_orchestrator(question, config=config, chat_context=chat_context)
+        record["user_question"] = question
         active_history().append(record)
         chat = st.session_state.chats[st.session_state.active_chat_id]
         if len(active_history()) == 1:
-            chat["name"] = question[:30] + "..." if len(question) > 30 else question
+            chat["name"] = _auto_chat_name(question)
         st.rerun()
 
 
