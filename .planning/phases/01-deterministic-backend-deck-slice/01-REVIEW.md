@@ -1,7 +1,7 @@
 ---
 phase: 01-deterministic-backend-deck-slice
-reviewed: 2026-06-21T16:21:48Z
-depth: standard
+reviewed: 2026-06-21T16:40:51Z
+depth: quick
 files_reviewed: 3
 files_reviewed_list:
   - src/agent/presentation_export.py
@@ -17,34 +17,36 @@ status: clean
 
 # Phase 01: Code Review Report
 
-**Reviewed:** 2026-06-21T16:21:48Z
-**Depth:** standard
+**Reviewed:** 2026-06-21T16:40:51Z
+**Depth:** quick
 **Files Reviewed:** 3
 **Status:** clean
 
 ## Summary
 
-Re-reviewed the deterministic PowerPoint export module, its unittest coverage, and the dependency change after the second fix pass. No Critical, Warning, or Info findings remain in the reviewed source files.
+Quick re-review covered the Phase 01 source scope after the PPTX ZIP canonicalization fix:
 
-The prior findings are fixed:
+- `src/agent/presentation_export.py`
+- `evaluation/test_presentation_export.py`
+- `requirements.txt`
 
-- Changed templates with embedded OLE are now blocked unless the package hash matches the approved template hash.
-- External relationship detection parses `.rels` XML and covers valid whitespace around attributes.
-- Chart evidence is only emitted for supported chart types with x and y columns backed by query result rows.
-- Render failures and post-render reopen failures both return structured unavailable exports.
-- The Streamlit import boundary check now runs in a fresh subprocess and catches import-time and call-time regressions.
+The previously reported determinism blocker is resolved. `_render_presentation()` now returns `_normalize_pptx_package(output.getvalue())`; `_normalize_pptx_package()` rewrites PPTX ZIP entries in sorted order and applies `FIXED_PPTX_TIMESTAMP = (1980, 1, 1, 0, 0, 0)` to each entry. The repeatability test now asserts repeated export bytes, sorted ZIP names, and fixed ZIP timestamps.
+
+Focused regression checks found no wall-clock fallback, no Streamlit import path in the backend export module, and no LLM path introduced. Quick scan patterns for hardcoded secrets, dangerous functions, debug artifacts, empty catches, and commented-out code found no findings in the reviewed files.
 
 Validation performed:
 
 - `python -m compileall src/agent/presentation_export.py evaluation/test_presentation_export.py` completed successfully.
-- `python -m unittest evaluation.test_presentation_export` could not run in this shell because the active Python 3.14 interpreter does not have `pptx` installed. `requirements.txt` does include `python-pptx`, so this is an environment verification gap rather than a reviewed source defect.
+- `python -m unittest evaluation.test_presentation_export` could not execute in the active Python environment because `pptx` is not installed there. `requirements.txt` includes `python-pptx`, so this is recorded as an environment limitation, not a source finding.
+
+All reviewed files meet the quick review quality gate. No issues found.
 
 ## Narrative Findings (AI reviewer)
 
-All reviewed files meet the current Phase 01 quality bar. No issues found.
+No Critical, Warning, or Info findings.
 
 ---
 
-_Reviewed: 2026-06-21T16:21:48Z_
+_Reviewed: 2026-06-21T16:40:51Z_
 _Reviewer: the agent (gsd-code-reviewer)_
-_Depth: standard_
+_Depth: quick_
