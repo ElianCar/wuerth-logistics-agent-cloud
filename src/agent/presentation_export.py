@@ -786,7 +786,7 @@ def _metadata_body(record: dict[str, Any]) -> list[str]:
         f"SQL validation: {bool(record.get('validation_success') or record.get('sql_valid'))}",
         f"Rows returned: {int(record.get('row_count', 0) or 0)}",
         f"Source tables: {_source_text(source_tables)}",
-        f"Generated at: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}",
+        f"Generated at: {_text_or_default(record.get('generated_at'), 'not recorded')}",
     ]
     candidates = record.get("template_candidates")
     if isinstance(candidates, list) and candidates:
@@ -838,7 +838,7 @@ def _deck_title(record: dict[str, Any]) -> str:
 
 
 def _filename_for(record: dict[str, Any]) -> str:
-    run_id = str(record.get("run_id") or datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"))
+    run_id = str(record.get("run_id") or "analysis")
     safe_run_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_id).strip("_") or "analysis"
     return f"wuerth_logistics_{safe_run_id}.pptx"
 

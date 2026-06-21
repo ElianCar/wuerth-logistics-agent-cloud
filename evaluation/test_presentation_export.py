@@ -134,6 +134,14 @@ class PresentationExportSuccessTests(unittest.TestCase):
         self.assertEqual(len(presentation.slides), export.slide_count)
         self.assertGreater(len(presentation.slides), 1)
 
+    def test_successful_record_produces_repeatable_pptx_bytes(self) -> None:
+        first = build_presentation_export(record=valid_record())
+        second = build_presentation_export(record=valid_record())
+
+        self.assertTrue(first.available)
+        self.assertTrue(second.available)
+        self.assertEqual(first.content, second.content)
+
     def test_slide_deck_spec_is_ordered_dynamic_and_excludes_default_closing(self) -> None:
         spec = build_slide_deck_spec(record=valid_record())
 
