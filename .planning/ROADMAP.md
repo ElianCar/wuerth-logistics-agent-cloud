@@ -31,7 +31,7 @@ This roadmap turns successful Wuerth logistics analysis results into determinist
 
 ### Phase 1: Deterministic Backend Deck Slice
 
-**Goal:** A successful validated orchestrator record can be turned into deterministic Wuerth PPTX bytes by a backend module, and invalid records fail clearly.
+**Goal:** As a Wuerth logistics analysis user, I want to turn a successful validated orchestrator record into deterministic Wuerth PPTX bytes through a backend module, so that I can get a presentation-ready deck while invalid records fail clearly.
 **Mode:** mvp
 **Depends on:** Nothing (first phase)
 **Requirements:** PPT-02, PPT-03, PPT-06, PPT-07, SPEC-01, SPEC-02, SPEC-03, SPEC-04, TEST-01, TEST-02, TEST-03
