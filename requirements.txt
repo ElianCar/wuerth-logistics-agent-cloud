@@ -13,6 +13,7 @@ ollama
 pandas
 psycopg[binary]
 python-dotenv
+python-pptx
 PyYAML
 tabulate
 streamlit
