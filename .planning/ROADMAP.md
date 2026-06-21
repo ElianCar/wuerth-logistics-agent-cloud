@@ -73,8 +73,21 @@ Plans:
   4. PowerPoint chart eligibility uses the same deterministic rules as the Streamlit chart path.
 
 **Verification approach:** Run backend export tests plus a manual Streamlit success-run check that confirms the download button, filename, MIME type, deck content, and absence of PPTX rendering logic from Streamlit callbacks.
-**Plans:** TBD
+**Plans:** 3 plans
 **UI hint:** yes
+Plans:
+
+**Wave 1**
+
+- [ ] 02-01-PLAN.md - Add Streamlit PPT helper state and boundary tests
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 02-02-PLAN.md - Wire Create PPT and Download PPT controls into Streamlit
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 02-03-PLAN.md - Verify Streamlit PPT export UX and backend boundary
 
 ### Phase 3: Readable Evidence And Fallback Slice
 
