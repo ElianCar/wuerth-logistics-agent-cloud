@@ -7,10 +7,10 @@
 
 ### Presentation Export
 
-- [ ] **PPT-01**: User can export a successful validated analysis run as a `.pptx` file from Streamlit.
+- [x] **PPT-01**: User can export a successful validated analysis run as a `.pptx` file from Streamlit.
 - [x] **PPT-02**: Export uses the tracked Wuerth master template at `assets/templates/PPT_Vorlage_Wuerth.pptx` through a repo-relative path.
 - [x] **PPT-03**: Export is blocked for failed SQL, unsafe SQL, clarification-only responses, missing query results, or unvalidated runs.
-- [ ] **PPT-04**: Generated deck includes a title or takeaway slide, result summary, KPI or key metric section, chart or table evidence, caveats or limitations, source tables, and run metadata.
+- [x] **PPT-04**: Generated deck includes a title or takeaway slide, result summary, KPI or key metric section, chart or table evidence, caveats or limitations, source tables, and run metadata.
 - [ ] **PPT-05**: Generated deck preserves SQL result order for evidence tables and clearly marks row or column truncation.
 - [x] **PPT-06**: Missing or unreadable PPT template produces a clear user-facing error and does not crash the Streamlit app.
 - [x] **PPT-07**: Export logic is implemented in a testable backend module, not embedded in Streamlit callbacks.
@@ -24,8 +24,8 @@
 
 ### Visualization
 
-- [ ] **VIS-01**: PowerPoint export reuses the same chart eligibility rules as `src/agent/visualization_spec.py`.
-- [ ] **VIS-02**: User can export simple bar and line chart evidence when the current chart spec is renderable.
+- [x] **VIS-01**: PowerPoint export reuses the same chart eligibility rules as `src/agent/visualization_spec.py`.
+- [x] **VIS-02**: User can export simple bar and line chart evidence when the current chart spec is renderable.
 - [ ] **VIS-03**: Unsupported chart shapes fall back to a table or limitation slide with a reason.
 - [ ] **VIS-04**: Presentation output can handle top-N categorical comparisons without unreadable slide overflow.
 
@@ -106,10 +106,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PPT-01 | Phase 2 | Pending |
+| PPT-01 | Phase 2 | Complete |
 | PPT-02 | Phase 1 | Complete |
 | PPT-03 | Phase 1 | Complete |
-| PPT-04 | Phase 2 | Pending |
+| PPT-04 | Phase 2 | Complete |
 | PPT-05 | Phase 3 | Pending |
 | PPT-06 | Phase 1 | Complete |
 | PPT-07 | Phase 1 | Complete |
@@ -117,8 +117,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SPEC-02 | Phase 1 | Complete |
 | SPEC-03 | Phase 1 | Complete |
 | SPEC-04 | Phase 1 | Complete |
-| VIS-01 | Phase 2 | Pending |
-| VIS-02 | Phase 2 | Pending |
+| VIS-01 | Phase 2 | Complete |
+| VIS-02 | Phase 2 | Complete |
 | VIS-03 | Phase 3 | Pending |
 | VIS-04 | Phase 3 | Pending |
 | MEM-01 | Phase 4 | Pending |

@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-last_updated: "2026-06-21T18:10:16.704Z"
-last_activity: 2026-06-21 -- Phase 02 execution started
+last_updated: "2026-06-21T18:18:45.733Z"
+last_activity: 2026-06-21
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 6
-  completed_plans: 3
+  completed_plans: 4
   percent: 20
 ---
 
@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-06-21)
 ## Current Position
 
 Phase: 02 (streamlit-downloadable-deck-slice) — EXECUTING
-Plan: 1 of 3
-Status: Executing Phase 02
-Last activity: 2026-06-21 -- Phase 02 execution started
+Plan: 2 of 3
+Status: Ready to execute
+Last activity: 2026-06-21
 
-Progress: [##########] 100%
+Progress: [███████░░░] 67%
 
 ## Performance Metrics
 
@@ -49,6 +49,8 @@ Progress: [##########] 100%
 
 - Last 3 plans: 01-01, 01-02, 01-03
 - Trend: Phase 01 backend export foundation completed and verified
+
+| Phase 02 P01 | 7 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -70,6 +72,9 @@ Recent decisions affecting current work:
 - [Phase 01]: Keep known Wuerth template OLE entries as warnings while blocking macros, external relationships, and unexpected active content.
 - [Phase 01]: Require both validation_success=True and sql_valid=True before PPTX export.
 - [Phase 01]: Validate slide type, layout, required content, text budget, table limits, and chart payload before opening the renderer.
+- [Phase 02]: Plan 02-01 keeps PPT helper state and reason-copy scope separate from visible Create PPT and Download PPT UI wiring.
+- [Phase 02]: Presentation export state keys use active chat plus run ID or record index to prevent cross-chat export collisions.
+- [Phase 02]: Helper tests use import stubs because the bundled Python used for verification does not include Streamlit.
 
 ### Pending Todos
 
@@ -90,6 +95,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-21T17:39:28.107Z
-Stopped at: Phase 02 UI-SPEC approved
-Resume file: .planning/phases/02-streamlit-downloadable-deck-slice/02-UI-SPEC.md
+Last session: 2026-06-21T18:18:45.692Z
+Stopped at: Completed 02-01-PLAN.md
+Resume file: None
