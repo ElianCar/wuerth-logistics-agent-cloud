@@ -91,6 +91,46 @@ def active_history() -> list[dict]:
     return st.session_state.chats[st.session_state.active_chat_id]["history"]
 
 
+_PRESENTATION_UNAVAILABLE_REASON_COPY: dict[str, str] = {
+    "record_missing": "No analysis record was found.",
+    "blocked_request": "This request was blocked for safety.",
+    "clarification_needed": "This run needs clarification before export.",
+    "sql_execution_failed": "SQL execution did not finish successfully.",
+    "sql_validation_failed": "SQL validation did not pass.",
+    "missing_query_result": "No query result is available.",
+    "missing_query_columns": "The query result has no columns.",
+    "missing_query_rows": "The query result has no rows.",
+    "zero_row_count": "The query returned zero rows.",
+}
+
+
+def presentation_export_key(
+    record: dict,
+    index: int,
+    *,
+    active_chat_id: str | None = None,
+) -> str:
+    chat_id = active_chat_id or st.session_state.get("active_chat_id", "chat")
+    record_id = record.get("run_id") or index
+    return f"ppt_export_{chat_id}_{record_id}"
+
+
+def presentation_exports_state(session_state: dict | None = None) -> dict:
+    state = session_state if session_state is not None else st.session_state
+    exports = state.setdefault("presentation_exports", {})
+    if not isinstance(exports, dict):
+        exports = {}
+        state["presentation_exports"] = exports
+    return exports
+
+
+def format_presentation_unavailable_reason(reason: object) -> str:
+    return _PRESENTATION_UNAVAILABLE_REASON_COPY.get(
+        str(reason or ""),
+        "The backend exporter marked this run as unavailable.",
+    )
+
+
 _STOP_WORDS = {
     "wie", "was", "wer", "wo", "wann", "warum", "welche", "welcher", "welches",
     "welchen", "welchem", "zeige", "zeig", "gib", "mir", "bitte", "kannst", "du",
@@ -279,6 +319,7 @@ def initialize_state() -> None:
     st.session_state.setdefault("last_errored_question_ids", [])
     st.session_state.setdefault("last_golden_result_summary", {})
     st.session_state.setdefault("last_golden_results", [])
+    presentation_exports_state()
     initialize_memory_files()
 
 

@@ -199,6 +199,31 @@ class StreamlitPresentationExportHelperTests(unittest.TestCase):
             with self.subTest(reason=reason):
                 self.assertEqual(app.format_presentation_unavailable_reason(reason), expected)
 
+    def test_initialize_state_adds_presentation_exports_without_disturbing_existing_state(self) -> None:
+        app = _load_streamlit_app()
+        session_state = app.st.session_state
+        existing_chats = {"chat-a": {"name": "Chat A", "history": []}}
+        existing_golden_results = [{"question_id": "q1", "status": "passed"}]
+        session_state.update({
+            "chats": existing_chats,
+            "active_chat_id": "chat-a",
+            "editing_chat_id": "chat-a",
+            "confirm_delete_chat_id": None,
+            "last_golden_run_id": "golden-run",
+            "last_selected_question_ids": ["q1"],
+            "last_failed_question_ids": [],
+            "last_errored_question_ids": [],
+            "last_golden_result_summary": {"passed": 1},
+            "last_golden_results": existing_golden_results,
+        })
+
+        app.initialize_state()
+
+        self.assertEqual(session_state["presentation_exports"], {})
+        self.assertIs(session_state["chats"], existing_chats)
+        self.assertEqual(session_state["active_chat_id"], "chat-a")
+        self.assertEqual(session_state["last_golden_results"], existing_golden_results)
+
     def test_streamlit_source_does_not_import_renderer_internals(self) -> None:
         source = STREAMLIT_APP_PATH.read_text(encoding="utf-8")
         imported = _imported_symbols(source)
