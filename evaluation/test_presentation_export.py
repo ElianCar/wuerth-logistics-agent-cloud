@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from pptx import Presentation
 
@@ -165,10 +166,31 @@ class PresentationExportSuccessTests(unittest.TestCase):
         self.assertEqual(layout_names[-1], "Agent 09 Closing")
 
     def test_backend_contract_does_not_import_streamlit_surfaces(self) -> None:
+        before = set(sys.modules)
+
         build_slide_deck_spec(record=valid_record())
 
-        self.assertNotIn("streamlit", sys.modules)
-        self.assertNotIn("streamlit_app", sys.modules)
+        new_modules = set(sys.modules) - before
+        self.assertNotIn("streamlit", new_modules)
+        self.assertNotIn("streamlit_app", new_modules)
+
+    def test_unbacked_chart_plan_is_skipped_with_warning(self) -> None:
+        result = query_result(["region", "shipment_count"], [("Sued", 90)])
+        reporting = reporting_result(result)
+        reporting["chart_plan"] = {
+            "chart_type": "bar",
+            "title": "Broken chart",
+            "render_allowed": True,
+            "x_axis": "missing_region",
+            "y_axis": "shipment_count",
+        }
+
+        spec = build_slide_deck_spec(
+            record=orchestrator_record(query_result=result, reporting_result=reporting, row_count=1)
+        )
+
+        self.assertNotIn("Agent 04 Chart Evidence", [slide.layout_name for slide in spec.slides])
+        self.assertTrue(any("chart evidence was skipped" in warning.lower() for warning in spec.warnings))
 
 
 class PresentationExportEligibilityTests(unittest.TestCase):
@@ -257,6 +279,14 @@ class PresentationExportEligibilityTests(unittest.TestCase):
         self.assert_unavailable_export(export, "execution")
         self.assertIsNone(export.template_audit)
 
+    def test_render_failure_returns_structured_unavailable_export(self) -> None:
+        with patch("src.agent.presentation_export._render_presentation", side_effect=RuntimeError("boom")):
+            export = build_presentation_export(record=valid_record())
+
+        self.assert_unavailable_export(export, "render")
+        self.assertIsNotNone(export.template_audit)
+        self.assertIsNotNone(export.deck_spec)
+
 
 class PresentationExportTemplateSafetyTests(unittest.TestCase):
     def test_real_template_validates_with_known_ole_warnings_only(self) -> None:
@@ -283,7 +313,7 @@ class PresentationExportTemplateSafetyTests(unittest.TestCase):
     def test_external_relationship_template_is_blocked(self) -> None:
         external_relationship = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rIdExternal" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/data.xlsx" TargetMode="External"/>
+  <Relationship Id="rIdExternal" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/data.xlsx" TargetMode = "External"/>
 </Relationships>
 """
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -297,6 +327,19 @@ class PresentationExportTemplateSafetyTests(unittest.TestCase):
         self.assertFalse(audit.available)
         self.assertTrue(audit.external_relationships)
         self.assertTrue(any("external" in error.lower() for error in audit.errors))
+
+    def test_template_hash_mismatch_with_embedded_objects_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            unsafe_template = Path(temp_dir) / "modified-ole-template.pptx"
+            shutil.copyfile(DEFAULT_TEMPLATE_PATH, unsafe_template)
+            with zipfile.ZipFile(unsafe_template, "a") as package:
+                package.writestr("docProps/custom.xml", b"modified template marker")
+
+            audit = validate_template(template_path=unsafe_template)
+
+        self.assertFalse(audit.available)
+        self.assertGreaterEqual(len(audit.ole_entries), 1)
+        self.assertTrue(any("approved template hash" in error.lower() for error in audit.errors))
 
     def test_invalid_slide_specs_are_rejected_before_rendering(self) -> None:
         cases = [
@@ -391,6 +434,22 @@ class PresentationExportTemplateSafetyTests(unittest.TestCase):
                     ],
                 ),
                 "unsupported chart",
+            ),
+            (
+                "chart_missing_result_data",
+                SlideDeckSpec(
+                    title="Deck",
+                    slides=[
+                        SlideSpec(
+                            slide_type="chart_evidence",
+                            layout_name="Agent 04 Chart Evidence",
+                            title="Chart",
+                            body=["Chart"],
+                            metadata={"chart_type": "bar"},
+                        )
+                    ],
+                ),
+                "chart evidence",
             ),
         ]
 

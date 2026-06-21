@@ -7,6 +7,7 @@ from io import BytesIO
 from pathlib import Path
 import re
 from typing import Any
+from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
 from pptx import Presentation
@@ -54,7 +55,7 @@ BODY_REQUIRED_SLIDE_TYPES = {
     "closing",
 }
 TABLE_REQUIRED_SLIDE_TYPES = {"table_evidence"}
-SUPPORTED_CHART_TYPES = {"", "bar", "line", "none"}
+SUPPORTED_CHART_TYPES = {"bar", "line"}
 
 
 @dataclass(frozen=True)
@@ -200,7 +201,12 @@ def build_presentation_export(
             template_path=Path(template_path),
         )
     except Exception as error:
-        raise PresentationExportError("PPTX rendering failed.") from error
+        return _unavailable_export(
+            "render_failed",
+            warnings=[f"PPTX rendering failed: {type(error).__name__}."],
+            template_audit=audit,
+            deck_spec=deck_spec,
+        )
 
     reopened = Presentation(BytesIO(content))
     warnings = [*deck_spec.warnings, *audit.warnings]
@@ -279,17 +285,23 @@ def build_slide_deck_spec(
 
     chart_plan = _dict_or_empty(reporting.get("chart_plan") or record.get("chart_spec"))
     if chart_plan.get("render_allowed"):
-        slides.append(
-            SlideSpec(
-                slide_type="chart_evidence",
-                layout_name=LAYOUT_CHART,
-                title=str(chart_plan.get("title") or "Chart Evidence"),
-                body=_chart_body(chart_plan, reporting),
-                table_columns=_chart_table_columns(chart_plan),
-                table_rows=_chart_table_rows(query, chart_plan),
-                metadata={"chart_type": str(chart_plan.get("chart_type") or "")},
+        chart_columns = _chart_table_columns(chart_plan)
+        chart_rows = _chart_table_rows(query, chart_plan)
+        chart_type = str(chart_plan.get("chart_type") or "").lower()
+        if chart_type not in SUPPORTED_CHART_TYPES or len(chart_columns) != 2 or not chart_rows:
+            warnings.append("Chart evidence was skipped because the chart payload is not backed by result data.")
+        else:
+            slides.append(
+                SlideSpec(
+                    slide_type="chart_evidence",
+                    layout_name=LAYOUT_CHART,
+                    title=str(chart_plan.get("title") or "Chart Evidence"),
+                    body=_chart_body(chart_plan, reporting),
+                    table_columns=chart_columns,
+                    table_rows=chart_rows,
+                    metadata={"chart_type": chart_type},
+                )
             )
-        )
 
     table_columns, table_rows, table_warnings = _table_content(query)
     warnings.extend(table_warnings)
@@ -418,6 +430,8 @@ def validate_slide_deck_spec(
             chart_type = str(slide.metadata.get("chart_type") or "").lower()
             if chart_type not in SUPPORTED_CHART_TYPES:
                 errors.append(f"Slide {index} has unsupported chart payload: {chart_type}.")
+            if not slide.table_columns or not slide.table_rows:
+                errors.append(f"Slide {index} chart evidence is missing required result data.")
 
     repeated = {
         layout_name
@@ -503,7 +517,9 @@ def validate_template(
     unknown_ole = sorted(set(ole_entries) - set(manifest.known_warning_entries))
     if unknown_ole:
         errors.extend(f"Template contains unexpected embedded object: {entry}." for entry in unknown_ole)
-    if ole_entries:
+    if ole_entries and manifest.expected_sha256 and digest != manifest.expected_sha256:
+        errors.append("Template contains embedded objects but does not match the approved template hash.")
+    elif ole_entries:
         warnings.extend(f"Template contains preserved OLE object warning: {entry}." for entry in ole_entries)
 
     try:
@@ -790,11 +806,13 @@ def _external_relationships(package: ZipFile) -> list[str]:
         if not name.endswith(".rels"):
             continue
         try:
-            text = package.read(name).decode("utf-8", errors="ignore")
-        except KeyError:
+            root = ElementTree.fromstring(package.read(name))
+        except (ElementTree.ParseError, KeyError):
             continue
-        if 'TargetMode="External"' in text or "TargetMode='External'" in text:
-            relationships.append(name)
+        for relationship in root:
+            if relationship.attrib.get("TargetMode", "").lower() == "external":
+                relationships.append(name)
+                break
     return sorted(relationships)
 
 
