@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from io import BytesIO
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 from pptx import Presentation
 
@@ -160,6 +162,93 @@ class PresentationExportSuccessTests(unittest.TestCase):
 
         self.assertNotIn("streamlit", sys.modules)
         self.assertNotIn("streamlit_app", sys.modules)
+
+
+class PresentationExportEligibilityTests(unittest.TestCase):
+    def assert_unavailable_export(self, export: object, expected_reason_part: str) -> None:
+        self.assertFalse(export.available)
+        self.assertEqual(export.content, b"")
+        self.assertTrue(export.unavailable_reason)
+        self.assertIn(expected_reason_part, export.unavailable_reason.lower())
+
+    def test_ineligible_records_return_unavailable_without_pptx_bytes(self) -> None:
+        cases = [
+            (
+                "failed_execution",
+                {"execution_success": False},
+                "execution",
+            ),
+            (
+                "failed_validation",
+                {"validation_success": False, "sql_valid": True},
+                "validation",
+            ),
+            (
+                "invalid_sql",
+                {"validation_success": True, "sql_valid": False},
+                "validation",
+            ),
+            (
+                "needs_clarification",
+                {"needs_clarification": True},
+                "clarification",
+            ),
+            (
+                "blocked_or_unsafe",
+                {"blocked_or_unsafe": True},
+                "blocked",
+            ),
+            (
+                "missing_columns",
+                {"query_result": {"rows": [("Sued", 90)], "row_count": 1}, "row_count": 1},
+                "columns",
+            ),
+            (
+                "missing_rows",
+                {"query_result": {"columns": ["region", "shipment_count"], "row_count": 1}, "row_count": 1},
+                "rows",
+            ),
+            (
+                "zero_row_count",
+                {
+                    "query_result": {
+                        "columns": ["region", "shipment_count"],
+                        "rows": [("Sued", 90)],
+                        "row_count": 0,
+                    },
+                    "row_count": 0,
+                },
+                "row",
+            ),
+        ]
+
+        for name, overrides, expected_reason_part in cases:
+            with self.subTest(name=name):
+                export = build_presentation_export(record=orchestrator_record(**overrides))
+
+                self.assert_unavailable_export(export, expected_reason_part)
+
+    def test_valid_record_with_missing_template_returns_structured_template_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_template = Path(temp_dir) / "missing-template.pptx"
+
+            export = build_presentation_export(record=valid_record(), template_path=missing_template)
+
+        self.assert_unavailable_export(export, "template")
+        self.assertIsNotNone(export.template_audit)
+        self.assertTrue(export.template_audit.errors)
+
+    def test_ineligible_record_reports_eligibility_before_template_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_template = Path(temp_dir) / "missing-template.pptx"
+
+            export = build_presentation_export(
+                record=orchestrator_record(execution_success=False),
+                template_path=missing_template,
+            )
+
+        self.assert_unavailable_export(export, "execution")
+        self.assertIsNone(export.template_audit)
 
 
 if __name__ == "__main__":
