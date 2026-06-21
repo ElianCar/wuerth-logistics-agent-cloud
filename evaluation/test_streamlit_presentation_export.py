@@ -264,6 +264,13 @@ class StreamlitPresentationExportHelperTests(unittest.TestCase):
 
         self.assertEqual(key, "ppt_export_chat-a_7")
 
+    def test_presentation_download_key_matches_ui_spec(self) -> None:
+        app = _load_streamlit_app()
+
+        key = app.presentation_download_key_from_export_key("ppt_export_chat-a_run-123")
+
+        self.assertEqual(key, "download_ppt_chat-a_run-123")
+
     def test_presentation_exports_state_initializes_dict(self) -> None:
         app = _load_streamlit_app()
         session_state: dict[str, object] = {}
@@ -322,6 +329,13 @@ class StreamlitPresentationExportHelperTests(unittest.TestCase):
         for reason, expected in cases.items():
             with self.subTest(reason=reason):
                 self.assertEqual(app.format_presentation_unavailable_reason(reason), expected)
+
+    def test_failure_reason_copy_humanizes_backend_codes(self) -> None:
+        app = _load_streamlit_app()
+
+        self.assertEqual(app.format_presentation_failure_reason("template_invalid"), "Template invalid")
+        self.assertEqual(app.format_presentation_failure_reason("render_failed"), "Render failed")
+        self.assertEqual(app.format_presentation_failure_reason(""), "Unknown reason")
 
     def test_initialize_state_adds_presentation_exports_without_disturbing_existing_state(self) -> None:
         app = _load_streamlit_app()
@@ -450,12 +464,13 @@ class StreamlitPresentationExportWiringTests(unittest.TestCase):
             "data=export.content",
             "file_name=export.filename",
             "mime=export.mime_type or PPTX_MIME_TYPE",
-            'key=f"download_{export_key}"',
+            "key=download_key",
         ]
 
         for fragment in required_fragments:
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, source)
+        self.assertNotIn('key=f"download_{export_key}"', source)
         self.assertNotIn("wuerth_logistics_", source)
 
     def test_streamlit_does_not_expose_slide_or_renderer_controls(self) -> None:
@@ -499,7 +514,10 @@ class StreamlitPresentationExportWiringTests(unittest.TestCase):
         self.assertEqual(container.downloads[0]["label"], "Download PPT")
         self.assertEqual(container.downloads[0]["data"], b"existing-pptx")
         self.assertEqual(container.downloads[0]["file_name"], "backend-name.pptx")
+        self.assertEqual(container.downloads[0]["key"], "download_ppt_chat-a_run-1")
+        self.assertEqual(container.downloads[0]["type"], "primary")
         self.assertIn("PPT ready.", container.captions)
+        self.assertIn("Slides: 5", container.captions)
 
     def test_create_ppt_stores_backend_export_and_renders_download(self) -> None:
         app = _load_streamlit_app()
@@ -516,12 +534,34 @@ class StreamlitPresentationExportWiringTests(unittest.TestCase):
         build_export.assert_called_once_with(record=record, include_closing=False)
         self.assertIs(app.st.session_state["presentation_exports"]["ppt_export_chat-a_run-2"], export)
         self.assertEqual(container.spinner_labels, ["Creating PPT..."])
+        self.assertEqual(container.buttons[0]["type"], "primary")
         self.assertEqual(container.downloads[0]["label"], "Download PPT")
         self.assertEqual(container.downloads[0]["data"], b"created-pptx")
+        self.assertEqual(container.downloads[0]["key"], "download_ppt_chat-a_run-2")
+        self.assertEqual(container.downloads[0]["type"], "primary")
         self.assertEqual(
             container.downloads[0]["mime"],
             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         )
+        self.assertIn("Slides: 5", container.captions)
+
+    def test_warning_export_keeps_download_and_shows_slide_count(self) -> None:
+        app = _load_streamlit_app()
+        record = {"run_id": "run-warning"}
+        container = _FakePresentationContainer()
+        export = _export(warnings=["Known template warning."])
+        app.st.session_state.update({
+            "active_chat_id": "chat-a",
+            "presentation_exports": {"ppt_export_chat-a_run-warning": export},
+        })
+        _install_fake_streamlit_runtime(app, container)
+
+        with patch.object(app, "can_export_presentation", return_value=types.SimpleNamespace(can_export=True, reason="")):
+            app.render_presentation_export_controls(record, 0, container)
+
+        self.assertEqual(container.downloads[0]["type"], "primary")
+        self.assertIn("PPT created with warnings.", container.warnings)
+        self.assertIn("Slides: 5", container.captions)
 
     def test_ineligible_record_disables_create_and_shows_reason(self) -> None:
         app = _load_streamlit_app()
@@ -555,7 +595,7 @@ class StreamlitPresentationExportWiringTests(unittest.TestCase):
                 app.render_presentation_export_controls(record, 0, container)
 
         self.assertIn(
-            "PPT export failed: template_invalid. Fix the template or rerun a valid analysis, then create the deck again.",
+            "PPT export failed: Template invalid. Fix the template or rerun a valid analysis, then create the deck again.",
             container.errors,
         )
         self.assertEqual(container.downloads, [])

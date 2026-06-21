@@ -120,6 +120,11 @@ def presentation_export_key(
     return f"ppt_export_{chat_id}_{record_id}"
 
 
+def presentation_download_key_from_export_key(export_key: str) -> str:
+    suffix = str(export_key).removeprefix("ppt_export_")
+    return f"download_ppt_{suffix}"
+
+
 def presentation_exports_state(session_state: dict | None = None) -> dict:
     state = session_state if session_state is not None else st.session_state
     exports = state.setdefault("presentation_exports", {})
@@ -142,6 +147,15 @@ def format_presentation_unavailable_reason(reason: object) -> str:
         str(reason or ""),
         "The backend exporter marked this run as unavailable.",
     )
+
+
+def format_presentation_failure_reason(reason: object) -> str:
+    raw_reason = str(reason or "unknown_reason").strip()
+    if not raw_reason:
+        return "Unknown reason"
+    if raw_reason in _PRESENTATION_UNAVAILABLE_REASON_COPY:
+        return _PRESENTATION_UNAVAILABLE_REASON_COPY[raw_reason]
+    return raw_reason.replace("_", " ").capitalize()
 
 
 _STOP_WORDS = {
@@ -322,17 +336,22 @@ def _presentation_export_warnings(export: object) -> list[str]:
 
 def render_presentation_export_feedback(export: object, container=st) -> None:
     warnings = _presentation_export_warnings(export)
+    slide_count = int(getattr(export, "slide_count", 0) or 0)
     if warnings:
         container.warning("PPT created with warnings.")
+        if slide_count:
+            container.caption(f"Slides: {slide_count}")
         with container.expander("PPT warnings", expanded=False):
             for warning in warnings:
                 st.write(warning)
         return
     container.caption("PPT ready.")
+    if slide_count:
+        container.caption(f"Slides: {slide_count}")
 
 
 def render_presentation_export_failure(export: object, container=st) -> None:
-    reason = str(getattr(export, "unavailable_reason", "") or "unknown_reason")
+    reason = format_presentation_failure_reason(getattr(export, "unavailable_reason", ""))
     container.error(
         f"PPT export failed: {reason}. Fix the template or rerun a valid analysis, then create the deck again."
     )
@@ -346,6 +365,7 @@ def render_presentation_export_failure(export: object, container=st) -> None:
 def render_presentation_export_controls(record: dict, index: int, container=st) -> None:
     eligibility = can_export_presentation(record)
     export_key = presentation_export_key(record, index)
+    download_key = presentation_download_key_from_export_key(export_key)
     exports = presentation_exports_state()
     export = exports.get(export_key)
     control_slot = container.empty()
@@ -357,7 +377,8 @@ def render_presentation_export_controls(record: dict, index: int, container=st) 
             data=export.content,
             file_name=export.filename,
             mime=export.mime_type or PPTX_MIME_TYPE,
-            key=f"download_{export_key}",
+            key=download_key,
+            type="primary",
             use_container_width=True,
         )
         render_presentation_export_feedback(export, feedback_slot)
@@ -377,6 +398,7 @@ def render_presentation_export_controls(record: dict, index: int, container=st) 
     clicked = control_slot.button(
         "Create PPT",
         key=f"create_{export_key}",
+        type="primary",
         use_container_width=True,
     )
     if clicked:
@@ -390,7 +412,8 @@ def render_presentation_export_controls(record: dict, index: int, container=st) 
             data=export.content,
             file_name=export.filename,
             mime=export.mime_type or PPTX_MIME_TYPE,
-            key=f"download_{export_key}",
+            key=download_key,
+            type="primary",
             use_container_width=True,
         )
         render_presentation_export_feedback(export, feedback_slot)
