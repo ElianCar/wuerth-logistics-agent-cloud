@@ -8,19 +8,19 @@
 ### Presentation Export
 
 - [ ] **PPT-01**: User can export a successful validated analysis run as a `.pptx` file from Streamlit.
-- [ ] **PPT-02**: Export uses the tracked Wuerth master template at `assets/templates/PPT_Vorlage_Wuerth.pptx` through a repo-relative path.
+- [x] **PPT-02**: Export uses the tracked Wuerth master template at `assets/templates/PPT_Vorlage_Wuerth.pptx` through a repo-relative path.
 - [ ] **PPT-03**: Export is blocked for failed SQL, unsafe SQL, clarification-only responses, missing query results, or unvalidated runs.
 - [ ] **PPT-04**: Generated deck includes a title or takeaway slide, result summary, KPI or key metric section, chart or table evidence, caveats or limitations, source tables, and run metadata.
 - [ ] **PPT-05**: Generated deck preserves SQL result order for evidence tables and clearly marks row or column truncation.
 - [ ] **PPT-06**: Missing or unreadable PPT template produces a clear user-facing error and does not crash the Streamlit app.
-- [ ] **PPT-07**: Export logic is implemented in a testable backend module, not embedded in Streamlit callbacks.
+- [x] **PPT-07**: Export logic is implemented in a testable backend module, not embedded in Streamlit callbacks.
 
 ### Slide Contract
 
-- [ ] **SPEC-01**: A fixed slide-generation contract defines allowed slide types, required fields, text budgets, table limits, chart limits, and fallback behavior.
-- [ ] **SPEC-02**: Slide spec validation rejects unsupported result shapes before PPT rendering.
-- [ ] **SPEC-03**: Deck generation uses deterministic local rendering rather than direct LLM-generated PPTX files.
-- [ ] **SPEC-04**: Optional LLM use, if added later, is limited to schema-constrained slide-spec JSON and still passes local validation before rendering.
+- [x] **SPEC-01**: A fixed slide-generation contract defines allowed slide types, required fields, text budgets, table limits, chart limits, and fallback behavior.
+- [x] **SPEC-02**: Slide spec validation rejects unsupported result shapes before PPT rendering.
+- [x] **SPEC-03**: Deck generation uses deterministic local rendering rather than direct LLM-generated PPTX files.
+- [x] **SPEC-04**: Optional LLM use, if added later, is limited to schema-constrained slide-spec JSON and still passes local validation before rendering.
 
 ### Visualization
 
@@ -58,7 +58,7 @@
 ### Tests
 
 - [ ] **TEST-01**: Tests verify PPT template path resolution and missing-template failure behavior.
-- [ ] **TEST-02**: Tests verify a generated PPTX file is created, non-empty, and openable by the chosen Python library without local Microsoft PowerPoint.
+- [x] **TEST-02**: Tests verify a generated PPTX file is created, non-empty, and openable by the chosen Python library without local Microsoft PowerPoint.
 - [ ] **TEST-03**: Tests verify export eligibility blocks failed, unsafe, clarification-only, and unvalidated records.
 - [ ] **TEST-04**: Tests verify long text, empty result, unsupported chart shape, and table truncation behavior.
 - [ ] **TEST-05**: Tests verify memory RBAC blocks unauthorized backend actions.
@@ -107,16 +107,16 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | PPT-01 | Phase 2 | Pending |
-| PPT-02 | Phase 1 | Pending |
+| PPT-02 | Phase 1 | Complete |
 | PPT-03 | Phase 1 | Pending |
 | PPT-04 | Phase 2 | Pending |
 | PPT-05 | Phase 3 | Pending |
 | PPT-06 | Phase 1 | Pending |
-| PPT-07 | Phase 1 | Pending |
-| SPEC-01 | Phase 1 | Pending |
-| SPEC-02 | Phase 1 | Pending |
-| SPEC-03 | Phase 1 | Pending |
-| SPEC-04 | Phase 1 | Pending |
+| PPT-07 | Phase 1 | Complete |
+| SPEC-01 | Phase 1 | Complete |
+| SPEC-02 | Phase 1 | Complete |
+| SPEC-03 | Phase 1 | Complete |
+| SPEC-04 | Phase 1 | Complete |
 | VIS-01 | Phase 2 | Pending |
 | VIS-02 | Phase 2 | Pending |
 | VIS-03 | Phase 3 | Pending |
@@ -139,7 +139,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DOC-04 | Phase 5 | Pending |
 | DOC-05 | Phase 5 | Pending |
 | TEST-01 | Phase 1 | Pending |
-| TEST-02 | Phase 1 | Pending |
+| TEST-02 | Phase 1 | Complete |
 | TEST-03 | Phase 1 | Pending |
 | TEST-04 | Phase 3 | Pending |
 | TEST-05 | Phase 4 | Pending |
