@@ -27,6 +27,11 @@ from src.agent.memory_store import (
     update_candidate_proposed_template,
 )
 from src.agent.memory_validation import validate_proposed_template
+from src.agent.presentation_export import (
+    PPTX_MIME_TYPE,
+    build_presentation_export,
+    can_export_presentation,
+)
 from src.config.scenarios import (
     SCENARIOS,
     get_active_scenario,
@@ -300,6 +305,99 @@ def render_reporting_audit(record: dict) -> None:
         return
     with st.expander("Reporting-Audit", expanded=False):
         st.json(audit, expanded=False)
+
+
+def _presentation_export_warnings(export: object) -> list[str]:
+    warnings = getattr(export, "warnings", []) or []
+    return [str(warning) for warning in warnings if str(warning)]
+
+
+def render_presentation_export_feedback(export: object, container=st) -> None:
+    warnings = _presentation_export_warnings(export)
+    if warnings:
+        container.warning("PPT created with warnings.")
+        with container.expander("PPT warnings", expanded=False):
+            for warning in warnings:
+                st.write(warning)
+        return
+    container.caption("PPT ready.")
+
+
+def render_presentation_export_failure(export: object, container=st) -> None:
+    reason = str(getattr(export, "unavailable_reason", "") or "unknown_reason")
+    container.error(
+        f"PPT export failed: {reason}. Fix the template or rerun a valid analysis, then create the deck again."
+    )
+    warnings = _presentation_export_warnings(export)
+    if warnings:
+        with container.expander("PPT warnings", expanded=False):
+            for warning in warnings:
+                st.write(warning)
+
+
+def render_presentation_export_controls(record: dict, index: int, container=st) -> None:
+    eligibility = can_export_presentation(record)
+    export_key = presentation_export_key(record, index)
+    exports = presentation_exports_state()
+    export = exports.get(export_key)
+    control_slot = container.empty()
+    feedback_slot = container.container()
+
+    if getattr(export, "available", False):
+        control_slot.download_button(
+            "Download PPT",
+            data=export.content,
+            file_name=export.filename,
+            mime=export.mime_type or PPTX_MIME_TYPE,
+            key=f"download_{export_key}",
+            use_container_width=True,
+        )
+        render_presentation_export_feedback(export, feedback_slot)
+        return
+
+    reason = format_presentation_unavailable_reason(getattr(eligibility, "reason", ""))
+    if not getattr(eligibility, "can_export", False):
+        control_slot.button(
+            "Create PPT",
+            key=f"create_{export_key}",
+            disabled=True,
+            use_container_width=True,
+        )
+        feedback_slot.caption(f"PPT unavailable: {reason}")
+        return
+
+    clicked = control_slot.button(
+        "Create PPT",
+        key=f"create_{export_key}",
+        use_container_width=True,
+    )
+    if clicked:
+        with st.spinner("Creating PPT..."):
+            export = build_presentation_export(record=record, include_closing=False)
+        exports[export_key] = export
+
+    if getattr(export, "available", False):
+        control_slot.download_button(
+            "Download PPT",
+            data=export.content,
+            file_name=export.filename,
+            mime=export.mime_type or PPTX_MIME_TYPE,
+            key=f"download_{export_key}",
+            use_container_width=True,
+        )
+        render_presentation_export_feedback(export, feedback_slot)
+    elif export is not None:
+        render_presentation_export_failure(export, feedback_slot)
+
+
+def render_presentation_unavailable_compact(record: dict) -> None:
+    eligibility = can_export_presentation(record)
+    if getattr(eligibility, "can_export", False):
+        return
+    reason = format_presentation_unavailable_reason(getattr(eligibility, "reason", ""))
+    st.caption("PPT unavailable")
+    st.caption("Run a successful validated analysis with result rows, then create the deck.")
+    st.caption(f"PPT unavailable: {reason}")
 
 
 def initialize_state() -> None:
@@ -1416,7 +1514,7 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
             st.dataframe(df, use_container_width=True)
             render_chart_from_spec(record, df)
 
-            col_csv, col_xlsx = st.columns(2)
+            col_csv, col_xlsx, col_ppt = st.columns(3)
             csv_data = df.to_csv(index=False).encode("utf-8")
             col_csv.download_button(
                 "Als CSV exportieren",
@@ -1436,6 +1534,9 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
                 key=f"export_xlsx_{index}",
                 use_container_width=True,
             )
+            render_presentation_export_controls(record, index, col_ppt)
+        else:
+            render_presentation_unavailable_compact(record)
 
         st.subheader("SQL-Anweisung")
         st.code(record.get("final_sql") or record.get("generated_sql", "") or "(kein SQL erzeugt)", language="sql")
