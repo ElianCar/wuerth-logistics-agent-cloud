@@ -381,6 +381,12 @@ class StreamlitPresentationExportWiringTests(unittest.TestCase):
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module == "src.agent.presentation_export":
                 imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module == "src.agent":
+                forbidden_module_imports.update(
+                    alias.name
+                    for alias in node.names
+                    if alias.name == "presentation_export"
+                )
             elif isinstance(node, ast.Import):
                 forbidden_module_imports.update(
                     alias.name
