@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 import re
 from typing import Any
 from xml.etree import ElementTree
-from zipfile import BadZipFile, ZipFile
+from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile, ZipInfo
 
 from pptx import Presentation
 from pptx.util import Inches, Pt
@@ -22,6 +21,7 @@ MAX_TABLE_COLUMNS_PER_SLIDE = 6
 MAX_BODY_ITEMS_PER_SLIDE = 8
 MAX_BODY_TEXT_CHARS_PER_SLIDE = 700
 EXPECTED_TEMPLATE_SHA256 = "041DE8AC3214DC1892F127021F223D5B9C9D5571B10D6949D022B5A357190EA5"
+FIXED_PPTX_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
 LAYOUT_COVER = "Agent 01 Cover"
 LAYOUT_SUMMARY = "Agent 02 Executive Summary"
@@ -572,7 +572,20 @@ def _render_presentation(*, deck_spec: SlideDeckSpec, template_path: Path) -> by
 
     output = BytesIO()
     presentation.save(output)
-    return output.getvalue()
+    return _normalize_pptx_package(output.getvalue())
+
+
+def _normalize_pptx_package(content: bytes) -> bytes:
+    normalized = BytesIO()
+    with ZipFile(BytesIO(content), "r") as source, ZipFile(normalized, "w") as target:
+        for name in sorted(source.namelist()):
+            original = source.getinfo(name)
+            info = ZipInfo(filename=name, date_time=FIXED_PPTX_TIMESTAMP)
+            info.compress_type = ZIP_DEFLATED
+            info.external_attr = original.external_attr
+            info.comment = original.comment
+            target.writestr(info, source.read(name))
+    return normalized.getvalue()
 
 
 def _render_slide(slide: Any, slide_spec: SlideSpec) -> None:

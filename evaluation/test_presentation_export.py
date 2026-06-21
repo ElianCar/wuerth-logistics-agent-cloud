@@ -18,6 +18,7 @@ from src.agent.presentation_export import (
     PPTX_MIME_TYPE,
     SlideDeckSpec,
     SlideSpec,
+    FIXED_PPTX_TIMESTAMP,
     build_presentation_export,
     build_slide_deck_spec,
     validate_slide_deck_spec,
@@ -141,6 +142,22 @@ class PresentationExportSuccessTests(unittest.TestCase):
         self.assertTrue(first.available)
         self.assertTrue(second.available)
         self.assertEqual(first.content, second.content)
+        with zipfile.ZipFile(BytesIO(first.content)) as package:
+            self.assertEqual(package.namelist(), sorted(package.namelist()))
+            self.assertTrue(
+                all(info.date_time == FIXED_PPTX_TIMESTAMP for info in package.infolist())
+            )
+
+    def test_missing_generated_at_and_run_id_use_deterministic_fallbacks(self) -> None:
+        record = orchestrator_record(run_id="", generated_at="")
+
+        export = build_presentation_export(record=record)
+        spec = build_slide_deck_spec(record=record)
+
+        self.assertTrue(export.available)
+        self.assertEqual(export.filename, "wuerth_logistics_analysis.pptx")
+        metadata_slide = next(slide for slide in spec.slides if slide.layout_name == "Agent 08 Appendix Metadata")
+        self.assertIn("Generated at: not recorded", metadata_slide.body)
 
     def test_slide_deck_spec_is_ordered_dynamic_and_excludes_default_closing(self) -> None:
         spec = build_slide_deck_spec(record=valid_record())
