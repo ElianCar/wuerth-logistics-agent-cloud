@@ -376,17 +376,19 @@ Source: `python-pptx` can open and save file-like objects, and the existing test
 | A2 | Generated PPTX bytes are small enough for Streamlit session memory in normal Phase 2 use. [ASSUMED] | Common Pitfalls | Very large future decks could increase per-session memory; docs recommend keeping direct download data below a couple hundred MB. [CITED: docs.streamlit.io/develop/api-reference/widgets/st.download_button] |
 | A3 | State key collisions are possible if only `index` is used. [ASSUMED] | Common Pitfalls | A low-quality key could show the wrong deck under another chat or run; use UI spec key shape. [VERIFIED: 02-UI-SPEC.md] |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should helper tests live in the existing backend test file or a new Streamlit-specific file?**
    - What we know: Phase context allows either location. [VERIFIED: 02-CONTEXT.md]
    - What's unclear: The planner may prefer separation because this phase touches `streamlit_app.py`. [ASSUMED]
    - Recommendation: Use `evaluation/test_streamlit_presentation_export.py` if adding helper functions, and keep backend export tests in `evaluation/test_presentation_export.py`. [ASSUMED]
+   - RESOLVED: Phase 2 plans use `evaluation/test_streamlit_presentation_export.py` for Streamlit helper and UI-boundary coverage while keeping backend export tests in `evaluation/test_presentation_export.py`. [VERIFIED: 02-01-PLAN.md; 02-03-PLAN.md]
 
 2. **Should implementation use `use_container_width=True` or `width="stretch"`?**
    - What we know: UI spec requires `use_container_width=True`; Streamlit v1.58 docs say it is deprecated and replaced by `width="stretch"`. [VERIFIED: 02-UI-SPEC.md; CITED: docs.streamlit.io/develop/api-reference/widgets/st.download_button]
    - What's unclear: The installed Streamlit version in the eventual project environment is unpinned. [VERIFIED: requirements.txt]
    - Recommendation: Follow UI spec and existing code style for Phase 2, then consider a later cleanup after dependency pinning. [VERIFIED: streamlit_app.py; ASSUMED]
+   - RESOLVED: Phase 2 plans keep `use_container_width=True` to match the approved UI-SPEC and existing Streamlit export button style. [VERIFIED: 02-UI-SPEC.md; 02-02-PLAN.md]
 
 ## Environment Availability
 
