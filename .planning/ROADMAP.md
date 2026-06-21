@@ -44,12 +44,12 @@ This roadmap turns successful Wuerth logistics analysis results into determinist
   5. Direct LLM-generated PPTX files are impossible in the v1 production path.
 
 **Verification approach:** Add focused `unittest` coverage for export eligibility, template path resolution, missing-template behavior, deterministic spec validation, and PPTX creation that can be opened by the chosen Python library without Microsoft PowerPoint.
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 Plans:
 
 **Wave 1**
 
-- [ ] 01-01-PLAN.md - Verify deterministic PPTX renderer dependency gate
+- [x] 01-01-PLAN.md - Verify deterministic PPTX renderer dependency gate
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -178,7 +178,7 @@ Phases execute in numeric order: 1, 2, 3, 4, 5.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Deterministic Backend Deck Slice | 0/3 | Not started | - |
+| 1. Deterministic Backend Deck Slice | 1/3 | In Progress | - |
 | 2. Streamlit Downloadable Deck Slice | 0/TBD | Not started | - |
 | 3. Readable Evidence And Fallback Slice | 0/TBD | Not started | - |
 | 4. Memory Governance And RBAC Slice | 0/TBD | Not started | - |
