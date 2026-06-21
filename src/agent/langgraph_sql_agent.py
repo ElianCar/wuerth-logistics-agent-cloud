@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from pathlib import Path
+import re
 from time import perf_counter
 from typing import Any, Callable, Literal, TypedDict
 
@@ -14,8 +16,9 @@ from src.agent.db import execute_read_only_sql, load_schema_context
 from src.agent.id_utils import generate_run_id
 from src.agent.logging_utils import infer_error_type, log_query_attempt, log_query_run
 from src.agent.memory_retriever import load_approved_solution_templates
+from src.agent.memory_template_schema import is_retrievable_template, load_and_validate_template
 from src.agent.sql_validator import validate_generated_sql
-from src.config.scenarios import get_active_scenario
+from src.config.scenarios import PROJECT_ROOT, SCENARIOS, get_active_scenario, normalize_scenario_id
 from src.llm.model_adapter import (
     DEFAULT_GEMINI_BACKUP_MODEL,
     DEFAULT_GEMINI_PRIMARY_MODEL,
@@ -67,10 +70,12 @@ class SQLAgentState(TypedDict, total=False):
     schema_load_failed: bool
     run_context: str
     use_approved_memory: bool
+    use_legacy_memory: bool
     enable_memory_candidate_generation: bool
     log_to_query_log: bool
     language: str
     router_context: dict[str, Any]
+    memory_retrieval: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -120,6 +125,172 @@ def noop_attempt_logger(**_kwargs: Any) -> None:
 
 def append_trace(state: SQLAgentState, message: str) -> list[str]:
     return [*state.get("trace_steps", []), message]
+
+
+def _path_inside(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_memory_template_path(
+    candidate_path: str,
+    *,
+    scenario_id: str,
+    memory_dir: Path | None = None,
+) -> Path | None:
+    if not candidate_path:
+        return None
+
+    scenario_memory_dir = memory_dir or SCENARIOS[scenario_id].memory_dir
+    approved_dir = scenario_memory_dir / "approved"
+    raw_path = Path(candidate_path)
+    candidates = [raw_path] if raw_path.is_absolute() else [
+        PROJECT_ROOT / raw_path,
+        scenario_memory_dir.parent / raw_path,
+        scenario_memory_dir / raw_path,
+    ]
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved.is_file() and _path_inside(resolved, approved_dir):
+            return resolved
+    return None
+
+
+def _safe_source_sql(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    sql = value.strip().rstrip(";").strip()
+    if not sql or len(sql) > 2000:
+        return ""
+    if "```" in sql or "--" in sql or "/*" in sql or "*/" in sql:
+        return ""
+    if not re.match(r"^\s*(select|with)\b", sql, re.IGNORECASE):
+        return ""
+    forbidden = r"\b(drop|delete|update|insert|alter|truncate|copy|create|merge|grant|revoke)\b"
+    if re.search(forbidden, sql, re.IGNORECASE):
+        return ""
+    if re.search(r";\s*\S+", sql):
+        return ""
+    return sql
+
+
+def _format_prompt_list(values: Any) -> str:
+    if not isinstance(values, list) or not values:
+        return "- none"
+    return "\n".join(f"- {str(value)}" for value in values if str(value).strip()) or "- none"
+
+
+def _load_guidance_template(
+    candidate: dict[str, Any],
+    *,
+    scenario_id: str,
+    memory_dir: Path | None = None,
+) -> dict[str, Any] | None:
+    path = _resolve_memory_template_path(
+        str(candidate.get("path", "")),
+        scenario_id=scenario_id,
+        memory_dir=memory_dir,
+    )
+    if path is None:
+        return None
+
+    validation = load_and_validate_template(path, expected_scenario=scenario_id)
+    if not validation.is_valid:
+        return None
+    template = validation.template
+    if not is_retrievable_template(template, expected_scenario=scenario_id):
+        return None
+    candidate_id = str(candidate.get("template_id", "")).strip()
+    if candidate_id and candidate_id != template.get("id"):
+        return None
+    return template
+
+
+def format_memory_guidance_from_retrieval(
+    memory_retrieval: dict[str, Any] | None,
+    *,
+    memory_dir: Path | None = None,
+    max_templates: int = 3,
+) -> str:
+    """Format router-provided approved memory retrieval as SQL prompt guidance."""
+
+    if not isinstance(memory_retrieval, dict):
+        return ""
+    candidates = memory_retrieval.get("candidates", [])
+    if not isinstance(candidates, list) or not candidates:
+        return ""
+
+    try:
+        scenario_id = normalize_scenario_id(str(memory_retrieval.get("scenario", "")))
+    except Exception:
+        return ""
+    if scenario_id != get_active_scenario().scenario_id:
+        return ""
+
+    formatted_templates = []
+    for candidate in candidates:
+        if len(formatted_templates) >= max_templates:
+            break
+        if not isinstance(candidate, dict):
+            continue
+        template = _load_guidance_template(
+            candidate,
+            scenario_id=scenario_id,
+            memory_dir=memory_dir,
+        )
+        if template is None:
+            continue
+
+        source_sql = _safe_source_sql(template.get("source_sql", ""))
+        source_sql_block = f"\nsource_sql:\n{source_sql}" if source_sql else ""
+        matched_terms = candidate.get("matched_terms", [])
+        matched_terms_text = ", ".join(str(term) for term in matched_terms) if isinstance(matched_terms, list) else ""
+        formatted_templates.append(
+            f"""Template {len(formatted_templates) + 1}
+template_id: {template.get("id", "")}
+title: {template.get("title", "")}
+intent: {template.get("intent", "")}
+matched_terms: {matched_terms_text}
+business_rules:
+{_format_prompt_list(template.get("business_rules", []))}
+sql_pattern:
+{template.get("sql_pattern", "")}
+do_not_use_when:
+{_format_prompt_list(template.get("do_not_use_when", []))}
+validation_checks:
+{_format_prompt_list(template.get("validation_checks", []))}
+source_question: {template.get("source_question", "")}{source_sql_block}
+"""
+        )
+
+    if not formatted_templates:
+        return ""
+
+    ambiguity_warning = ""
+    if bool(memory_retrieval.get("ambiguous", False)):
+        ambiguity_warning = (
+            "\nAmbiguity warning: multiple approved templates are close matches. "
+            "Do not overfit to one template.\n"
+        )
+
+    return (
+        "\nApproved memory template guidance (context only):\n"
+        "- Approved memory templates are guidance only.\n"
+        "- Final SQL must answer the current user question.\n"
+        "- Explicit user constraints override templates.\n"
+        "- Respect do_not_use_when conditions.\n"
+        "- Final SQL must use only known schema tables and columns.\n"
+        "- Final SQL must still pass SQL validation.\n"
+        "- Do not copy source_sql blindly if it does not match the current question.\n"
+        f"{ambiguity_warning}\n"
+        + "\n".join(formatted_templates)
+    )
 
 
 def format_approved_template_context(question: str) -> str:
@@ -256,7 +427,17 @@ User correction:
 
     approved_template_context = ""
     if bool(state.get("use_approved_memory", True)):
-        approved_template_context = format_approved_template_context(state["user_question"])
+        router_context = state.get("router_context", {})
+        has_router_memory = "memory_retrieval" in state or (
+            isinstance(router_context, dict) and "memory_retrieval" in router_context
+        )
+        if has_router_memory:
+            memory_retrieval = state.get("memory_retrieval")
+            if memory_retrieval is None and isinstance(router_context, dict):
+                memory_retrieval = router_context.get("memory_retrieval", {})
+            approved_template_context = format_memory_guidance_from_retrieval(memory_retrieval)
+        elif bool(state.get("use_legacy_memory", False)):
+            approved_template_context = format_approved_template_context(state["user_question"])
 
     schema_context = state.get("schema_context", "")
     sql_dialect = extract_context_value(schema_context, "SQL dialect", "PostgreSQL")
@@ -651,10 +832,12 @@ def run_sql_agent(
     user_correction: str = "",
     run_context: str = "chat",
     use_approved_memory: bool = True,
+    use_legacy_memory: bool = False,
     enable_memory_candidate_generation: bool = True,
     log_to_query_log: bool = True,
     language: str = "",
     router_context: dict[str, Any] | None = None,
+    memory_retrieval: dict[str, Any] | None = None,
     schema_loader: SchemaLoader = load_schema_context,
     sql_generator: SQLGenerator = default_sql_generator,
     sql_executor: SQLExecutor = execute_read_only_sql,
@@ -709,11 +892,15 @@ def run_sql_agent(
         "schema_load_failed": False,
         "run_context": run_context,
         "use_approved_memory": use_approved_memory,
+        "use_legacy_memory": use_legacy_memory,
         "enable_memory_candidate_generation": enable_memory_candidate_generation,
         "log_to_query_log": log_to_query_log,
         "language": language,
         "router_context": router_context or {},
     }
+    if memory_retrieval is not None:
+        initial_state["memory_retrieval"] = memory_retrieval
+
     final_state: SQLAgentState = graph.invoke(initial_state, {"recursion_limit": 30})
     latency_seconds = perf_counter() - started_at
     query_result = final_state.get("query_result", {})
@@ -741,12 +928,15 @@ def run_sql_agent(
             "latency_seconds": latency_seconds,
             "run_context": run_context,
             "use_approved_memory": use_approved_memory,
+            "use_legacy_memory": use_legacy_memory,
             "enable_memory_candidate_generation": enable_memory_candidate_generation,
             "log_to_query_log": log_to_query_log,
             "language": language,
             "router_context": router_context or final_state.get("router_context", {}),
         }
     )
+    if memory_retrieval is not None:
+        final_state["memory_retrieval"] = memory_retrieval
 
     if log_to_query_log:
         log_query_run(

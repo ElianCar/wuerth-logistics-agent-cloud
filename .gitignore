@@ -16,7 +16,10 @@ database/exports/wuerth/
 database/exports/Wuerth/
 memory/memory_candidates.yaml
 memory/memory_audit_log.csv
-memory/wuerth_local/
+memory/wuerth_local/candidates/
+memory/wuerth_local/error_memory.yaml
+memory/wuerth_local/memory_candidates.yaml
+memory/wuerth_local/solution_templates.yaml
 memory/*.bak_*
 memory/**/memory_audit_log.csv
 memory/**/*.bak_*
