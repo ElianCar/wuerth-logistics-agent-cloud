@@ -23,13 +23,13 @@ Users can turn a validated logistics analysis result into a clear Wuerth-branded
 - [x] Memory templates can be created, edited, approved, deactivated, reactivated, and audited in the existing memory store.
 - [x] Golden-question evaluation exists and issue #7 is treated as already done for this scope.
 - [x] Wuerth PowerPoint master template is tracked at `assets/templates/PPT_Vorlage_Wuerth.pptx`.
+- [x] Backend PowerPoint generation can turn a successful validated orchestrator-like record into deterministic Wuerth-branded PPTX bytes.
+- [x] Slide-generation contract supports dynamic ordered slides, repeatable evidence slides, result-data mapping, table/chart limits, content budgets, and template safety validation.
+- [x] PowerPoint export tests cover template path resolution, output creation, invalid records, missing or unsafe templates, deterministic bytes, and no Streamlit dependency in the backend exporter.
 
 ### Active
 
-- [ ] Add PowerPoint generation from agent output data, using the Wuerth PPT master template.
-- [ ] Define a slide-generation contract for supported layouts, placeholders, text overflow behavior, result-data mapping, and chart/table rendering.
-- [ ] Expose PowerPoint export in Streamlit as a download action after a successful analysis run.
-- [ ] Add tests that validate template path resolution, output file creation, non-empty slides, and failure behavior when the template is missing.
+- [ ] Expose PowerPoint export in Streamlit as a create-then-download action after a successful analysis run.
 - [ ] Improve memory-template retrieval so approved active templates include richer metadata and retrieval uses router memory intent where available.
 - [ ] Make retrieved memory-template usage visible in logs or trace output while keeping generated candidates out of automatic prompt construction.
 - [ ] Add role-based access control for memory-template actions: Viewer, Contributor, Reviewer, and Admin.
@@ -83,11 +83,14 @@ Issue #7 is excluded because evaluation assets and golden-question infrastructur
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Frame project as PPT-first | The final goal is PowerPoint output from agent result data; remaining issues are supporting work. | Pending |
-| Store PPT master under `assets/templates/` | A branded output template is an asset, not database input. | Pending |
-| Exclude issue #7 | Evaluation set is already present and should not distract from remaining work. | Pending |
-| Do not merge stale reporting branch | The branch contains old reporting ideas but would delete newer routing, orchestration, visualization, and Wuerth-local code. | Pending |
-| Build on current `dev` architecture | Current Streamlit and LangGraph flow already owns answer, reporting, chart, and export metadata. | Pending |
+| Frame project as PPT-first | The final goal is PowerPoint output from agent result data; remaining issues are supporting work. | Confirmed in Phase 1 |
+| Store PPT master under `assets/templates/` | A branded output template is an asset, not database input. | Implemented in Phase 1 |
+| Use `python-pptx` for deterministic local rendering | It keeps PPT generation testable without PowerPoint or direct LLM-generated files. | Approved and implemented in Phase 1 |
+| Normalize generated PPTX ZIP packages | Raw `python-pptx` output can contain non-repeatable ZIP metadata. | Implemented in Phase 1 |
+| Treat known think-cell OLE entries as warnings | The current Wuerth template contains known OLE entries; macros and external relationships still block export. | Implemented in Phase 1 |
+| Exclude issue #7 | Evaluation set is already present and should not distract from remaining work. | Confirmed |
+| Do not merge stale reporting branch | The branch contains old reporting ideas but would delete newer routing, orchestration, visualization, and Wuerth-local code. | Confirmed |
+| Build on current `dev` architecture | Current Streamlit and LangGraph flow already owns answer, reporting, chart, and export metadata. | Confirmed in Phase 1 |
 
 ## Evolution
 
@@ -107,4 +110,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state.
 
 ---
-*Last updated: 2026-06-21 after initialization*
+*Last updated: 2026-06-21 after Phase 1 completion*
