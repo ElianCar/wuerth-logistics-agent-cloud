@@ -21,7 +21,7 @@ This roadmap turns successful Wuerth logistics analysis results into determinist
 - Integer phases (1, 2, 3): Planned milestone work
 - Decimal phases (2.1, 2.2): Urgent insertions marked with INSERTED
 
-- [ ] **Phase 1: Deterministic Backend Deck Slice** - Backend code can validate export eligibility and render a deterministic Wuerth PPTX from a successful record.
+- [x] **Phase 1: Deterministic Backend Deck Slice** - Backend code can validate export eligibility and render a deterministic Wuerth PPTX from a successful record. (completed 2026-06-21)
 - [ ] **Phase 2: Streamlit Downloadable Deck Slice** - Users can download a Wuerth deck from a successful Streamlit analysis run.
 - [ ] **Phase 3: Readable Evidence And Fallback Slice** - Evidence slides stay readable through truncation, top-N handling, and explicit fallbacks.
 - [ ] **Phase 4: Memory Governance And RBAC Slice** - Approved memory use becomes traceable and memory-template actions are role-controlled.
@@ -44,7 +44,7 @@ This roadmap turns successful Wuerth logistics analysis results into determinist
   5. Direct LLM-generated PPTX files are impossible in the v1 production path.
 
 **Verification approach:** Add focused `unittest` coverage for export eligibility, template path resolution, missing-template behavior, deterministic spec validation, and PPTX creation that can be opened by the chosen Python library without Microsoft PowerPoint.
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 Plans:
 
 **Wave 1**
@@ -57,7 +57,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 01-03-PLAN.md - Harden eligibility, missing-template, and template safety behavior
+- [x] 01-03-PLAN.md - Harden eligibility, missing-template, and template safety behavior
 
 ### Phase 2: Streamlit Downloadable Deck Slice
 
@@ -178,7 +178,7 @@ Phases execute in numeric order: 1, 2, 3, 4, 5.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Deterministic Backend Deck Slice | 2/3 | In Progress |  |
+| 1. Deterministic Backend Deck Slice | 3/3 | Complete   | 2026-06-21 |
 | 2. Streamlit Downloadable Deck Slice | 0/TBD | Not started | - |
 | 3. Readable Evidence And Fallback Slice | 0/TBD | Not started | - |
 | 4. Memory Governance And RBAC Slice | 0/TBD | Not started | - |
