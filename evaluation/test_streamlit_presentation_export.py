@@ -24,11 +24,94 @@ class _SessionState(dict):
         self[name] = value
 
 
+class _NoopContext:
+    def __enter__(self) -> "_NoopContext":
+        return self
+
+    def __exit__(self, *_args: object) -> bool:
+        return False
+
+
+class _FakeSlot:
+    def __init__(self, root: "_FakePresentationContainer") -> None:
+        self.root = root
+
+    def button(self, label: str, **kwargs: object) -> bool:
+        self.root.buttons.append({"label": label, **kwargs})
+        return bool(self.root.clicked and not kwargs.get("disabled"))
+
+    def download_button(self, label: str, **kwargs: object) -> None:
+        self.root.downloads.append({"label": label, **kwargs})
+
+    def caption(self, text: str) -> None:
+        self.root.captions.append(text)
+
+    def warning(self, text: str) -> None:
+        self.root.warnings.append(text)
+
+    def error(self, text: str) -> None:
+        self.root.errors.append(text)
+
+    def expander(self, label: str, *, expanded: bool = False) -> _NoopContext:
+        self.root.expanders.append({"label": label, "expanded": expanded})
+        return _NoopContext()
+
+
+class _FakePresentationContainer:
+    def __init__(self, *, clicked: bool = False) -> None:
+        self.clicked = clicked
+        self.buttons: list[dict[str, object]] = []
+        self.downloads: list[dict[str, object]] = []
+        self.captions: list[str] = []
+        self.warnings: list[str] = []
+        self.errors: list[str] = []
+        self.expanders: list[dict[str, object]] = []
+        self.spinner_labels: list[str] = []
+        self.writes: list[str] = []
+        self._control_slot = _FakeSlot(self)
+        self._feedback_slot = _FakeSlot(self)
+
+    def empty(self) -> _FakeSlot:
+        return self._control_slot
+
+    def container(self) -> _FakeSlot:
+        return self._feedback_slot
+
+
 def _module(name: str, **attributes: object) -> types.ModuleType:
     module = types.ModuleType(name)
     for key, value in attributes.items():
         setattr(module, key, value)
     return module
+
+
+def _export(
+    *,
+    available: bool = True,
+    content: bytes = b"pptx",
+    filename: str = "wuerth_logistics_run.pptx",
+    mime_type: str = "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    warnings: list[str] | None = None,
+    unavailable_reason: str = "",
+) -> types.SimpleNamespace:
+    return types.SimpleNamespace(
+        available=available,
+        content=content,
+        filename=filename,
+        mime_type=mime_type,
+        slide_count=5 if available else 0,
+        warnings=warnings or [],
+        unavailable_reason=unavailable_reason,
+    )
+
+
+def _install_fake_streamlit_runtime(app: types.ModuleType, container: _FakePresentationContainer) -> None:
+    def spinner(label: str) -> _NoopContext:
+        container.spinner_labels.append(label)
+        return _NoopContext()
+
+    app.st.spinner = spinner
+    app.st.write = lambda value: container.writes.append(str(value))
 
 
 def _load_streamlit_app() -> types.ModuleType:
@@ -134,9 +217,14 @@ def _load_streamlit_app() -> types.ModuleType:
         "src.llm.model_adapter": fake_model_adapter,
     }
 
+    previous_streamlit_app = sys.modules.pop("streamlit_app", None)
     with patch.dict(sys.modules, fake_modules):
-        sys.modules.pop("streamlit_app", None)
-        module = importlib.import_module("streamlit_app")
+        try:
+            module = importlib.import_module("streamlit_app")
+        finally:
+            sys.modules.pop("streamlit_app", None)
+            if previous_streamlit_app is not None:
+                sys.modules["streamlit_app"] = previous_streamlit_app
     return module
 
 
@@ -195,6 +283,27 @@ class StreamlitPresentationExportHelperTests(unittest.TestCase):
         self.assertIs(exports, existing)
         self.assertEqual(session_state["presentation_exports"], existing)
 
+    def test_clear_presentation_exports_for_chat_removes_only_matching_chat_keys(self) -> None:
+        app = _load_streamlit_app()
+        chat_a_export = object()
+        chat_b_export = object()
+        session_state: dict[str, object] = {
+            "presentation_exports": {
+                "ppt_export_chat-a_run-1": chat_a_export,
+                "ppt_export_chat-a_7": object(),
+                "ppt_export_chat-b_run-1": chat_b_export,
+                "unrelated": object(),
+            }
+        }
+
+        app.clear_presentation_exports_for_chat("chat-a", session_state)
+
+        self.assertEqual(
+            set(session_state["presentation_exports"]),
+            {"ppt_export_chat-b_run-1", "unrelated"},
+        )
+        self.assertIs(session_state["presentation_exports"]["ppt_export_chat-b_run-1"], chat_b_export)
+
     def test_unavailable_reason_copy_matches_ui_spec(self) -> None:
         app = _load_streamlit_app()
         cases = {
@@ -239,6 +348,12 @@ class StreamlitPresentationExportHelperTests(unittest.TestCase):
         self.assertEqual(session_state["active_chat_id"], "chat-a")
         self.assertEqual(session_state["last_golden_results"], existing_golden_results)
 
+    def test_streamlit_source_clears_presentation_exports_on_chat_and_scenario_cleanup(self) -> None:
+        source = STREAMLIT_APP_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("clear_presentation_exports_for_chat(chat_id)", source)
+        self.assertIn("st.session_state.presentation_exports = {}", source)
+
     def test_streamlit_source_does_not_import_renderer_internals(self) -> None:
         source = STREAMLIT_APP_PATH.read_text(encoding="utf-8")
         imported = _imported_symbols(source)
@@ -261,13 +376,19 @@ class StreamlitPresentationExportWiringTests(unittest.TestCase):
     def test_streamlit_imports_only_allowed_backend_export_symbols(self) -> None:
         source = STREAMLIT_APP_PATH.read_text(encoding="utf-8")
         tree = ast.parse(source)
-        presentation_imports = [
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module == "src.agent.presentation_export"
-        ]
+        imported: set[str] = set()
+        forbidden_module_imports: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "src.agent.presentation_export":
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.Import):
+                forbidden_module_imports.update(
+                    alias.name
+                    for alias in node.names
+                    if alias.name == "src.agent.presentation_export"
+                )
 
-        self.assertEqual(len(presentation_imports), 1, "expected one presentation_export import block")
-        imported = {alias.name for alias in presentation_imports[0].names}
+        self.assertFalse(forbidden_module_imports, forbidden_module_imports)
         self.assertEqual(
             imported,
             {"PPTX_MIME_TYPE", "build_presentation_export", "can_export_presentation"},
@@ -352,6 +473,86 @@ class StreamlitPresentationExportWiringTests(unittest.TestCase):
 
         matches = {fragment for fragment in forbidden_fragments if fragment in source}
         self.assertFalse(matches, matches)
+
+    def test_existing_export_renders_download_without_rebuilding(self) -> None:
+        app = _load_streamlit_app()
+        record = {"run_id": "run-1"}
+        container = _FakePresentationContainer()
+        export = _export(content=b"existing-pptx", filename="backend-name.pptx")
+        app.st.session_state.update({
+            "active_chat_id": "chat-a",
+            "presentation_exports": {"ppt_export_chat-a_run-1": export},
+        })
+        _install_fake_streamlit_runtime(app, container)
+
+        with patch.object(app, "can_export_presentation", return_value=types.SimpleNamespace(can_export=True, reason="")):
+            with patch.object(app, "build_presentation_export") as build_export:
+                app.render_presentation_export_controls(record, 0, container)
+
+        build_export.assert_not_called()
+        self.assertEqual(container.downloads[0]["label"], "Download PPT")
+        self.assertEqual(container.downloads[0]["data"], b"existing-pptx")
+        self.assertEqual(container.downloads[0]["file_name"], "backend-name.pptx")
+        self.assertIn("PPT ready.", container.captions)
+
+    def test_create_ppt_stores_backend_export_and_renders_download(self) -> None:
+        app = _load_streamlit_app()
+        record = {"run_id": "run-2"}
+        container = _FakePresentationContainer(clicked=True)
+        export = _export(content=b"created-pptx", filename="created-name.pptx")
+        app.st.session_state.update({"active_chat_id": "chat-a", "presentation_exports": {}})
+        _install_fake_streamlit_runtime(app, container)
+
+        with patch.object(app, "can_export_presentation", return_value=types.SimpleNamespace(can_export=True, reason="")):
+            with patch.object(app, "build_presentation_export", return_value=export) as build_export:
+                app.render_presentation_export_controls(record, 0, container)
+
+        build_export.assert_called_once_with(record=record, include_closing=False)
+        self.assertIs(app.st.session_state["presentation_exports"]["ppt_export_chat-a_run-2"], export)
+        self.assertEqual(container.spinner_labels, ["Creating PPT..."])
+        self.assertEqual(container.downloads[0]["label"], "Download PPT")
+        self.assertEqual(container.downloads[0]["data"], b"created-pptx")
+        self.assertEqual(
+            container.downloads[0]["mime"],
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+
+    def test_ineligible_record_disables_create_and_shows_reason(self) -> None:
+        app = _load_streamlit_app()
+        container = _FakePresentationContainer(clicked=True)
+        app.st.session_state.update({"active_chat_id": "chat-a", "presentation_exports": {}})
+
+        with patch.object(
+            app,
+            "can_export_presentation",
+            return_value=types.SimpleNamespace(can_export=False, reason="blocked_request"),
+        ):
+            with patch.object(app, "build_presentation_export") as build_export:
+                app.render_presentation_export_controls({"run_id": "run-3"}, 0, container)
+
+        build_export.assert_not_called()
+        self.assertEqual(container.buttons[0]["label"], "Create PPT")
+        self.assertIs(container.buttons[0]["disabled"], True)
+        self.assertIn("PPT unavailable: This request was blocked for safety.", container.captions)
+        self.assertEqual(container.downloads, [])
+
+    def test_failed_backend_export_shows_non_crashing_error(self) -> None:
+        app = _load_streamlit_app()
+        record = {"run_id": "run-4"}
+        container = _FakePresentationContainer(clicked=True)
+        export = _export(available=False, unavailable_reason="template_invalid")
+        app.st.session_state.update({"active_chat_id": "chat-a", "presentation_exports": {}})
+        _install_fake_streamlit_runtime(app, container)
+
+        with patch.object(app, "can_export_presentation", return_value=types.SimpleNamespace(can_export=True, reason="")):
+            with patch.object(app, "build_presentation_export", return_value=export):
+                app.render_presentation_export_controls(record, 0, container)
+
+        self.assertIn(
+            "PPT export failed: template_invalid. Fix the template or rerun a valid analysis, then create the deck again.",
+            container.errors,
+        )
+        self.assertEqual(container.downloads, [])
 
 
 if __name__ == "__main__":

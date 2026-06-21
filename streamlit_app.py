@@ -129,6 +129,14 @@ def presentation_exports_state(session_state: dict | None = None) -> dict:
     return exports
 
 
+def clear_presentation_exports_for_chat(chat_id: str, session_state: dict | None = None) -> None:
+    exports = presentation_exports_state(session_state)
+    prefix = f"ppt_export_{chat_id}_"
+    for key in list(exports):
+        if str(key).startswith(prefix):
+            del exports[key]
+
+
 def format_presentation_unavailable_reason(reason: object) -> str:
     return _PRESENTATION_UNAVAILABLE_REASON_COPY.get(
         str(reason or ""),
@@ -522,6 +530,7 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
                 st.warning(f"„{chat['name'] or 'Neuer Chat'}\" löschen?")
                 c1, c2 = st.columns(2)
                 if c1.button("Ja, löschen", key=f"confirm_del_{chat_id}", type="primary", use_container_width=True):
+                    clear_presentation_exports_for_chat(chat_id)
                     del st.session_state.chats[chat_id]
                     if st.session_state.active_chat_id == chat_id:
                         st.session_state.active_chat_id = next(iter(st.session_state.chats))
@@ -571,6 +580,7 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
             st.session_state.last_errored_question_ids = []
             st.session_state.last_golden_result_summary = {}
             st.session_state.last_golden_results = []
+            st.session_state.presentation_exports = {}
         set_active_scenario_id(selected_scenario_id)
         initialize_memory_files()
         scenario = get_active_scenario()
