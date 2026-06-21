@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-last_updated: "2026-06-21T18:18:45.733Z"
+last_updated: "2026-06-21T18:26:55.073Z"
 last_activity: 2026-06-21
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 6
-  completed_plans: 4
+  completed_plans: 5
   percent: 20
 ---
 
@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-06-21)
 ## Current Position
 
 Phase: 02 (streamlit-downloadable-deck-slice) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-06-21
 
-Progress: [███████░░░] 67%
+Progress: [████████░░] 83%
 
 ## Performance Metrics
 
@@ -51,6 +51,7 @@ Progress: [███████░░░] 67%
 - Trend: Phase 01 backend export foundation completed and verified
 
 | Phase 02 P01 | 7 min | 2 tasks | 2 files |
+| Phase 02 P02 | 3 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -75,6 +76,9 @@ Recent decisions affecting current work:
 - [Phase 02]: Plan 02-01 keeps PPT helper state and reason-copy scope separate from visible Create PPT and Download PPT UI wiring.
 - [Phase 02]: Presentation export state keys use active chat plus run ID or record index to prevent cross-chat export collisions.
 - [Phase 02]: Helper tests use import stubs because the bundled Python used for verification does not include Streamlit.
+- [Phase 02]: Streamlit imports only PPTX_MIME_TYPE, build_presentation_export, and can_export_presentation from the backend exporter. Keeps PPTX rendering, template handling, filenames, warnings, and chart evidence backend-owned.
+- [Phase 02]: Create PPT calls build_presentation_export(record=record, include_closing=False) and never passes template_path.
+- [Phase 02]: Download PPT uses backend export.content, export.filename, and export.mime_type or PPTX_MIME_TYPE without a Streamlit filename scheme.
 
 ### Pending Todos
 
@@ -95,6 +99,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-21T18:18:45.692Z
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-06-21T18:26:55.041Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None
