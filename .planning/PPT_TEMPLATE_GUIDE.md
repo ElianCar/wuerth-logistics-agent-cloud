@@ -47,11 +47,9 @@ The current file exposes these layout names:
 4. `Agent 04 Chart Evidence`
 5. `Agent 05 Table Evidence`
 6. `Agent 06 Comparison`
-7. `Agent 07 Caveats And Sources Agent`
-8. `1_Agent 08 Appendix Metadata`
+7. `Agent 07 Caveats And Sources`
+8. `Agent 08 Appendix Metadata`
 9. `Agent 09 Closing`
-
-Before implementation, prefer renaming layout 7 to `Agent 07 Caveats And Sources` and layout 8 to `Agent 08 Appendix Metadata`. If not renamed, the renderer must normalize these current names explicitly.
 
 ## Dynamic Deck Rule
 

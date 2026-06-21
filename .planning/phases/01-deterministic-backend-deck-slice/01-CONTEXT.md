@@ -34,8 +34,8 @@ This phase does not need the final Streamlit `Create PPT` and `Download PPT` int
   - `Agent 04 Chart Evidence`
   - `Agent 05 Table Evidence`
   - `Agent 06 Comparison`
-  - `Agent 07 Caveats And Sources Agent`
-  - `1_Agent 08 Appendix Metadata`
+  - `Agent 07 Caveats And Sources`
+  - `Agent 08 Appendix Metadata`
   - `Agent 09 Closing`
 - The renderer may target layout name plus placeholder index because Selection Pane object names were not normalized.
 - The planner should include a template manifest or validation layer that records expected layout names, normalized aliases, placeholder indexes, and known warnings.
