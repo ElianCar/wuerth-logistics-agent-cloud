@@ -1,3 +1,6 @@
+import io
+import uuid
+
 import altair as alt
 import pandas as pd
 import streamlit as st
@@ -32,11 +35,15 @@ from src.config.scenarios import (
     set_active_scenario_id,
 )
 from src.llm.model_adapter import (
+    DEFAULT_ANTHROPIC_FALLBACK_MODEL,
+    DEFAULT_ANTHROPIC_MEDIUM_MODEL,
     DEFAULT_GEMINI_BACKUP_MODEL,
     DEFAULT_GEMINI_PRIMARY_MODEL,
     DEFAULT_OLLAMA_BACKUP_MODEL,
     DEFAULT_OLLAMA_MODEL,
+    anthropic_api_key_is_placeholder,
     gemini_api_key_is_placeholder,
+    get_provider,
 )
 
 
@@ -44,6 +51,107 @@ PAGE_CHAT = "Chat"
 PAGE_GOLDEN = "Golden-Testmodus"
 PAGE_MEMORY = "Memory-Prüfung"
 PAGE_TEMPLATES = "Freigegebene Templates"
+
+_STEP_LABELS: dict[str, str] = {
+    "run_router": "Anfrage analysieren",
+    "select_model": "Modell auswählen",
+    "terminal_response": "Direkte Antwort erstellen",
+    "load_schema": "Datenbankschema laden",
+    "generate_sql": "SQL generieren",
+    "validate_sql": "SQL validieren",
+    "execute_sql": "SQL ausführen",
+    "repair_sql": "SQL reparieren",
+    "switch_model": "Auf Fallback-Modell wechseln",
+    "generate_final_answer": "Antwort formulieren",
+}
+
+_STEP_SYMBOLS: dict[str, str] = {
+    "run_router": "⊙",
+    "select_model": "⚙",
+    "terminal_response": "◉",
+    "load_schema": "≡",
+    "generate_sql": "✎",
+    "validate_sql": "✓",
+    "execute_sql": "▶",
+    "repair_sql": "↺",
+    "switch_model": "⇄",
+    "generate_final_answer": "◉",
+}
+
+
+def _new_chat_id() -> str:
+    return str(uuid.uuid4())
+
+
+def _make_chat(name: str = "") -> dict:
+    return {"name": name, "history": []}
+
+
+def active_history() -> list[dict]:
+    return st.session_state.chats[st.session_state.active_chat_id]["history"]
+
+
+_STOP_WORDS = {
+    "wie", "was", "wer", "wo", "wann", "warum", "welche", "welcher", "welches",
+    "welchen", "welchem", "zeige", "zeig", "gib", "mir", "bitte", "kannst", "du",
+    "die", "der", "das", "den", "dem", "des", "ein", "eine", "einen", "einem",
+    "eines", "ist", "sind", "gibt", "es", "ich", "all", "alle", "viele", "viel",
+    "mal", "bitte", "noch", "schon", "doch", "auch", "nur", "mehr", "weniger",
+    "möchte", "möchten", "würde", "würden", "hätte", "hätten", "kann", "können",
+}
+
+
+def _auto_chat_name(question: str) -> str:
+    words = question.split()
+    kept = [w.strip("?!.,;:") for w in words if w.lower().strip("?!.,;:") not in _STOP_WORDS]
+    chosen = kept[:3]
+    return " ".join(chosen) if chosen else question[:20]
+
+
+def _build_chat_context(history: list[dict]) -> str:
+    lines = ["Bisheriger Gesprächsverlauf:"]
+    for record in history:
+        q = record.get("user_question", "").strip()
+        sql = (record.get("final_sql") or record.get("generated_sql", "")).strip()
+        success = record.get("execution_success", False)
+        row_count = record.get("row_count")
+        a = record.get("final_answer", "").strip()
+
+        if q:
+            lines.append(f"F: {q}")
+        if sql:
+            lines.append(f"SQL: {sql}")
+        status = "Erfolg" if success else "Fehlgeschlagen"
+        if row_count is not None:
+            status += f", {row_count} Zeile(n)"
+        lines.append(f"Status: {status}")
+        if a:
+            lines.append(f"A: {a}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _render_chat_sidebar_css() -> None:
+    st.markdown(
+        """
+        <style>
+        section[data-testid="stSidebar"] [data-testid="stHorizontalBlock"]
+            [data-testid="stColumn"]:first-child div[data-testid="stButton"] button {
+            font-size: 0.78rem;
+            text-align: left;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        section[data-testid="stSidebar"] [data-testid="stHorizontalBlock"]
+            [data-testid="stColumn"]:last-child button {
+            justify-content: center !important;
+            padding: 4px 0 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def result_to_dataframe(record: dict) -> pd.DataFrame:
@@ -157,8 +265,14 @@ def render_reporting_audit(record: dict) -> None:
 def initialize_state() -> None:
     if "data_scenario" in st.session_state:
         set_active_scenario_id(st.session_state.data_scenario)
-    if "history" not in st.session_state:
-        st.session_state.history = []
+    if "chats" not in st.session_state:
+        first_id = _new_chat_id()
+        st.session_state.chats = {first_id: _make_chat()}
+        st.session_state.active_chat_id = first_id
+    if st.session_state.get("active_chat_id") not in st.session_state.get("chats", {}):
+        st.session_state.active_chat_id = next(iter(st.session_state.chats))
+    st.session_state.setdefault("editing_chat_id", None)
+    st.session_state.setdefault("confirm_delete_chat_id", None)
     st.session_state.setdefault("last_golden_run_id", "")
     st.session_state.setdefault("last_selected_question_ids", [])
     st.session_state.setdefault("last_failed_question_ids", [])
@@ -189,7 +303,6 @@ def render_flash() -> None:
 
 def build_streamlit_llm_config() -> SQLAgentConfig:
     env_config = SQLAgentConfig.from_env()
-    gemini_config = SQLAgentConfig.from_provider("gemini")
     ollama_config = SQLAgentConfig.from_provider("ollama")
 
     st.session_state.setdefault(
@@ -200,7 +313,7 @@ def build_streamlit_llm_config() -> SQLAgentConfig:
     use_local_ollama = st.toggle(
         "Lokales Ollama verwenden",
         key="use_local_ollama",
-        help="Wenn aktiv, nutzt der Workflow lokale Ollama-Modelle für Primary und Fallback. Sonst wird die Gemini API genutzt.",
+        help="Wenn aktiv, nutzt der Workflow lokale Ollama-Modelle für Primary und Fallback. Sonst wird der konfigurierte LLM-Anbieter genutzt.",
     )
 
     if use_local_ollama:
@@ -212,13 +325,7 @@ def build_streamlit_llm_config() -> SQLAgentConfig:
             ollama_host=ollama_config.ollama_host,
         )
 
-    return SQLAgentConfig(
-        primary_model=gemini_config.primary_model or DEFAULT_GEMINI_PRIMARY_MODEL,
-        fallback_model=gemini_config.fallback_model or DEFAULT_GEMINI_BACKUP_MODEL,
-        max_primary_attempts=gemini_config.max_primary_attempts,
-        llm_provider="gemini",
-        ollama_host=ollama_config.ollama_host,
-    )
+    return env_config
 
 
 def apply_app_styles() -> None:
@@ -246,6 +353,60 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
             label_visibility="collapsed",
         )
 
+        _render_chat_sidebar_css()
+        st.header("Chats")
+        if st.button("+ Neuer Chat", use_container_width=True):
+            new_id = _new_chat_id()
+            st.session_state.chats[new_id] = _make_chat()
+            st.session_state.active_chat_id = new_id
+            st.rerun()
+        for chat_id, chat in list(st.session_state.chats.items()):
+            is_editing = st.session_state.editing_chat_id == chat_id
+            confirming = st.session_state.confirm_delete_chat_id == chat_id
+
+            if is_editing:
+                new_name = st.text_input(
+                    "Name",
+                    value=chat["name"],
+                    key=f"rename_input_{chat_id}",
+                    label_visibility="collapsed",
+                )
+                c1, c2 = st.columns(2)
+                if c1.button("Speichern", key=f"confirm_{chat_id}", use_container_width=True):
+                    chat["name"] = new_name.strip() or chat["name"]
+                    st.session_state.editing_chat_id = None
+                    st.rerun()
+                if c2.button("Abbrechen", key=f"cancel_{chat_id}", use_container_width=True):
+                    st.session_state.editing_chat_id = None
+                    st.rerun()
+            elif confirming:
+                st.warning(f"„{chat['name'] or 'Neuer Chat'}\" löschen?")
+                c1, c2 = st.columns(2)
+                if c1.button("Ja, löschen", key=f"confirm_del_{chat_id}", type="primary", use_container_width=True):
+                    del st.session_state.chats[chat_id]
+                    if st.session_state.active_chat_id == chat_id:
+                        st.session_state.active_chat_id = next(iter(st.session_state.chats))
+                    st.session_state.confirm_delete_chat_id = None
+                    st.session_state.editing_chat_id = None
+                    st.rerun()
+                if c2.button("Abbrechen", key=f"cancel_del_{chat_id}", use_container_width=True):
+                    st.session_state.confirm_delete_chat_id = None
+                    st.rerun()
+            else:
+                label = chat["name"] or "Neuer Chat"
+                cols = st.columns([5, 1])
+                if cols[0].button(label, key=f"select_{chat_id}", use_container_width=True):
+                    st.session_state.active_chat_id = chat_id
+                    st.rerun()
+                with cols[1].popover(" ", use_container_width=True):
+                    if st.button("Umbenennen", key=f"edit_{chat_id}", use_container_width=True):
+                        st.session_state.editing_chat_id = chat_id
+                        st.rerun()
+                    if len(st.session_state.chats) > 1:
+                        if st.button("Löschen", key=f"del_{chat_id}", use_container_width=True):
+                            st.session_state.confirm_delete_chat_id = chat_id
+                            st.rerun()
+
         st.header("Konfiguration")
         scenario_ids = [scenario.scenario_id for scenario in get_scenario_options()]
         default_scenario_id = st.session_state.get("data_scenario", get_active_scenario_id())
@@ -260,7 +421,11 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
         previous_scenario_id = st.session_state.get("data_scenario")
         st.session_state.data_scenario = selected_scenario_id
         if previous_scenario_id and previous_scenario_id != selected_scenario_id:
-            st.session_state.history = []
+            first_id = _new_chat_id()
+            st.session_state.chats = {first_id: _make_chat()}
+            st.session_state.active_chat_id = first_id
+            st.session_state.confirm_delete_chat_id = None
+            st.session_state.editing_chat_id = None
             st.session_state.last_golden_run_id = ""
             st.session_state.last_selected_question_ids = []
             st.session_state.last_failed_question_ids = []
@@ -291,7 +456,13 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
         st.write(f"Primäres Modell: `{config.primary_model}`")
         st.write(f"Fallback-Modell: `{config.fallback_model}`")
         st.write(f"Max. primäre Versuche: `{config.max_primary_attempts}`")
-        if config.llm_provider == "gemini":
+        if config.llm_provider == "anthropic":
+            if anthropic_api_key_is_placeholder():
+                st.warning(
+                    "ANTHROPIC_API_KEY ist nicht gesetzt. Trage deinen Key in `.env` ein, "
+                    "bevor Fragen gestellt werden."
+                )
+        elif config.llm_provider == "gemini":
             if gemini_api_key_is_placeholder():
                 st.warning(
                     "GEMINI_API_KEY ist noch auf `key` gesetzt. Ersetze den Wert in `.env` "
@@ -328,8 +499,24 @@ def retry_with_comment(record: dict, index: int, comment: str, config: SQLAgentC
         st.warning("Bitte zuerst eine kurze Korrektur eingeben.")
         return
 
+    _steps_log: list[dict] = []
     write_feedback(record, "neutral", f"retry_with_comment: {comment}")
-    with st.spinner("Wiederhole den Lauf mit deiner Korrektur..."):
+    with st.status("Wiederhole den Lauf mit deiner Korrektur...", expanded=True) as _retry_status:
+        def _retry_on_step(node: str, duration: float, metadata: dict) -> None:
+            symbol = _STEP_SYMBOLS.get(node, "·")
+            label = _STEP_LABELS.get(node, node)
+            _retry_status.write(f"{symbol} {label}   {duration:.1f}s")
+            if node == "run_router":
+                intent = metadata.get("intent", "")
+                tier = metadata.get("complexity_tier", "")
+                reason = metadata.get("complexity_reason", "")
+                if intent:
+                    _retry_status.write(f"  Intent: {intent}")
+                if tier or reason:
+                    _retry_status.write(f"  Complexity: {tier} – {reason}")
+            _steps_log.append({"node": node, "label": label, "symbol": symbol,
+                                "duration": duration, "metadata": metadata})
+
         corrected_record = run_orchestrator(
             record.get("user_question", ""),
             config=config,
@@ -337,8 +524,11 @@ def retry_with_comment(record: dict, index: int, comment: str, config: SQLAgentC
             previous_sql_error=record.get("sql_error", ""),
             previous_final_answer=record.get("final_answer", ""),
             user_correction=comment.strip(),
+            step_callback=_retry_on_step,
         )
-    st.session_state.history[index] = corrected_record
+        _retry_status.update(label="Fertig ✓", state="complete", expanded=False)
+    corrected_record["agent_step_log"] = _steps_log
+    active_history()[index] = corrected_record
     st.rerun()
 
 
@@ -348,8 +538,16 @@ def rerun_with_fallback(
     config: SQLAgentConfig,
     comment: str = "",
 ) -> None:
+    _steps_log: list[dict] = []
     write_feedback(record, "neutral", f"fallback_requested: {comment}")
-    with st.spinner("Wiederhole den Lauf mit dem Fallback-Modell..."):
+    with st.status("Wiederhole den Lauf mit dem Fallback-Modell...", expanded=True) as _fb_status:
+        def _fb_on_step(node: str, duration: float, metadata: dict) -> None:
+            symbol = _STEP_SYMBOLS.get(node, "·")
+            label = _STEP_LABELS.get(node, node)
+            _fb_status.write(f"{symbol} {label}   {duration:.1f}s")
+            _steps_log.append({"node": node, "label": label, "symbol": symbol,
+                                "duration": duration, "metadata": metadata})
+
         fallback_record = run_orchestrator(
             record.get("user_question", ""),
             config=config,
@@ -358,8 +556,11 @@ def rerun_with_fallback(
             previous_sql_error=record.get("sql_error", ""),
             previous_final_answer=record.get("final_answer", ""),
             user_correction=comment.strip(),
+            step_callback=_fb_on_step,
         )
-    st.session_state.history[index] = fallback_record
+        _fb_status.update(label="Fertig ✓", state="complete", expanded=False)
+    fallback_record["agent_step_log"] = _steps_log
+    active_history()[index] = fallback_record
     st.rerun()
 
 
@@ -1117,6 +1318,42 @@ def render_golden_test_mode_view(config: SQLAgentConfig) -> None:
     render_golden_results(st.session_state.last_golden_results)
 
 
+def render_step_log(record: dict) -> None:
+    step_log = record.get("agent_step_log", [])
+    if not step_log:
+        trace = record.get("trace_steps", [])
+        if trace:
+            with st.expander("Ablaufschritte", expanded=False):
+                for step in trace:
+                    st.markdown(f"- {step}")
+        return
+
+    with st.expander("Ablaufschritte", expanded=False):
+        for step in step_log:
+            symbol = step.get("symbol", "·")
+            label = step.get("label", step.get("node", ""))
+            duration = step.get("duration", 0.0)
+            st.markdown(
+                f"{symbol}&nbsp; {label} &nbsp;&nbsp; `{duration:.1f}s`",
+                unsafe_allow_html=True,
+            )
+            meta = step.get("metadata", {})
+            if step.get("node") == "run_router":
+                intent = meta.get("intent", "")
+                tier = meta.get("complexity_tier", "")
+                reason = meta.get("complexity_reason", "")
+                if intent:
+                    st.caption(f"Intent: {intent}")
+                if tier or reason:
+                    st.caption(f"Complexity: {tier} – {reason}")
+            if step.get("node") == "select_model":
+                primary = meta.get("primary", "")
+                tier = meta.get("tier", "")
+                if primary:
+                    suffix = f" ({tier})" if tier else ""
+                    st.caption(f"Modell: {primary}{suffix}")
+
+
 def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
     with st.chat_message("user"):
         st.caption("Frage")
@@ -1138,6 +1375,27 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
             st.dataframe(df, use_container_width=True)
             render_chart_from_spec(record, df)
 
+            col_csv, col_xlsx = st.columns(2)
+            csv_data = df.to_csv(index=False).encode("utf-8")
+            col_csv.download_button(
+                "Als CSV exportieren",
+                data=csv_data,
+                file_name=f"ergebnis_{record.get('run_id', index)}.csv",
+                mime="text/csv",
+                key=f"export_csv_{index}",
+                use_container_width=True,
+            )
+            xlsx_buffer = io.BytesIO()
+            df.to_excel(xlsx_buffer, index=False)
+            col_xlsx.download_button(
+                "Als Excel exportieren",
+                data=xlsx_buffer.getvalue(),
+                file_name=f"ergebnis_{record.get('run_id', index)}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"export_xlsx_{index}",
+                use_container_width=True,
+            )
+
         st.subheader("SQL-Anweisung")
         st.code(record.get("final_sql") or record.get("generated_sql", "") or "(kein SQL erzeugt)", language="sql")
 
@@ -1153,9 +1411,7 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
             st.subheader("SQL-Fehler")
             st.error(record["sql_error"])
 
-        with st.expander("Ablaufschritte", expanded=False):
-            for step in record.get("trace_steps", []):
-                st.markdown(f"- {step}")
+        render_step_log(record)
 
         render_reporting_audit(record)
 
@@ -1209,14 +1465,59 @@ def main() -> None:
     )
     render_flash()
 
-    for index, record in enumerate(st.session_state.history):
+    history = active_history()
+    for index, record in enumerate(history):
         render_record(record, index, config)
+
+    context_key = f"send_context_{st.session_state.active_chat_id}"
+    if history:
+        st.checkbox(
+            "Chatkontext mitsenden",
+            key=context_key,
+            help="Sendet den bisherigen Gesprächsverlauf als Kontext mit — nützlich für Folgefragen.",
+        )
 
     question = st.chat_input(f"Stelle eine Frage zu {scenario.label}")
     if question:
-        with st.spinner("LangGraph-SQL-Workflow wird ausgeführt..."):
-            record = run_orchestrator(question, config=config)
-        st.session_state.history.append(record)
+        chat_context = ""
+        if st.session_state.get(context_key) and history:
+            chat_context = _build_chat_context(history)
+        _steps_log: list[dict] = []
+        with st.status("LangGraph-SQL-Workflow wird ausgeführt...", expanded=True) as status:
+            def _on_step(node_name: str, duration: float, metadata: dict) -> None:
+                symbol = _STEP_SYMBOLS.get(node_name, "·")
+                label = _STEP_LABELS.get(node_name, node_name)
+                status.write(f"{symbol} {label}   {duration:.1f}s")
+                if node_name == "run_router":
+                    intent = metadata.get("intent", "")
+                    tier = metadata.get("complexity_tier", "")
+                    reason = metadata.get("complexity_reason", "")
+                    if intent:
+                        status.write(f"  Intent: {intent}")
+                    if tier or reason:
+                        status.write(f"  Complexity: {tier} – {reason}")
+                if node_name == "select_model":
+                    primary = metadata.get("primary", "")
+                    tier = metadata.get("tier", "")
+                    if primary:
+                        suffix = f" ({tier})" if tier else ""
+                        status.write(f"  Modell: {primary}{suffix}")
+                _steps_log.append({
+                    "node": node_name,
+                    "label": label,
+                    "symbol": symbol,
+                    "duration": duration,
+                    "metadata": metadata,
+                })
+
+            record = run_orchestrator(question, config=config, chat_context=chat_context, step_callback=_on_step)
+            status.update(label="Fertig ✓", state="complete", expanded=False)
+        record["agent_step_log"] = _steps_log
+        record["user_question"] = question
+        active_history().append(record)
+        chat = st.session_state.chats[st.session_state.active_chat_id]
+        if len(active_history()) == 1:
+            chat["name"] = _auto_chat_name(question)
         st.rerun()
 
 

@@ -9,7 +9,7 @@ from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
 from src.agent.id_utils import generate_run_id
-from src.agent.langgraph_sql_agent import SQLAgentConfig, run_sql_agent
+from src.agent.langgraph_sql_agent import SQLAgentConfig, StepCallback, run_sql_agent
 from src.agent.logging_utils import append_csv_row, current_timestamp, get_log_dir
 from src.agent.reporting_agent import build_reporting_result
 from src.agent.router import RouterState, build_router_graph
@@ -18,6 +18,13 @@ from src.llm.model_adapter import get_provider
 
 load_dotenv()
 
+
+ANTHROPIC_TIER_MODELS = {
+    "easy": os.getenv("ANTHROPIC_EASY_MODEL", "claude-haiku-4-5-20251001"),
+    "medium": os.getenv("ANTHROPIC_MEDIUM_MODEL", "claude-sonnet-4-6"),
+    "hard": os.getenv("ANTHROPIC_HARD_MODEL", "claude-opus-4-8"),
+}
+ANTHROPIC_FALLBACK_MODEL = os.getenv("ANTHROPIC_FALLBACK_MODEL", "claude-sonnet-4-6")
 
 GEMINI_TIER_MODELS = {
     "easy": os.getenv("GEMINI_EASY_MODEL", "gemini-3.1-flash-lite"),
@@ -43,6 +50,7 @@ OLLAMA_FALLBACK_MODEL = os.getenv("OLLAMA_FALLBACK_MODEL", "llama3.1:8b")
 class OrchestratorState(TypedDict, total=False):
     run_id: str
     user_question: str
+    chat_context: str
     llm_provider: str
     ollama_host: str
 
@@ -133,6 +141,8 @@ def _coerce_sql_config(config: Any | None) -> SQLAgentConfig:
 def _tier_primary_model(config: SQLAgentConfig, tier: str) -> str:
     provider = get_provider(config.llm_provider)
     tier = tier if tier in {"easy", "medium", "hard"} else "hard"
+    if provider == "anthropic":
+        return ANTHROPIC_TIER_MODELS.get(tier) or config.primary_model
     if provider == "gemini":
         return GEMINI_TIER_MODELS.get(tier) or config.primary_model
     return OLLAMA_TIER_MODELS.get(tier) or config.primary_model
@@ -391,7 +401,17 @@ def select_model(state: OrchestratorState) -> dict[str, Any]:
     }
 
 
+def _make_run_sql_agent_node(step_callback: StepCallback | None = None):
+    def run_sql_agent_node(state: OrchestratorState) -> dict[str, Any]:
+        return _run_sql_agent_node_impl(state, step_callback=step_callback)
+    return run_sql_agent_node
+
+
 def run_sql_agent_node(state: OrchestratorState) -> dict[str, Any]:
+    return _run_sql_agent_node_impl(state)
+
+
+def _run_sql_agent_node_impl(state: OrchestratorState, step_callback: StepCallback | None = None) -> dict[str, Any]:
     config = SQLAgentConfig(
         primary_model=state.get("primary_model", state.get("config_primary_model", "")),
         fallback_model=state.get("fallback_model", state.get("config_fallback_model", "")),
@@ -429,6 +449,8 @@ def run_sql_agent_node(state: OrchestratorState) -> dict[str, Any]:
         language=state.get("language", ""),
         router_context=router_context,
         memory_retrieval=state.get("memory_retrieval", {}),
+        step_callback=step_callback,
+        chat_context=state.get("chat_context", ""),
     )
     reporting_result = _build_reporting_result(
         user_question=state.get("user_question", ""),
@@ -519,12 +541,45 @@ def route_after_select_model(
     return "terminal_response"
 
 
-def build_orchestrator_graph():
+def build_orchestrator_graph(step_callback: StepCallback | None = None):
+    def _notify_end(node_name: str, start_time: float, metadata: dict[str, Any] | None = None) -> None:
+        if step_callback is not None:
+            try:
+                step_callback(node_name, perf_counter() - start_time, metadata or {})
+            except Exception:
+                pass
+
+    def _run_router_node_with_callback(state: OrchestratorState) -> dict[str, Any]:
+        _start = perf_counter()
+        result = run_router_node(state)
+        _notify_end("run_router", _start, {
+            "intent": result.get("intent", ""),
+            "complexity_tier": result.get("complexity_tier", ""),
+            "complexity_reason": result.get("complexity_reason", ""),
+        })
+        return result
+
+    def _select_model_with_callback(state: OrchestratorState) -> dict[str, Any]:
+        _start = perf_counter()
+        result = select_model(state)
+        _notify_end("select_model", _start, {
+            "primary": result.get("primary_model", ""),
+            "fallback": result.get("fallback_model", ""),
+            "tier": state.get("complexity_tier", ""),
+        })
+        return result
+
+    def _terminal_response_with_callback(state: OrchestratorState) -> dict[str, Any]:
+        _start = perf_counter()
+        result = terminal_response(state)
+        _notify_end("terminal_response", _start)
+        return result
+
     graph = StateGraph(OrchestratorState)
-    graph.add_node("run_router", run_router_node)
-    graph.add_node("select_model", select_model)
-    graph.add_node("run_sql_agent", run_sql_agent_node)
-    graph.add_node("terminal_response", terminal_response)
+    graph.add_node("run_router", _run_router_node_with_callback)
+    graph.add_node("select_model", _select_model_with_callback)
+    graph.add_node("run_sql_agent", _make_run_sql_agent_node(step_callback))
+    graph.add_node("terminal_response", _terminal_response_with_callback)
     graph.add_edge(START, "run_router")
     graph.add_conditional_edges("run_router", route_after_router)
     graph.add_conditional_edges("select_model", route_after_select_model)
@@ -617,10 +672,12 @@ def _initial_state(
     use_approved_memory: bool,
     enable_memory_candidate_generation: bool,
     log_to_query_log: bool,
+    chat_context: str = "",
 ) -> OrchestratorState:
     return {
         "run_id": run_id,
         "user_question": user_question,
+        "chat_context": chat_context,
         "llm_provider": config.llm_provider,
         "ollama_host": config.ollama_host,
         "trace_steps": [],
@@ -654,6 +711,7 @@ def _run_forced_fallback(
     run_id: str,
     config: SQLAgentConfig,
     initial: OrchestratorState,
+    step_callback: StepCallback | None = None,
 ) -> OrchestratorState:
     fallback_config = SQLAgentConfig(
         primary_model=config.fallback_model,
@@ -695,6 +753,7 @@ def _run_forced_fallback(
         log_to_query_log=bool(initial.get("log_to_query_log", True)),
         router_context=forced_router_context,
         memory_retrieval=forced_router_context.get("memory_retrieval", {}),
+        step_callback=step_callback,
     )
     reporting_result = _build_reporting_result(
         user_question=user_question,
@@ -743,6 +802,8 @@ def run_orchestrator(
     use_approved_memory: bool = True,
     enable_memory_candidate_generation: bool = True,
     log_to_query_log: bool = True,
+    step_callback: StepCallback | None = None,
+    chat_context: str = "",
 ) -> OrchestratorState:
     sql_config = _coerce_sql_config(config)
     run_id = generate_run_id()
@@ -760,6 +821,7 @@ def run_orchestrator(
         use_approved_memory=use_approved_memory,
         enable_memory_candidate_generation=enable_memory_candidate_generation,
         log_to_query_log=log_to_query_log,
+        chat_context=chat_context,
     )
 
     if force_fallback:
@@ -768,9 +830,10 @@ def run_orchestrator(
             run_id=run_id,
             config=sql_config,
             initial=initial,
+            step_callback=step_callback,
         )
     else:
-        final = build_orchestrator_graph().invoke(initial, {"recursion_limit": 50})
+        final = build_orchestrator_graph(step_callback=step_callback).invoke(initial, {"recursion_limit": 50})
 
     final["latency_seconds"] = perf_counter() - started
     final["run_id"] = run_id

@@ -38,12 +38,12 @@ DETERMINISTIC_BLOCK_PATTERNS = (
 # ─────────────────────────────────────────────────────────────────────────────
 # RouterState
 #
-# complexity_tier:
-#   "easy" → gemini-3.1-flash-lite  (eine Tabelle, einfache Aggregation)
-#   "medium" → gemini-3.1-flash-lite (Ranking, einfache Gruppierung, einfacher JOIN)
-#   "hard" → konfiguriertes Primary-Modell (Zeitreihen, Subqueries, mehrere KPIs)
+# complexity_tier (Anthropic):
+#   "easy"   → claude-haiku-4-5-20251001  (eine Tabelle, einfache Aggregation)
+#   "medium" → claude-sonnet-4-6          (Ranking, einfache Gruppierung, einfacher JOIN)
+#   "hard"   → claude-opus-4-8            (Zeitreihen, Subqueries, mehrere KPIs)
 #
-# Fallback ist immer gemini-2.5-flash.
+# Fallback ist immer claude-sonnet-4-6.
 # ─────────────────────────────────────────────────────────────────────────────
 class RouterState(TypedDict, total=False):
     user_question: str
@@ -150,6 +150,8 @@ JSON:
 
 
 def _get_router_model(llm_provider: str) -> str:
+    if llm_provider == "anthropic":
+        return os.getenv("ANTHROPIC_ROUTER_MODEL", "claude-haiku-4-5-20251001")
     if llm_provider == "gemini":
         return os.getenv("GEMINI_ROUTER_MODEL", "gemini-3.1-flash-lite")
     return os.getenv("OLLAMA_ROUTER_MODEL", os.getenv("PRIMARY_MODEL", "llama3.2:3b"))

@@ -299,3 +299,50 @@ JOIN orders AS o
 WHERE
   n.n_name = 'UNITED STATES' AND o.o_totalprice > 400000
 LIMIT 50",gemini-2.5-flash-lite,false,neutral,retry_with_comment: UNITED STATES AND 300000 ,fb_20260511_200000_7d5a,run_20260511_195933_b031,neutral,retry_with_comment: UNITED STATES AND 300000 ,,,manual_review
+2026-06-10T18:12:51,Nenne mir die drei Kunden mit dem höchsten Umsatz jeweils aus den 3 Ländern mit dem höchsten Umsatz,Ich konnte keine gültige ausführbare SQL-Abfrage erzeugen. Letzter Fehler: Keine Tabellenreferenz im SQL gefunden.,"WITH nation_revenue AS (
+    SELECT
+        n.n_nationkey,
+        n.n_name,
+        SUM(l.l_extendedprice * (",gemini-2.5-flash,false,neutral,retry_with_comment: Bitte mit vollständigem SQL erneut versuchen,fb_20260610_181251_7686,run_20260610_181042_dbe8,neutral,retry_with_comment: Bitte mit vollständigem SQL erneut versuchen,,,manual_review
+2026-06-10T18:14:25,Nenne mir die drei Kunden mit dem höchsten Umsatz jeweils aus den 3 Ländern mit dem höchsten Umsatz,"Ich konnte keine gültige ausführbare SQL-Abfrage erzeugen. Letzter Fehler: syntax error at end of input
+LINE 35: ...(l.l_extendedprice * (1 - l.l_discount)) AS customer_revenue
+                                                                        ^","WITH nation_revenue_cte AS (
+    SELECT
+        n.n_nationkey,
+        n.n_name,
+        SUM(l.l_extendedprice * (1 - l.l_discount)) AS nation_revenue
+    FROM
+        nation AS n
+    JOIN
+        customer AS c ON n.n_nationkey = c.c_nationkey
+    JOIN
+        orders AS o ON c.c_custkey = o.o_custkey
+    JOIN
+        lineitem AS l ON o.o_orderkey = l.l_orderkey
+    GROUP BY
+        n.n_nationkey,
+        n.n_name
+),
+top_3_nations_cte AS (
+    SELECT
+        n_nationkey,
+        n_name,
+        nation_revenue
+    FROM
+        nation_revenue_cte
+    ORDER BY
+        nation_revenue DESC
+    LIMIT 3
+),
+customer_revenue_in_top_nations_cte AS (
+    SELECT
+        n.n_nationkey,
+        n.n_name,
+        c.c_custkey,
+        c.c_name,
+        SUM(l.l_extendedprice * (1 - l.l_discount)) AS customer_revenue",gemini-2.5-flash,false,neutral,fallback_requested: Bitte mit vollständigem SQL erneut versuchen,fb_20260610_181425_124e,run_20260610_181251_54b0,neutral,fallback_requested: Bitte mit vollständigem SQL erneut versuchen,,,manual_review
+2026-06-10T18:15:02,Nenne mir die drei Kunden mit dem höchsten Umsatz jeweils aus den 3 Ländern mit dem höchsten Umsatz,Ich konnte keine gültige ausführbare SQL-Abfrage erzeugen. Letzter Fehler: Keine Tabellenreferenz im SQL gefunden.,"WITH nation_revenue AS (
+    SELECT
+        n.n_nationkey,
+        n.n_name,
+        SUM(l.l_extendedprice * (",gemini-2.5-flash,true,neutral,fallback_requested: Bitte mit vollständigem SQL erneut versuchen,fb_20260610_181502_b73c,run_20260610_181425_a117,neutral,fallback_requested: Bitte mit vollständigem SQL erneut versuchen,,,manual_review
