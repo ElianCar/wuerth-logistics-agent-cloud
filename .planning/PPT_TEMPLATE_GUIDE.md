@@ -2,17 +2,19 @@
 
 ## Purpose
 
-The generated deck should use a small, stable set of Wuerth-branded layouts. The current master contains 34 layouts and 3 sample slides. That is useful for humans, but too broad for reliable automation. The renderer should target a clean subset with predictable layout names and shape names.
+The generated deck should use a small, stable set of Wuerth-branded layouts. The original master contained 34 layouts and 3 sample slides. The current automation master has been simplified to agent-specific layouts. The renderer should target this subset by layout name plus placeholder indexes.
 
 ## Current Template Notes
 
 - Template path: `assets/templates/PPT_Vorlage_Wuerth.pptx`
 - Current size: 16:9
-- Current layout count: 34
-- Current sample slide count: 3
-- Current embedded OLE objects: 4
+- Current layout count: 9
+- Current sample slide count: 1
+- Current embedded OLE objects: 2
+- Macros: none detected
+- External relationships: none detected
 
-Embedded OLE objects should be removed from the automation master if possible. Keep Wuerth branding, masters, fonts, colors, logos, footers, and page numbering.
+The remaining embedded OLE objects are think-cell data objects. They should be ignored by automation targets and preserved only if deleting them from PowerPoint is not practical. Template validation should warn about them but should not block generation when there are no macros, no external relationships, and the target layouts can still render.
 
 ## Recommended Layouts To Keep
 
@@ -22,7 +24,7 @@ Use these as the automation subset. The names below should become stable layout 
 |-------------------|-----------------------|----------|----------------------|
 | Agent 01 Cover | `Titel` or `Titel, hell alternativ` | First slide with analysis title and question | `deck_title`, `analysis_question`, `scenario`, `run_date` |
 | Agent 02 Executive Summary | `Summary` or `Titel und Inhalt` | Main takeaway and short summary | `slide_title`, `takeaway`, `summary_bullets` |
-| Agent 03 KPI Overview | `4 x KPI-Diagramme` | Up to four key metrics | `kpi_1_label`, `kpi_1_value`, `kpi_1_note`, repeated through 4 |
+| Agent 03 KPI Overview | `3-spaltig Bild + Erlaeuterung` variant | Up to three key metrics or findings | `kpi_1_label`, `kpi_1_value`, `kpi_1_note`, repeated through 3 |
 | Agent 04 Chart Evidence | `Marginalspalte 70:30` or `Titel und Inhalt` | One main chart plus interpretation | `slide_title`, `chart_area`, `insight_text`, `source_note` |
 | Agent 05 Table Evidence | `Titel und Inhalt` | Result rows when chart is not the best evidence | `slide_title`, `table_area`, `truncation_note`, `source_note` |
 | Agent 06 Comparison | `Zwei Inhalte` or `Vergleich` | Side-by-side chart/table comparison | `slide_title`, `left_title`, `left_area`, `right_title`, `right_area` |
@@ -34,6 +36,38 @@ Optional:
 | Automation Layout | Suggested Base Layout | Used For |
 |-------------------|-----------------------|----------|
 | Agent 09 Closing | `Danke` or `Abschluss Logo` | Optional final slide |
+
+## Current Layout Names
+
+The current file exposes these layout names:
+
+1. `Agent 01 Cover`
+2. `Agent 02 Executive Summary`
+3. `Agent 03 KPI Overview`
+4. `Agent 04 Chart Evidence`
+5. `Agent 05 Table Evidence`
+6. `Agent 06 Comparison`
+7. `Agent 07 Caveats And Sources Agent`
+8. `1_Agent 08 Appendix Metadata`
+9. `Agent 09 Closing`
+
+Before implementation, prefer renaming layout 7 to `Agent 07 Caveats And Sources` and layout 8 to `Agent 08 Appendix Metadata`. If not renamed, the renderer must normalize these current names explicitly.
+
+## Dynamic Deck Rule
+
+The renderer must not always generate all 9 layouts. It should build a slide sequence from available content:
+
+- Always include `Agent 01 Cover`.
+- Include `Agent 02 Executive Summary` when a summary or takeaway exists.
+- Include `Agent 03 KPI Overview` only when there are useful KPIs or up to three key findings.
+- Repeat `Agent 04 Chart Evidence` for each supported chart evidence slide.
+- Repeat `Agent 05 Table Evidence` for each table evidence slide or fallback.
+- Use `Agent 06 Comparison` only for real side-by-side comparisons.
+- Include `Agent 07 Caveats And Sources` when limitations, assumptions, or source tables need display.
+- Include `Agent 08 Appendix Metadata` when run metadata, validation state, or memory template IDs are available.
+- Include `Agent 09 Closing` only if the deck contract enables a closing slide.
+
+Longer decks are preferable to overcrowded slides. Multiple `Agent 04` or `Agent 05` slides should be used instead of placing too much content on one slide.
 
 ## Layouts To Drop Or Defer
 
@@ -57,9 +91,9 @@ For automation, visible placeholder text is helpful, but shape names matter more
 Recommended approach:
 
 1. Rename each kept layout with the `Agent NN ...` naming scheme.
-2. Rename key objects in PowerPoint's Selection Pane using the required names above.
-3. Put visible placeholder text into each object, for example `{{deck_title}}`, `{{chart_area}}`, or `{{table_area}}`.
-4. Avoid embedded Excel charts or linked objects in the clean master.
+2. Key objects may stay with default PowerPoint names if the renderer targets layout name plus placeholder index.
+3. Put visible placeholder text into each object, for example `{{deck_title}}`, `{{chart_area}}`, or `{{table_area}}`, when practical.
+4. Avoid embedded Excel charts or linked objects in the clean master. Remaining think-cell data objects are an accepted warning only if they do not block rendering.
 5. Use normal placeholders or plain shapes for areas where the renderer will insert text, charts, or tables.
 6. Keep footer, date, and page number behavior consistent across all kept layouts.
 
