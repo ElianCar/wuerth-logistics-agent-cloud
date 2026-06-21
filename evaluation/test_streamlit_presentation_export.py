@@ -62,6 +62,20 @@ def _load_streamlit_app() -> types.ModuleType:
     fake_sql_agent = _module("src.agent.langgraph_sql_agent", SQLAgentConfig=_FakeSQLAgentConfig)
     fake_orchestrator = _module("src.agent.orchestrator", run_orchestrator=lambda *args, **kwargs: {})
     fake_logging = _module("src.agent.logging_utils", log_feedback=lambda **kwargs: "")
+    fake_presentation_export = _module(
+        "src.agent.presentation_export",
+        PPTX_MIME_TYPE="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        build_presentation_export=lambda **kwargs: types.SimpleNamespace(
+            available=True,
+            content=b"pptx",
+            filename="wuerth_logistics_run.pptx",
+            mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            slide_count=5,
+            warnings=[],
+            unavailable_reason="",
+        ),
+        can_export_presentation=lambda record: types.SimpleNamespace(can_export=True, reason=""),
+    )
     fake_memory_store = _module(
         "src.agent.memory_store",
         MemoryStoreError=RuntimeError,
@@ -113,6 +127,7 @@ def _load_streamlit_app() -> types.ModuleType:
         "src.agent.langgraph_sql_agent": fake_sql_agent,
         "src.agent.orchestrator": fake_orchestrator,
         "src.agent.logging_utils": fake_logging,
+        "src.agent.presentation_export": fake_presentation_export,
         "src.agent.memory_store": fake_memory_store,
         "src.agent.memory_validation": fake_memory_validation,
         "src.config.scenarios": fake_scenarios,
@@ -240,6 +255,103 @@ class StreamlitPresentationExportHelperTests(unittest.TestCase):
         }
 
         self.assertFalse(forbidden & imported, forbidden & imported)
+
+
+class StreamlitPresentationExportWiringTests(unittest.TestCase):
+    def test_streamlit_imports_only_allowed_backend_export_symbols(self) -> None:
+        source = STREAMLIT_APP_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        presentation_imports = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "src.agent.presentation_export"
+        ]
+
+        self.assertEqual(len(presentation_imports), 1, "expected one presentation_export import block")
+        imported = {alias.name for alias in presentation_imports[0].names}
+        self.assertEqual(
+            imported,
+            {"PPTX_MIME_TYPE", "build_presentation_export", "can_export_presentation"},
+        )
+
+    def test_result_export_row_uses_csv_excel_and_ppt_columns(self) -> None:
+        source = STREAMLIT_APP_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("col_csv, col_xlsx, col_ppt = st.columns(3)", source)
+        self.assertNotIn("col_csv, col_xlsx = st.columns(2)", source)
+
+    def test_create_download_and_status_copy_matches_ui_spec(self) -> None:
+        source = STREAMLIT_APP_PATH.read_text(encoding="utf-8")
+        approved_copy = [
+            "Create PPT",
+            "Download PPT",
+            "Creating PPT...",
+            "PPT ready.",
+            "PPT created with warnings.",
+            "PPT unavailable",
+            "Run a successful validated analysis with result rows, then create the deck.",
+            "PPT unavailable: {reason}",
+            "PPT export failed: {reason}. Fix the template or rerun a valid analysis, then create the deck again.",
+            "PPT warnings",
+        ]
+
+        for text in approved_copy:
+            with self.subTest(text=text):
+                self.assertIn(text, source)
+
+    def test_create_action_calls_backend_export_without_template_path(self) -> None:
+        source = STREAMLIT_APP_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "build_presentation_export"
+        ]
+
+        self.assertEqual(len(calls), 1, "expected one Streamlit backend export call")
+        keywords = {keyword.arg: keyword.value for keyword in calls[0].keywords}
+        self.assertIn("record", keywords)
+        self.assertIn("include_closing", keywords)
+        self.assertIsInstance(keywords["include_closing"], ast.Constant)
+        self.assertIs(keywords["include_closing"].value, False)
+        self.assertNotIn("template_path", keywords)
+        self.assertNotIn("template_path=", source)
+
+    def test_download_button_uses_backend_export_fields_and_mime_type(self) -> None:
+        source = STREAMLIT_APP_PATH.read_text(encoding="utf-8")
+        required_fragments = [
+            "data=export.content",
+            "file_name=export.filename",
+            "mime=export.mime_type or PPTX_MIME_TYPE",
+            'key=f"download_{export_key}"',
+        ]
+
+        for fragment in required_fragments:
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, source)
+        self.assertNotIn("wuerth_logistics_", source)
+
+    def test_streamlit_does_not_expose_slide_or_renderer_controls(self) -> None:
+        source = STREAMLIT_APP_PATH.read_text(encoding="utf-8")
+        forbidden_fragments = {
+            "from pptx import",
+            "Presentation(",
+            "SlideDeckSpec",
+            "SlideSpec",
+            "PresentationExport",
+            "validate_template",
+            "validate_slide_deck_spec",
+            "build_slide_deck_spec",
+            "_render_presentation",
+            "deck_spec",
+            "include_closing=True",
+            "slide_order",
+            "slide preview",
+            "chart type",
+        }
+
+        matches = {fragment for fragment in forbidden_fragments if fragment in source}
+        self.assertFalse(matches, matches)
 
 
 if __name__ == "__main__":
