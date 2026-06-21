@@ -19,6 +19,7 @@ PPTX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.p
 MAX_TABLE_ROWS_PER_SLIDE = 5
 MAX_TABLE_COLUMNS_PER_SLIDE = 6
 MAX_BODY_ITEMS_PER_SLIDE = 8
+MAX_BODY_TEXT_CHARS_PER_SLIDE = 700
 EXPECTED_TEMPLATE_SHA256 = "041DE8AC3214DC1892F127021F223D5B9C9D5571B10D6949D022B5A357190EA5"
 
 LAYOUT_COVER = "Agent 01 Cover"
@@ -30,6 +31,30 @@ LAYOUT_COMPARISON = "Agent 06 Comparison"
 LAYOUT_CAVEATS = "Agent 07 Caveats And Sources"
 LAYOUT_METADATA = "Agent 08 Appendix Metadata"
 LAYOUT_CLOSING = "Agent 09 Closing"
+
+SLIDE_TYPE_LAYOUTS = {
+    "cover": {LAYOUT_COVER},
+    "executive_summary": {LAYOUT_SUMMARY},
+    "kpi_overview": {LAYOUT_KPI},
+    "chart_evidence": {LAYOUT_CHART},
+    "table_evidence": {LAYOUT_TABLE},
+    "comparison": {LAYOUT_COMPARISON},
+    "caveats_sources": {LAYOUT_CAVEATS},
+    "appendix_metadata": {LAYOUT_METADATA},
+    "closing": {LAYOUT_CLOSING},
+}
+BODY_REQUIRED_SLIDE_TYPES = {
+    "cover",
+    "executive_summary",
+    "kpi_overview",
+    "chart_evidence",
+    "comparison",
+    "caveats_sources",
+    "appendix_metadata",
+    "closing",
+}
+TABLE_REQUIRED_SLIDE_TYPES = {"table_evidence"}
+SUPPORTED_CHART_TYPES = {"", "bar", "line", "none"}
 
 
 @dataclass(frozen=True)
@@ -89,6 +114,15 @@ class PresentationExport:
     deck_spec: SlideDeckSpec | None = None
 
 
+@dataclass(frozen=True)
+class PresentationEligibility:
+    can_export: bool
+    reason: str = ""
+
+    def __bool__(self) -> bool:
+        return self.can_export
+
+
 class PresentationExportError(ValueError):
     """Raised when deterministic PPTX rendering fails unexpectedly."""
 
@@ -138,9 +172,9 @@ def build_presentation_export(
     and renders a validated local slide spec through the Wuerth template.
     """
 
-    unavailable_reason = _record_unavailable_reason(record)
-    if unavailable_reason:
-        return _unavailable_export(unavailable_reason)
+    eligibility = can_export_presentation(record)
+    if not eligibility.can_export:
+        return _unavailable_export(eligibility.reason)
 
     try:
         deck_spec = build_slide_deck_spec(record=record, include_closing=include_closing)
@@ -183,6 +217,13 @@ def build_presentation_export(
     )
 
 
+def can_export_presentation(record: dict[str, Any]) -> PresentationEligibility:
+    """Return whether a record is eligible for deterministic PPTX export."""
+
+    reason = _record_unavailable_reason(record)
+    return PresentationEligibility(can_export=not reason, reason=reason)
+
+
 def build_slide_deck_spec(
     *,
     record: dict[str, Any],
@@ -190,9 +231,9 @@ def build_slide_deck_spec(
 ) -> SlideDeckSpec:
     """Build an ordered, dynamic slide spec from a successful record."""
 
-    unavailable_reason = _record_unavailable_reason(record)
-    if unavailable_reason:
-        raise PresentationExportError(unavailable_reason)
+    eligibility = can_export_presentation(record)
+    if not eligibility.can_export:
+        raise PresentationExportError(eligibility.reason)
 
     reporting = _dict_or_empty(record.get("reporting_result"))
     query = _dict_or_empty(record.get("query_result"))
@@ -246,6 +287,7 @@ def build_slide_deck_spec(
                 body=_chart_body(chart_plan, reporting),
                 table_columns=_chart_table_columns(chart_plan),
                 table_rows=_chart_table_rows(query, chart_plan),
+                metadata={"chart_type": str(chart_plan.get("chart_type") or "")},
             )
         )
 
@@ -342,6 +384,13 @@ def validate_slide_deck_spec(
         errors.append("Slide deck spec appears to be a fixed 9-slide deck.")
 
     for index, slide in enumerate(deck_spec.slides, start=1):
+        allowed_layouts_for_type = SLIDE_TYPE_LAYOUTS.get(slide.slide_type)
+        if allowed_layouts_for_type is None:
+            errors.append(f"Slide {index} has unsupported slide type: {slide.slide_type}.")
+        elif slide.layout_name not in allowed_layouts_for_type:
+            errors.append(
+                f"Slide {index} layout {slide.layout_name} is not valid for slide type {slide.slide_type}."
+            )
         if slide.layout_name not in allowed_layouts:
             errors.append(f"Slide {index} uses unsupported layout: {slide.layout_name}.")
         if not slide.slide_type:
@@ -350,14 +399,25 @@ def validate_slide_deck_spec(
             errors.append(f"Slide {index} has no title.")
         if len(slide.title) > 140:
             errors.append(f"Slide {index} title exceeds text budget.")
+        body_text_size = sum(len(item) for item in slide.body)
+        if body_text_size > MAX_BODY_TEXT_CHARS_PER_SLIDE:
+            errors.append(f"Slide {index} body exceeds text budget.")
         if len(slide.body) > MAX_BODY_ITEMS_PER_SLIDE:
             errors.append(f"Slide {index} body exceeds item budget.")
+        if slide.slide_type in BODY_REQUIRED_SLIDE_TYPES and not any(str(item).strip() for item in slide.body):
+            errors.append(f"Slide {index} is missing required content.")
+        if slide.slide_type in TABLE_REQUIRED_SLIDE_TYPES and (not slide.table_columns or not slide.table_rows):
+            errors.append(f"Slide {index} is missing required table content.")
         if len(slide.table_rows) > MAX_TABLE_ROWS_PER_SLIDE:
             errors.append(f"Slide {index} table exceeds row limit.")
         if len(slide.table_columns) > MAX_TABLE_COLUMNS_PER_SLIDE:
             errors.append(f"Slide {index} table exceeds column limit.")
         if slide.table_rows and not slide.table_columns:
             errors.append(f"Slide {index} has rows without table columns.")
+        if slide.slide_type == "chart_evidence":
+            chart_type = str(slide.metadata.get("chart_type") or "").lower()
+            if chart_type not in SUPPORTED_CHART_TYPES:
+                errors.append(f"Slide {index} has unsupported chart payload: {chart_type}.")
 
     repeated = {
         layout_name
@@ -571,8 +631,9 @@ def _record_unavailable_reason(record: dict[str, Any]) -> str:
         return "clarification_needed"
     if not record.get("execution_success"):
         return "sql_execution_failed"
-    validation_ok = bool(record.get("validation_success")) or bool(record.get("sql_valid"))
-    if not validation_ok:
+    if record.get("validation_success") is not True:
+        return "sql_validation_failed"
+    if record.get("sql_valid") is not True:
         return "sql_validation_failed"
 
     query = record.get("query_result")
@@ -584,6 +645,9 @@ def _record_unavailable_reason(record: dict[str, Any]) -> str:
         return "missing_query_columns"
     if not rows:
         return "missing_query_rows"
+    effective_row_count = _effective_row_count(record, query, rows)
+    if effective_row_count == 0:
+        return "zero_row_count"
     return ""
 
 
@@ -783,6 +847,17 @@ def _row_value(row: Any, column: str, index: int) -> Any:
     if isinstance(row, (list, tuple)) and index < len(row):
         return row[index]
     return None
+
+
+def _effective_row_count(record: dict[str, Any], query: dict[str, Any], rows: list[Any]) -> int:
+    for value in (record.get("row_count"), query.get("row_count")):
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+    return len(rows)
 
 
 def _stringify(value: Any) -> str:
