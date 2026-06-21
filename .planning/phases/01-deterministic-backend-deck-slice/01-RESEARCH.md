@@ -483,22 +483,25 @@ def add_table(slide, rows: list[tuple[object, ...]], columns: list[str], x, y, w
 | A3 | Phase 1 can represent chart evidence as table fallback or placeholder-safe text. [ASSUMED] | Common Pitfalls | If stakeholders require native chart output in Phase 1, planner must add chart rendering and tests earlier. |
 | A4 | Human/package verification can substitute for unavailable `slopcheck` during planning. [ASSUMED] | Package Legitimacy Audit | If no verification is possible, dependency installation should be blocked until a Python environment can run the package gate. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should raw SQL appear in the Phase 1 appendix spec?**
    - What we know: `final_sql` is present in orchestrator records and Streamlit already displays SQL. [VERIFIED: src/agent/orchestrator.py; VERIFIED: streamlit_app.py]
    - What's unclear: Phase 1 requirements do not require raw SQL in the generated deck. [VERIFIED: .planning/REQUIREMENTS.md]
    - Recommendation: Keep SQL out of visible Phase 1 slides by default, but include a structured metadata field so Phase 2 or Phase 5 can decide. [ASSUMED]
+   - RESOLVED: Keep raw SQL out of visible Phase 1 slides by default. Allow a structured metadata field for future documentation or appendix decisions.
 
 2. **Should template hash mismatch warn or block?**
    - What we know: The current hash is `041DE8AC3214DC1892F127021F223D5B9C9D5571B10D6949D022B5A357190EA5`. [VERIFIED: local file hash]
    - What's unclear: The project has no committed template manifest yet. [VERIFIED: rg --files; .planning/PPT_TEMPLATE_GUIDE.md]
    - Recommendation: In Phase 1, block if required layouts are missing, warn on hash mismatch unless macros or external relationships are found. [ASSUMED]
+   - RESOLVED: Warn on template hash mismatch when required layouts exist and no macros or external relationships are present. Block missing required layouts, macros, external relationships, unexpected active content, or an unreadable template.
 
 3. **How much table data should Phase 1 allow?**
    - What we know: Current chart display cap is 50 rows and reporting table plan preserves SQL order. [VERIFIED: src/agent/visualization_spec.py; VERIFIED: src/agent/reporting_agent.py]
    - What's unclear: Phase 3 owns readable evidence and table truncation behavior. [VERIFIED: .planning/ROADMAP.md]
    - Recommendation: Use a small Phase 1 table cap, record truncation warnings, and defer top-N readability tuning to Phase 3. [ASSUMED]
+   - RESOLVED: Use a small deterministic table cap suitable for tests and basic evidence, record truncation warnings, and defer richer top-N and readability tuning to Phase 3.
 
 ## Environment Availability
 
@@ -507,7 +510,7 @@ def add_table(slide, rows: list[tuple[object, ...]], columns: list[str], x, y, w
 | `python` | Running tests and package install | no | none on PATH [VERIFIED: local command] | Use a properly activated Python 3.11 environment or Docker workflow. [ASSUMED] |
 | `python3` | Running tests | no | none on PATH [VERIFIED: local command] | Use a properly activated Python 3.11 environment or Docker workflow. [ASSUMED] |
 | `py` | Windows Python launcher | no | none on PATH [VERIFIED: local command] | Use explicit Python path or install launcher. [ASSUMED] |
-| `pip` | Package install and slopcheck | no | none on PATH [VERIFIED: local command] | Use `python -m pip` after Python is available. [ASSUMED] |
+| `pip` | Package install and slopcheck | no | none on PATH [VERIFIED: local command] | Use the explicit bundled Python runtime with `-m pip` after Python is available. [ASSUMED] |
 | `ctx7` | Context7 documentation fallback | no | none on PATH [VERIFIED: local command] | Official docs were fetched via web. [CITED: https://python-pptx.readthedocs.io/en/latest/] |
 | `slopcheck` | Package legitimacy gate | no | install failed because `pip` is unavailable [VERIFIED: local command] | Planner must rerun in a Python environment or add human verification. [VERIFIED: package legitimacy protocol] |
 | `docker` | Possible project runtime fallback | yes | 29.4.3, with config access warning [VERIFIED: local command] | Use `docker-compose` if direct Python is absent. [ASSUMED] |
