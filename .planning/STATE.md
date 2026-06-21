@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-last_updated: "2026-06-21T18:26:55.073Z"
+status: verifying
+last_updated: "2026-06-21T18:51:00.251Z"
 last_activity: 2026-06-21
 progress:
   total_phases: 5
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 6
-  completed_plans: 5
-  percent: 20
+  completed_plans: 6
+  percent: 40
 ---
 
 # Project State
@@ -26,10 +26,10 @@ See: .planning/PROJECT.md (updated 2026-06-21)
 
 Phase: 02 (streamlit-downloadable-deck-slice) — EXECUTING
 Plan: 3 of 3
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-06-21
 
-Progress: [████████░░] 83%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -52,6 +52,7 @@ Progress: [████████░░] 83%
 
 | Phase 02 P01 | 7 min | 2 tasks | 2 files |
 | Phase 02 P02 | 3 min | 2 tasks | 2 files |
+| Phase 02 P03 | 19min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,9 @@ Recent decisions affecting current work:
 - [Phase 02]: Streamlit imports only PPTX_MIME_TYPE, build_presentation_export, and can_export_presentation from the backend exporter. Keeps PPTX rendering, template handling, filenames, warnings, and chart evidence backend-owned.
 - [Phase 02]: Create PPT calls build_presentation_export(record=record, include_closing=False) and never passes template_path.
 - [Phase 02]: Download PPT uses backend export.content, export.filename, and export.mime_type or PPTX_MIME_TYPE without a Streamlit filename scheme.
+- [Phase 02]: Use case-sensitive PowerShell source matching for the Streamlit boundary scan so lowercase can_export_presentation does not create a false positive.
+- [Phase 02]: Accept MIME verification at the app/backend boundary because the browser download API did not expose the PPTX MIME type.
+- [Phase 02]: Accept source verification for Creating PPT... because the live deck generation completed too quickly to capture the spinner visually.
 
 ### Pending Todos
 
@@ -86,7 +90,6 @@ None yet.
 
 ### Blockers/Concerns
 
-- Phase 2 still needs Streamlit create/download wiring around the backend exporter.
 - REQUIREMENTS.md traceability table is missing ADV, LLM, and GOV rows reported by `gsd-sdk query phase.complete 01`.
 
 ## Deferred Items
@@ -99,6 +102,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-21T18:26:55.041Z
-Stopped at: Completed 02-02-PLAN.md
+Last session: 2026-06-21T18:51:00.192Z
+Stopped at: Completed 02-03-PLAN.md
 Resume file: None

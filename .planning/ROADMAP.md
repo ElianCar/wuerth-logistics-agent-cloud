@@ -22,7 +22,7 @@ This roadmap turns successful Wuerth logistics analysis results into determinist
 - Decimal phases (2.1, 2.2): Urgent insertions marked with INSERTED
 
 - [x] **Phase 1: Deterministic Backend Deck Slice** - Backend code can validate export eligibility and render a deterministic Wuerth PPTX from a successful record. (completed 2026-06-21)
-- [ ] **Phase 2: Streamlit Downloadable Deck Slice** - Users can download a Wuerth deck from a successful Streamlit analysis run.
+- [x] **Phase 2: Streamlit Downloadable Deck Slice** - Users can download a Wuerth deck from a successful Streamlit analysis run. (completed 2026-06-21)
 - [ ] **Phase 3: Readable Evidence And Fallback Slice** - Evidence slides stay readable through truncation, top-N handling, and explicit fallbacks.
 - [ ] **Phase 4: Memory Governance And RBAC Slice** - Approved memory use becomes traceable and memory-template actions are role-controlled.
 - [ ] **Phase 5: Final Docs And Demo Slice** - Users can understand, run, demo, and explain the implemented Wuerth PPT export path.
@@ -73,7 +73,7 @@ Plans:
   4. PowerPoint chart eligibility uses the same deterministic rules as the Streamlit chart path.
 
 **Verification approach:** Run backend export tests plus a manual Streamlit success-run check that confirms the download button, filename, MIME type, deck content, and absence of PPTX rendering logic from Streamlit callbacks.
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 **UI hint:** yes
 Plans:
 
@@ -87,7 +87,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 02-03-PLAN.md - Verify Streamlit PPT export UX and backend boundary
+- [x] 02-03-PLAN.md - Verify Streamlit PPT export UX and backend boundary
 
 ### Phase 3: Readable Evidence And Fallback Slice
 
@@ -192,7 +192,7 @@ Phases execute in numeric order: 1, 2, 3, 4, 5.
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Deterministic Backend Deck Slice | 3/3 | Complete    | 2026-06-21 |
-| 2. Streamlit Downloadable Deck Slice | 2/3 | In Progress|  |
+| 2. Streamlit Downloadable Deck Slice | 3/3 | Complete   | 2026-06-21 |
 | 3. Readable Evidence And Fallback Slice | 0/TBD | Not started | - |
 | 4. Memory Governance And RBAC Slice | 0/TBD | Not started | - |
 | 5. Final Docs And Demo Slice | 0/TBD | Not started | - |
