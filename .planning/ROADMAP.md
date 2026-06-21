@@ -40,7 +40,11 @@ This roadmap turns successful Wuerth logistics analysis results into determinist
   4. Slide spec validation accepts only supported slide types, required fields, content budgets, table limits, chart limits, and deterministic renderer inputs.
   5. Direct LLM-generated PPTX files are impossible in the v1 production path.
 **Verification approach:** Add focused `unittest` coverage for export eligibility, template path resolution, missing-template behavior, deterministic spec validation, and PPTX creation that can be opened by the chosen Python library without Microsoft PowerPoint.
-**Plans:** TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 01-01-PLAN.md - Verify deterministic PPTX renderer dependency gate
+- [ ] 01-02-PLAN.md - Build successful-record backend PPTX export slice
+- [ ] 01-03-PLAN.md - Harden eligibility, missing-template, and template safety behavior
 
 ### Phase 2: Streamlit Downloadable Deck Slice
 **Goal:** Users can export a successful Streamlit analysis run as a Wuerth PowerPoint deck containing the core analysis narrative and evidence.
@@ -149,7 +153,7 @@ Phases execute in numeric order: 1, 2, 3, 4, 5.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Deterministic Backend Deck Slice | 0/TBD | Not started | - |
+| 1. Deterministic Backend Deck Slice | 0/3 | Not started | - |
 | 2. Streamlit Downloadable Deck Slice | 0/TBD | Not started | - |
 | 3. Readable Evidence And Fallback Slice | 0/TBD | Not started | - |
 | 4. Memory Governance And RBAC Slice | 0/TBD | Not started | - |
