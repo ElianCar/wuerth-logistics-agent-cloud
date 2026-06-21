@@ -200,6 +200,7 @@ def build_presentation_export(
             deck_spec=deck_spec,
             template_path=Path(template_path),
         )
+        reopened = Presentation(BytesIO(content))
     except Exception as error:
         return _unavailable_export(
             "render_failed",
@@ -208,7 +209,6 @@ def build_presentation_export(
             deck_spec=deck_spec,
         )
 
-    reopened = Presentation(BytesIO(content))
     warnings = [*deck_spec.warnings, *audit.warnings]
     return PresentationExport(
         available=True,

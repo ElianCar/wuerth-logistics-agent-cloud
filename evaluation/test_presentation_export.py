@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from io import BytesIO
 import shutil
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 import zipfile
 from pathlib import Path
@@ -166,13 +168,49 @@ class PresentationExportSuccessTests(unittest.TestCase):
         self.assertEqual(layout_names[-1], "Agent 09 Closing")
 
     def test_backend_contract_does_not_import_streamlit_surfaces(self) -> None:
-        before = set(sys.modules)
+        script = textwrap.dedent(
+            """
+            import sys
 
-        build_slide_deck_spec(record=valid_record())
+            from src.agent.presentation_export import build_slide_deck_spec
 
-        new_modules = set(sys.modules) - before
-        self.assertNotIn("streamlit", new_modules)
-        self.assertNotIn("streamlit_app", new_modules)
+            record = {
+                "run_id": "subprocess-boundary",
+                "user_question": "Boundary check",
+                "query_result": {
+                    "columns": ["region", "shipment_count"],
+                    "rows": [("Sued", 90)],
+                    "row_count": 1,
+                },
+                "row_count": 1,
+                "execution_success": True,
+                "validation_success": True,
+                "sql_valid": True,
+                "source_tables": ["wuerth.shipments"],
+                "reporting_result": {
+                    "summary": "Kurzantwort: Test.",
+                    "interpretation": "Test.",
+                    "chart_plan": {"render_allowed": False},
+                    "kpi_cards": [],
+                    "caveats": [],
+                    "display_notes": [],
+                },
+            }
+            build_slide_deck_spec(record=record)
+            unexpected = [name for name in ("streamlit", "streamlit_app") if name in sys.modules]
+            if unexpected:
+                raise SystemExit("unexpected imports: " + ", ".join(unexpected))
+            """
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
     def test_unbacked_chart_plan_is_skipped_with_warning(self) -> None:
         result = query_result(["region", "shipment_count"], [("Sued", 90)])
@@ -281,6 +319,14 @@ class PresentationExportEligibilityTests(unittest.TestCase):
 
     def test_render_failure_returns_structured_unavailable_export(self) -> None:
         with patch("src.agent.presentation_export._render_presentation", side_effect=RuntimeError("boom")):
+            export = build_presentation_export(record=valid_record())
+
+        self.assert_unavailable_export(export, "render")
+        self.assertIsNotNone(export.template_audit)
+        self.assertIsNotNone(export.deck_spec)
+
+    def test_corrupt_rendered_bytes_return_structured_unavailable_export(self) -> None:
+        with patch("src.agent.presentation_export._render_presentation", return_value=b"not a pptx"):
             export = build_presentation_export(record=valid_record())
 
         self.assert_unavailable_export(export, "render")
