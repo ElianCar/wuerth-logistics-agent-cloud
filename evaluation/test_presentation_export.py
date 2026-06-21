@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 from io import BytesIO
+import shutil
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from pptx import Presentation
 
 from src.agent.presentation_export import (
+    DEFAULT_TEMPLATE_PATH,
     PPTX_MIME_TYPE,
+    SlideDeckSpec,
+    SlideSpec,
     build_presentation_export,
     build_slide_deck_spec,
+    validate_slide_deck_spec,
+    validate_template,
 )
 
 
@@ -249,6 +256,153 @@ class PresentationExportEligibilityTests(unittest.TestCase):
 
         self.assert_unavailable_export(export, "execution")
         self.assertIsNone(export.template_audit)
+
+
+class PresentationExportTemplateSafetyTests(unittest.TestCase):
+    def test_real_template_validates_with_known_ole_warnings_only(self) -> None:
+        audit = validate_template(template_path=DEFAULT_TEMPLATE_PATH)
+
+        self.assertTrue(audit.available)
+        self.assertFalse(audit.errors)
+        self.assertGreaterEqual(len(audit.ole_entries), 1)
+        self.assertTrue(any("ole" in warning.lower() for warning in audit.warnings))
+
+    def test_macro_enabled_template_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            unsafe_template = Path(temp_dir) / "macro-template.pptx"
+            shutil.copyfile(DEFAULT_TEMPLATE_PATH, unsafe_template)
+            with zipfile.ZipFile(unsafe_template, "a") as package:
+                package.writestr("ppt/vbaProject.bin", b"macro payload")
+
+            audit = validate_template(template_path=unsafe_template)
+
+        self.assertFalse(audit.available)
+        self.assertTrue(audit.macro_entries)
+        self.assertTrue(any("macro" in error.lower() for error in audit.errors))
+
+    def test_external_relationship_template_is_blocked(self) -> None:
+        external_relationship = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdExternal" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/data.xlsx" TargetMode="External"/>
+</Relationships>
+"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            unsafe_template = Path(temp_dir) / "external-template.pptx"
+            shutil.copyfile(DEFAULT_TEMPLATE_PATH, unsafe_template)
+            with zipfile.ZipFile(unsafe_template, "a") as package:
+                package.writestr("ppt/slides/_rels/slide999.xml.rels", external_relationship)
+
+            audit = validate_template(template_path=unsafe_template)
+
+        self.assertFalse(audit.available)
+        self.assertTrue(audit.external_relationships)
+        self.assertTrue(any("external" in error.lower() for error in audit.errors))
+
+    def test_invalid_slide_specs_are_rejected_before_rendering(self) -> None:
+        cases = [
+            (
+                "unsupported_slide_type",
+                SlideDeckSpec(
+                    title="Deck",
+                    slides=[
+                        SlideSpec(
+                            slide_type="unsupported_type",
+                            layout_name="Agent 01 Cover",
+                            title="Cover",
+                            body=["Question"],
+                        )
+                    ],
+                ),
+                "unsupported slide type",
+            ),
+            (
+                "missing_required_content",
+                SlideDeckSpec(
+                    title="Deck",
+                    slides=[
+                        SlideSpec(
+                            slide_type="executive_summary",
+                            layout_name="Agent 01 Cover",
+                            title="Summary",
+                        )
+                    ],
+                ),
+                "required content",
+            ),
+            (
+                "text_budget_overflow",
+                SlideDeckSpec(
+                    title="Deck",
+                    slides=[
+                        SlideSpec(
+                            slide_type="cover",
+                            layout_name="Agent 01 Cover",
+                            title="Cover",
+                            body=["x" * 701],
+                        )
+                    ],
+                ),
+                "text budget",
+            ),
+            (
+                "table_row_limit",
+                SlideDeckSpec(
+                    title="Deck",
+                    slides=[
+                        SlideSpec(
+                            slide_type="table_evidence",
+                            layout_name="Agent 05 Table Evidence",
+                            title="Table",
+                            table_columns=["region"],
+                            table_rows=[["Sued"], ["Nord"], ["West"], ["Ost"], ["Mitte"], ["Export"]],
+                        )
+                    ],
+                ),
+                "row limit",
+            ),
+            (
+                "table_column_limit",
+                SlideDeckSpec(
+                    title="Deck",
+                    slides=[
+                        SlideSpec(
+                            slide_type="table_evidence",
+                            layout_name="Agent 05 Table Evidence",
+                            title="Table",
+                            table_columns=["c1", "c2", "c3", "c4", "c5", "c6", "c7"],
+                            table_rows=[["1", "2", "3", "4", "5", "6", "7"]],
+                        )
+                    ],
+                ),
+                "column limit",
+            ),
+            (
+                "unsupported_chart_payload",
+                SlideDeckSpec(
+                    title="Deck",
+                    slides=[
+                        SlideSpec(
+                            slide_type="chart_evidence",
+                            layout_name="Agent 04 Chart Evidence",
+                            title="Chart",
+                            body=["Unsupported chart"],
+                            metadata={"chart_type": "heatmap"},
+                        )
+                    ],
+                ),
+                "unsupported chart",
+            ),
+        ]
+
+        for name, deck_spec, expected_error_part in cases:
+            with self.subTest(name=name):
+                errors = validate_slide_deck_spec(deck_spec)
+
+                self.assertTrue(errors)
+                self.assertTrue(
+                    any(expected_error_part in error.lower() for error in errors),
+                    errors,
+                )
 
 
 if __name__ == "__main__":
