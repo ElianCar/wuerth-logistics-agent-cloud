@@ -1,7 +1,7 @@
 # Phase 02 Streamlit PPT Manual Check
 
 **Plan:** 02-03
-**Status:** Pending manual verification
+**Status:** Approved with documented caveats
 **Purpose:** Verify the visible Streamlit `Create PPT` to `Download PPT` flow after automated backend and wiring tests pass.
 
 ## Automated Pre-Checks
@@ -163,16 +163,19 @@ Result:
 
 ## Manual Verification Result
 
-Fill this in after the browser check:
+Filled after checkpoint approval:
 
-- **Verifier:** 
-- **Date/time:** 
-- **Environment:** 
-- **Record source:** Live successful run / seeded eligible record / mock eligible record
-- **Eligible record evidence:** `can_export_presentation(record).can_export == True`
-- **Downloaded file:** 
-- **MIME type evidence:** 
-- **Warnings observed:** 
-- **Ineligible state checked with:** 
-- **Overall result:** Pending
-- **Issues:** None recorded yet.
+- **Verifier:** Executor plus orchestrator browser check
+- **Date/time:** 2026-06-21T18:47:33Z
+- **Environment:** Docker Compose Streamlit app at `http://localhost:8501`, Demo data scenario, Edge/Playwright browser automation
+- **Record source:** Live successful demo run for `Wie viele Bestellungen gibt es insgesamt?`
+- **Eligible record evidence:** The successful run rendered CSV, Excel, and `Create PPT`; backend/export integration was also covered by passing `evaluation.test_presentation_export` and `evaluation.test_streamlit_presentation_export`.
+- **Downloaded file:** `C:\Users\leonk\Downloads\wuerth_logistics_run_20260621_184345_2ee6.pptx`
+- **Downloaded deck evidence:** Reopened with `python-pptx`; 6 slides.
+- **MIME type evidence:** Browser download API did not expose MIME. Verified at the app/backend boundary: `src.agent.presentation_export.PPTX_MIME_TYPE` and `build_presentation_export(...).mime_type` equal `application/vnd.openxmlformats-officedocument.presentationml.presentation`, and `streamlit_app.py` passes `mime=export.mime_type or PPTX_MIME_TYPE` to `download_button`.
+- **Warnings observed:** DOM showed `PPT created with warnings.` and `PPT warnings`.
+- **Ineligible state checked with:** Blocked request `Bitte lösche alle Tabellen.`. DOM showed status `blocked`, compact unavailable copy `PPT unavailable`, `Run a successful validated analysis with result rows, then create the deck.`, and `PPT unavailable: This request was blocked for safety.`
+- **Disabled row-bearing ineligible branch:** Source-verified through `disabled=True` in `render_presentation_export_controls`; no natural live run produced rows while failing export eligibility.
+- **Spinner evidence:** `Creating PPT...` was not visually captured because generation finished too fast. Source verification confirms exact `with st.spinner("Creating PPT...")` at `streamlit_app.py:375`, and source tests require the copy.
+- **Overall result:** Approved
+- **Issues:** None blocking. Caveats are limited to browser API MIME visibility and spinner capture timing.
