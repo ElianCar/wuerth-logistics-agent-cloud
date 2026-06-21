@@ -87,6 +87,7 @@ class OrchestratorTests(unittest.TestCase):
         self,
         router_output: dict[str, object],
         sql_output: dict[str, object] | None = None,
+        config: SQLAgentConfig | None = None,
         **kwargs: object,
     ) -> tuple[dict[str, object], Mock]:
         sql_mock = Mock(return_value=sql_output or sql_result())
@@ -96,7 +97,7 @@ class OrchestratorTests(unittest.TestCase):
         ):
             result = orchestrator.run_orchestrator(
                 "Wie viele Bestellungen gibt es?",
-                config=test_config(),
+                config=config or test_config(),
                 log_to_query_log=False,
                 **kwargs,
             )
@@ -233,6 +234,105 @@ class OrchestratorTests(unittest.TestCase):
 
         called_config = sql_mock.call_args.kwargs["config"]
         self.assertEqual(called_config.primary_model, "hard-primary")
+
+    def test_anthropic_easy_uses_haiku_sonnet_then_opus(self) -> None:
+        config = SQLAgentConfig(
+            primary_model="env-sonnet",
+            fallback_model="env-opus",
+            max_primary_attempts=2,
+            llm_provider="anthropic",
+            ollama_host="http://localhost:11434",
+            secondary_fallback_model="env-opus",
+        )
+        with patch.dict(
+            orchestrator.ANTHROPIC_TIER_MODELS,
+            {"easy": "haiku", "medium": "sonnet", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_FALLBACK_MODELS,
+            {"easy": "sonnet", "medium": "opus", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_SECONDARY_FALLBACK_MODELS,
+            {"easy": "opus", "medium": "opus", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_MAX_PRIMARY_ATTEMPTS,
+            {"easy": 1, "medium": 1, "hard": 2},
+        ):
+            _, sql_mock = self.run_with_fake_router(
+                router_state(complexity_tier="easy"),
+                config=config,
+            )
+
+        called_config = sql_mock.call_args.kwargs["config"]
+        self.assertEqual(called_config.primary_model, "haiku")
+        self.assertEqual(called_config.fallback_model, "sonnet")
+        self.assertEqual(called_config.secondary_fallback_model, "opus")
+        self.assertEqual(called_config.max_primary_attempts, 1)
+
+    def test_anthropic_medium_uses_sonnet_then_opus(self) -> None:
+        config = SQLAgentConfig(
+            primary_model="env-sonnet",
+            fallback_model="env-opus",
+            max_primary_attempts=2,
+            llm_provider="anthropic",
+            ollama_host="http://localhost:11434",
+            secondary_fallback_model="env-opus",
+        )
+        with patch.dict(
+            orchestrator.ANTHROPIC_TIER_MODELS,
+            {"easy": "haiku", "medium": "sonnet", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_FALLBACK_MODELS,
+            {"easy": "sonnet", "medium": "opus", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_SECONDARY_FALLBACK_MODELS,
+            {"easy": "opus", "medium": "opus", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_MAX_PRIMARY_ATTEMPTS,
+            {"easy": 1, "medium": 1, "hard": 2},
+        ):
+            _, sql_mock = self.run_with_fake_router(
+                router_state(complexity_tier="medium"),
+                config=config,
+            )
+
+        called_config = sql_mock.call_args.kwargs["config"]
+        self.assertEqual(called_config.primary_model, "sonnet")
+        self.assertEqual(called_config.fallback_model, "opus")
+        self.assertEqual(called_config.secondary_fallback_model, "opus")
+        self.assertEqual(called_config.max_primary_attempts, 1)
+
+    def test_anthropic_hard_uses_opus_with_opus_fallback(self) -> None:
+        config = SQLAgentConfig(
+            primary_model="env-sonnet",
+            fallback_model="env-opus",
+            max_primary_attempts=2,
+            llm_provider="anthropic",
+            ollama_host="http://localhost:11434",
+            secondary_fallback_model="env-opus",
+        )
+        with patch.dict(
+            orchestrator.ANTHROPIC_TIER_MODELS,
+            {"easy": "haiku", "medium": "sonnet", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_FALLBACK_MODELS,
+            {"easy": "sonnet", "medium": "opus", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_SECONDARY_FALLBACK_MODELS,
+            {"easy": "opus", "medium": "opus", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_MAX_PRIMARY_ATTEMPTS,
+            {"easy": 1, "medium": 1, "hard": 2},
+        ):
+            _, sql_mock = self.run_with_fake_router(
+                router_state(complexity_tier="hard"),
+                config=config,
+            )
+
+        called_config = sql_mock.call_args.kwargs["config"]
+        self.assertEqual(called_config.primary_model, "opus")
+        self.assertEqual(called_config.fallback_model, "opus")
+        self.assertEqual(called_config.secondary_fallback_model, "opus")
+        self.assertEqual(called_config.max_primary_attempts, 2)
 
     def test_memory_intent_key_is_preserved_as_router_context_metadata(self) -> None:
         result, sql_mock = self.run_with_fake_router(

@@ -27,7 +27,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--use-orchestrator",
         action="store_true",
-        help="Run golden questions through the router orchestrator instead of the direct SQL-agent path.",
+        help="Deprecated compatibility flag. Orchestrator is now the default Golden runtime.",
+    )
+    parser.add_argument(
+        "--runtime-mode",
+        choices=["orchestrator", "direct_sql_agent"],
+        default="orchestrator",
+        help="Golden runtime path. Defaults to the real chat Orchestrator path.",
+    )
+    parser.add_argument(
+        "--direct-sql-agent",
+        action="store_true",
+        help="Debug only: bypass router/orchestrator and run the SQL agent directly.",
     )
     return parser.parse_args()
 
@@ -36,10 +47,13 @@ def main() -> None:
     args = parse_args()
     questions = load_golden_questions()
     question_ids = args.question_ids or [question["question_id"] for question in questions]
+    runtime_mode = "direct_sql_agent" if args.direct_sql_agent else args.runtime_mode
+    if args.use_orchestrator:
+        runtime_mode = "orchestrator"
     batch_run_id, results, summary = run_golden_tests(
         question_ids,
         use_approved_memory=not args.no_approved_memory,
-        use_orchestrator=args.use_orchestrator,
+        runtime_mode=runtime_mode,
     )
 
     print(f"Golden run: {batch_run_id}")

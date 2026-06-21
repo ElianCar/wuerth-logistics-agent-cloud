@@ -433,6 +433,46 @@ class SQLAgentMemoryGuidanceTests(unittest.TestCase):
         self.assertTrue(result["validation_success"], result.get("sql_error", ""))
         self.assertNotIn("Approved reusable solution templates", captured_prompt["prompt"])
 
+    def test_sql_agent_escalates_from_primary_to_fallback_to_secondary_fallback(self) -> None:
+        models_seen: list[str] = []
+
+        def fake_sql_generator(_prompt: str, model: str, _ollama_host: str, _node_name: str) -> str:
+            models_seen.append(model)
+            if model == "opus":
+                return "SELECT COUNT(*) FROM customer"
+            return "SELECT COUNT(*) FROM not_allowed"
+
+        def fake_sql_executor(sql: str, _question: str) -> dict[str, object]:
+            return {
+                "columns": ["count"],
+                "rows": [(1,)],
+                "row_count": 1,
+                "executed_sql": sql,
+            }
+
+        config = SQLAgentConfig(
+            primary_model="haiku",
+            fallback_model="sonnet",
+            max_primary_attempts=1,
+            llm_provider="anthropic",
+            ollama_host="http://localhost:11434",
+            secondary_fallback_model="opus",
+        )
+
+        result = run_sql_agent(
+            "How many customers are there?",
+            config=config,
+            schema_loader=demo_schema_context,
+            sql_generator=fake_sql_generator,
+            sql_executor=fake_sql_executor,
+            log_to_query_log=False,
+        )
+
+        self.assertEqual(models_seen, ["haiku", "sonnet", "opus"])
+        self.assertTrue(result["validation_success"], result.get("sql_error", ""))
+        self.assertTrue(result["fallback_used"])
+        self.assertEqual(result["model_used"], "opus")
+
     def test_sql_validation_still_blocks_destructive_sql_and_disallowed_tables(self) -> None:
         schema_context = demo_schema_context()
 

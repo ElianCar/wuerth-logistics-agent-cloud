@@ -21,6 +21,7 @@ from src.agent.sql_validator import validate_generated_sql
 from src.config.scenarios import PROJECT_ROOT, SCENARIOS, get_active_scenario, normalize_scenario_id
 from src.llm.model_adapter import (
     DEFAULT_ANTHROPIC_FALLBACK_MODEL,
+    DEFAULT_ANTHROPIC_HARD_MODEL,
     DEFAULT_ANTHROPIC_MEDIUM_MODEL,
     DEFAULT_GEMINI_BACKUP_MODEL,
     DEFAULT_GEMINI_PRIMARY_MODEL,
@@ -43,6 +44,8 @@ class SQLAgentState(TypedDict, total=False):
     attempt_number: int
     max_primary_attempts: int
     fallback_used: bool
+    fallback_model: str
+    secondary_fallback_model: str
     schema_context: str
     generated_sql: str
     sql_valid: bool
@@ -59,7 +62,6 @@ class SQLAgentState(TypedDict, total=False):
     latency_seconds: float
     trace_steps: list[str]
     primary_model: str
-    fallback_model: str
     llm_provider: str
     ollama_host: str
     previous_failed_sql: str
@@ -88,6 +90,7 @@ class SQLAgentConfig:
     max_primary_attempts: int
     llm_provider: str
     ollama_host: str
+    secondary_fallback_model: str = ""
 
     @classmethod
     def from_env(cls) -> "SQLAgentConfig":
@@ -99,14 +102,20 @@ class SQLAgentConfig:
         if llm_provider == "anthropic":
             primary_model = os.getenv("ANTHROPIC_PRIMARY_MODEL", DEFAULT_ANTHROPIC_MEDIUM_MODEL)
             fallback_model = os.getenv("ANTHROPIC_FALLBACK_MODEL", DEFAULT_ANTHROPIC_FALLBACK_MODEL)
-            max_primary_attempts = int(os.getenv("MAX_PRIMARY_ATTEMPTS", "2"))
+            secondary_fallback_model = os.getenv(
+                "ANTHROPIC_SECONDARY_FALLBACK_MODEL",
+                os.getenv("ANTHROPIC_HARD_MODEL", DEFAULT_ANTHROPIC_HARD_MODEL),
+            )
+            max_primary_attempts = int(os.getenv("MAX_PRIMARY_ATTEMPTS", "1"))
         elif llm_provider == "gemini":
             primary_model = os.getenv("GEMINI_PRIMARY_MODEL", DEFAULT_GEMINI_PRIMARY_MODEL)
             fallback_model = os.getenv("GEMINI_BACKUP_MODEL", DEFAULT_GEMINI_BACKUP_MODEL)
+            secondary_fallback_model = ""
             max_primary_attempts = int(os.getenv("MAX_PRIMARY_ATTEMPTS", "2"))
         elif llm_provider == "ollama":
             primary_model = os.getenv("PRIMARY_MODEL") or os.getenv("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL
             fallback_model = os.getenv("FALLBACK_MODEL", DEFAULT_OLLAMA_BACKUP_MODEL)
+            secondary_fallback_model = ""
             max_primary_attempts = int(os.getenv("MAX_PRIMARY_ATTEMPTS", "2"))
         else:
             raise ValueError(f"Unsupported LLM provider '{llm_provider}'. Use 'anthropic', 'gemini', or 'ollama'.")
@@ -117,6 +126,7 @@ class SQLAgentConfig:
             max_primary_attempts=max_primary_attempts,
             llm_provider=llm_provider,
             ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
+            secondary_fallback_model=secondary_fallback_model,
         )
 
 
@@ -723,7 +733,7 @@ def build_sql_agent_graph(
 
     def switch_model(state: SQLAgentState) -> dict[str, Any]:
         _start = perf_counter()
-        fallback_model = state.get("fallback_model", "qwen2.5-coder:7b")
+        fallback_model = next_fallback_model(state)
         result = {
             "selected_model": fallback_model,
             "attempt_number": 0,
@@ -815,12 +825,30 @@ def build_sql_agent_graph(
             and int(state.get("attempt_number", 0)) < int(state.get("max_primary_attempts", 2))
         )
 
+    def next_fallback_model(state: SQLAgentState) -> str:
+        selected_model = str(state.get("selected_model", ""))
+        primary_model = str(state.get("primary_model", ""))
+        fallback_chain = [
+            str(state.get("fallback_model", "") or ""),
+            str(state.get("secondary_fallback_model", "") or ""),
+        ]
+        if selected_model == primary_model:
+            for fallback_model in fallback_chain:
+                if fallback_model and fallback_model != selected_model:
+                    return fallback_model
+            return ""
+
+        for index, fallback_model in enumerate(fallback_chain):
+            if selected_model != fallback_model:
+                continue
+            for next_model in fallback_chain[index + 1 :]:
+                if next_model and next_model != selected_model:
+                    return next_model
+            return ""
+        return ""
+
     def can_switch_to_fallback(state: SQLAgentState) -> bool:
-        return (
-            state.get("selected_model") == state.get("primary_model")
-            and bool(state.get("fallback_model"))
-            and state.get("fallback_model") != state.get("primary_model")
-        )
+        return bool(next_fallback_model(state))
 
     def route_after_validate_sql(
         state: SQLAgentState,
@@ -928,6 +956,7 @@ def run_sql_agent(
         "trace_steps": [],
         "primary_model": agent_config.primary_model,
         "fallback_model": agent_config.fallback_model,
+        "secondary_fallback_model": agent_config.secondary_fallback_model,
         "llm_provider": agent_config.llm_provider,
         "ollama_host": agent_config.ollama_host,
         "previous_failed_sql": previous_failed_sql,
@@ -982,6 +1011,7 @@ def run_sql_agent(
             "log_to_query_log": log_to_query_log,
             "language": language,
             "router_context": router_context or final_state.get("router_context", {}),
+            "secondary_fallback_model": agent_config.secondary_fallback_model,
         }
     )
     if memory_retrieval is not None:

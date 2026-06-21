@@ -24,7 +24,21 @@ ANTHROPIC_TIER_MODELS = {
     "medium": os.getenv("ANTHROPIC_MEDIUM_MODEL", "claude-sonnet-4-6"),
     "hard": os.getenv("ANTHROPIC_HARD_MODEL", "claude-opus-4-8"),
 }
-ANTHROPIC_FALLBACK_MODEL = os.getenv("ANTHROPIC_FALLBACK_MODEL", "claude-sonnet-4-6")
+ANTHROPIC_FALLBACK_MODELS = {
+    "easy": os.getenv("ANTHROPIC_MEDIUM_MODEL", "claude-sonnet-4-6"),
+    "medium": os.getenv("ANTHROPIC_HARD_MODEL", "claude-opus-4-8"),
+    "hard": os.getenv("ANTHROPIC_HARD_MODEL", "claude-opus-4-8"),
+}
+ANTHROPIC_SECONDARY_FALLBACK_MODELS = {
+    "easy": os.getenv("ANTHROPIC_HARD_MODEL", "claude-opus-4-8"),
+    "medium": os.getenv("ANTHROPIC_HARD_MODEL", "claude-opus-4-8"),
+    "hard": os.getenv("ANTHROPIC_HARD_MODEL", "claude-opus-4-8"),
+}
+ANTHROPIC_MAX_PRIMARY_ATTEMPTS = {
+    "easy": int(os.getenv("ANTHROPIC_EASY_MAX_PRIMARY_ATTEMPTS", "1")),
+    "medium": int(os.getenv("ANTHROPIC_MEDIUM_MAX_PRIMARY_ATTEMPTS", "1")),
+    "hard": int(os.getenv("ANTHROPIC_HARD_MAX_PRIMARY_ATTEMPTS", "2")),
+}
 
 GEMINI_TIER_MODELS = {
     "easy": os.getenv("GEMINI_EASY_MODEL", "gemini-3.1-flash-lite"),
@@ -73,6 +87,7 @@ class OrchestratorState(TypedDict, total=False):
     model_used: str
     primary_model: str
     fallback_model: str
+    secondary_fallback_model: str
     max_primary_attempts: int
 
     schema_context: str
@@ -110,6 +125,7 @@ class OrchestratorState(TypedDict, total=False):
 
     config_primary_model: str
     config_fallback_model: str
+    config_secondary_fallback_model: str
     config_max_primary_attempts: int
 
 
@@ -135,6 +151,7 @@ def _coerce_sql_config(config: Any | None) -> SQLAgentConfig:
         max_primary_attempts=int(getattr(config, "max_primary_attempts")),
         llm_provider=str(getattr(config, "llm_provider")),
         ollama_host=str(getattr(config, "ollama_host")),
+        secondary_fallback_model=str(getattr(config, "secondary_fallback_model", "")),
     )
 
 
@@ -146,6 +163,30 @@ def _tier_primary_model(config: SQLAgentConfig, tier: str) -> str:
     if provider == "gemini":
         return GEMINI_TIER_MODELS.get(tier) or config.primary_model
     return OLLAMA_TIER_MODELS.get(tier) or config.primary_model
+
+
+def _tier_fallback_model(config: SQLAgentConfig, tier: str) -> str:
+    provider = get_provider(config.llm_provider)
+    tier = tier if tier in {"easy", "medium", "hard"} else "hard"
+    if provider == "anthropic":
+        return ANTHROPIC_FALLBACK_MODELS.get(tier) or config.fallback_model
+    return config.fallback_model
+
+
+def _tier_secondary_fallback_model(config: SQLAgentConfig, tier: str) -> str:
+    provider = get_provider(config.llm_provider)
+    tier = tier if tier in {"easy", "medium", "hard"} else "hard"
+    if provider == "anthropic":
+        return ANTHROPIC_SECONDARY_FALLBACK_MODELS.get(tier) or config.secondary_fallback_model
+    return config.secondary_fallback_model
+
+
+def _tier_max_primary_attempts(config: SQLAgentConfig, tier: str) -> int:
+    provider = get_provider(config.llm_provider)
+    tier = tier if tier in {"easy", "medium", "hard"} else "hard"
+    if provider == "anthropic":
+        return ANTHROPIC_MAX_PRIMARY_ATTEMPTS.get(tier, config.max_primary_attempts)
+    return config.max_primary_attempts
 
 
 def _router_template_candidate_ids(candidates: list[dict[str, Any]]) -> str:
@@ -383,20 +424,26 @@ def select_model(state: OrchestratorState) -> dict[str, Any]:
         max_primary_attempts=int(state.get("config_max_primary_attempts", 2)),
         llm_provider=state.get("llm_provider", get_provider()),
         ollama_host=state.get("ollama_host", os.getenv("OLLAMA_HOST", "http://localhost:11434")),
+        secondary_fallback_model=state.get("config_secondary_fallback_model", ""),
     )
     primary = _tier_primary_model(config, tier)
-    fallback = config.fallback_model
-    max_attempts = config.max_primary_attempts
+    fallback = _tier_fallback_model(config, tier)
+    secondary_fallback = _tier_secondary_fallback_model(config, tier)
+    max_attempts = _tier_max_primary_attempts(config, tier)
     trace = state.get("trace_steps", [])
 
     return {
         "selected_model": primary,
         "primary_model": primary,
         "fallback_model": fallback,
+        "secondary_fallback_model": secondary_fallback,
         "max_primary_attempts": max_attempts,
         "trace_steps": [
             *trace,
-            f"Model selection: primary={primary} tier={tier} fallback={fallback} max_attempts={max_attempts}",
+            (
+                f"Model selection: primary={primary} tier={tier} fallback={fallback} "
+                f"secondary_fallback={secondary_fallback or '-'} max_attempts={max_attempts}"
+            ),
         ],
     }
 
@@ -420,6 +467,10 @@ def _run_sql_agent_node_impl(state: OrchestratorState, step_callback: StepCallba
         ),
         llm_provider=state.get("llm_provider", get_provider()),
         ollama_host=state.get("ollama_host", os.getenv("OLLAMA_HOST", "http://localhost:11434")),
+        secondary_fallback_model=state.get(
+            "secondary_fallback_model",
+            state.get("config_secondary_fallback_model", ""),
+        ),
     )
     trace = state.get("trace_steps", [])
     trace_extension = []
@@ -701,6 +752,7 @@ def _initial_state(
         "force_fallback": force_fallback,
         "config_primary_model": config.primary_model,
         "config_fallback_model": config.fallback_model,
+        "config_secondary_fallback_model": config.secondary_fallback_model,
         "config_max_primary_attempts": config.max_primary_attempts,
     }
 
@@ -719,6 +771,7 @@ def _run_forced_fallback(
         max_primary_attempts=config.max_primary_attempts,
         llm_provider=config.llm_provider,
         ollama_host=config.ollama_host,
+        secondary_fallback_model=config.fallback_model,
     )
     forced_router_context = {
         "intent": "forced_fallback",

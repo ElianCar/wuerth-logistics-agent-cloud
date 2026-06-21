@@ -6,7 +6,7 @@ import json
 import math
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -26,6 +26,27 @@ DEFAULT_COMPARE_CONFIG: dict[str, Any] = {
     "require_same_row_count": True,
     "require_same_column_count": True,
 }
+
+GoldenRuntimeMode = Literal["orchestrator", "direct_sql_agent"]
+DEFAULT_GOLDEN_RUNTIME_MODE: GoldenRuntimeMode = "orchestrator"
+GOLDEN_RUNTIME_MODES: tuple[GoldenRuntimeMode, ...] = ("orchestrator", "direct_sql_agent")
+
+
+def resolve_golden_runtime_mode(
+    runtime_mode: GoldenRuntimeMode | str | None = None,
+    use_orchestrator: bool | None = None,
+) -> GoldenRuntimeMode:
+    if runtime_mode is not None:
+        normalized = str(runtime_mode).strip().lower()
+        if normalized not in GOLDEN_RUNTIME_MODES:
+            supported = ", ".join(GOLDEN_RUNTIME_MODES)
+            raise ValueError(f"Unsupported Golden runtime_mode '{runtime_mode}'. Use one of: {supported}.")
+        return normalized  # type: ignore[return-value]
+
+    if use_orchestrator is not None:
+        return "orchestrator" if use_orchestrator else "direct_sql_agent"
+
+    return DEFAULT_GOLDEN_RUNTIME_MODE
 
 
 def evaluation_dir() -> Path:
@@ -442,6 +463,133 @@ def compare_query_results(
     return summary
 
 
+def _memory_candidate_ids(memory_retrieval: dict[str, Any]) -> str:
+    candidates = memory_retrieval.get("candidates", [])
+    if not isinstance(candidates, list):
+        return ""
+    return "|".join(
+        str(candidate.get("template_id", ""))
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("template_id")
+    )
+
+
+def _memory_candidate_scores(memory_retrieval: dict[str, Any]) -> str:
+    candidates = memory_retrieval.get("candidates", [])
+    if not isinstance(candidates, list):
+        return ""
+    return "|".join(
+        str(candidate.get("score", ""))
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("score") is not None
+    )
+
+
+def _runtime_route_status(raw_result: dict[str, Any]) -> str:
+    if bool(raw_result.get("blocked_or_unsafe", False)):
+        return "blocked"
+    if bool(raw_result.get("needs_clarification", False)):
+        return "needs_clarification"
+    if raw_result.get("needs_sql") is False:
+        return "no_sql_required"
+    if raw_result.get("generated_sql") or raw_result.get("final_sql"):
+        return "routed_to_sql"
+    return "failed"
+
+
+def _normalize_golden_runtime_result(
+    raw_result: dict[str, Any] | None,
+    runtime_mode: GoldenRuntimeMode,
+    active_scenario: str | None = None,
+) -> dict[str, Any]:
+    raw_result = raw_result or {}
+    scenario_id = active_scenario or get_active_scenario().scenario_id
+    query_result = raw_result.get("query_result", {})
+    if not isinstance(query_result, dict):
+        query_result = {}
+    memory_retrieval = raw_result.get("memory_retrieval", {})
+    if not isinstance(memory_retrieval, dict):
+        memory_retrieval = {}
+
+    generated_sql = str(raw_result.get("generated_sql") or raw_result.get("final_sql") or "")
+    trace_steps = raw_result.get("trace_steps", [])
+    if not isinstance(trace_steps, list):
+        trace_steps = []
+
+    return {
+        "raw_result": raw_result,
+        "runtime_mode": runtime_mode,
+        "active_scenario": scenario_id,
+        "status": _runtime_route_status(raw_result),
+        "route_status": _runtime_route_status(raw_result),
+        "intent": raw_result.get("intent", ""),
+        "route": raw_result.get("intent", ""),
+        "needs_sql": raw_result.get("needs_sql", ""),
+        "needs_clarification": raw_result.get("needs_clarification", ""),
+        "blocked_or_unsafe": raw_result.get("blocked_or_unsafe", ""),
+        "complexity": raw_result.get("complexity_tier", ""),
+        "complexity_tier": raw_result.get("complexity_tier", ""),
+        "complexity_reason": raw_result.get("complexity_reason", ""),
+        "selected_model": raw_result.get("selected_model", ""),
+        "primary_model": raw_result.get("primary_model") or raw_result.get("model_primary", ""),
+        "fallback_model": raw_result.get("fallback_model", ""),
+        "secondary_fallback_model": raw_result.get("secondary_fallback_model", ""),
+        "model_used": raw_result.get("model_used") or raw_result.get("selected_model", ""),
+        "fallback_used": raw_result.get("fallback_used", False),
+        "final_answer": raw_result.get("final_answer") or raw_result.get("answer", ""),
+        "generated_sql": generated_sql,
+        "source_tables": raw_result.get("source_tables", []),
+        "query_result": query_result,
+        "result_rows": query_result.get("rows", []),
+        "row_count": int(raw_result.get("row_count") or query_result.get("row_count") or 0),
+        "validation_success": raw_result.get("validation_success", raw_result.get("sql_valid", False)),
+        "execution_success": raw_result.get("execution_success", False),
+        "validation_error": raw_result.get("sql_error", ""),
+        "execution_error": raw_result.get("error_message", ""),
+        "result_status": raw_result.get("result_status", ""),
+        "memory_retrieval": memory_retrieval,
+        "memory_enabled": memory_retrieval.get("enabled", ""),
+        "memory_method": memory_retrieval.get("method", ""),
+        "memory_scenario": memory_retrieval.get("scenario", ""),
+        "memory_no_match_reason": memory_retrieval.get("no_match_reason", ""),
+        "memory_ambiguous": memory_retrieval.get("ambiguous", ""),
+        "memory_candidate_ids": _memory_candidate_ids(memory_retrieval),
+        "memory_candidate_scores": _memory_candidate_scores(memory_retrieval),
+        "trace": trace_steps,
+        "trace_steps": trace_steps,
+    }
+
+
+def _golden_runtime_metadata(normalized_result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "runtime_mode": normalized_result.get("runtime_mode", DEFAULT_GOLDEN_RUNTIME_MODE),
+        "active_scenario": normalized_result.get("active_scenario", get_active_scenario().scenario_id),
+        "route_status": normalized_result.get("route_status", ""),
+        "intent": normalized_result.get("intent", ""),
+        "needs_sql": normalized_result.get("needs_sql", ""),
+        "needs_clarification": normalized_result.get("needs_clarification", ""),
+        "blocked_or_unsafe": normalized_result.get("blocked_or_unsafe", ""),
+        "complexity_tier": normalized_result.get("complexity_tier", ""),
+        "complexity_reason": normalized_result.get("complexity_reason", ""),
+        "selected_model": normalized_result.get("selected_model", ""),
+        "primary_model": normalized_result.get("primary_model", ""),
+        "fallback_model": normalized_result.get("fallback_model", ""),
+        "secondary_fallback_model": normalized_result.get("secondary_fallback_model", ""),
+        "fallback_used": normalized_result.get("fallback_used", False),
+        "source_tables": normalized_result.get("source_tables", []),
+        "validation_success": normalized_result.get("validation_success", False),
+        "execution_success": normalized_result.get("execution_success", False),
+        "final_answer": normalized_result.get("final_answer", ""),
+        "memory_retrieval_enabled": normalized_result.get("memory_enabled", ""),
+        "memory_retrieval_method": normalized_result.get("memory_method", ""),
+        "memory_retrieval_scenario": normalized_result.get("memory_scenario", ""),
+        "memory_retrieval_no_match_reason": normalized_result.get("memory_no_match_reason", ""),
+        "memory_retrieval_ambiguous": normalized_result.get("memory_ambiguous", ""),
+        "memory_candidate_ids": normalized_result.get("memory_candidate_ids", ""),
+        "memory_candidate_scores": normalized_result.get("memory_candidate_scores", ""),
+    }
+
+
 def build_error_result(
     *,
     batch_run_id: str,
@@ -456,13 +604,19 @@ def build_error_result(
     expected_result: dict[str, Any] | None = None,
     actual_result: dict[str, Any] | None = None,
     use_approved_memory: bool,
+    runtime_mode: GoldenRuntimeMode = DEFAULT_GOLDEN_RUNTIME_MODE,
+    active_scenario: str | None = None,
 ) -> dict[str, Any]:
     max_preview_rows = int(question.get("max_preview_rows", 20) or 20)
-    agent_state = agent_state or {}
+    normalized_result = _normalize_golden_runtime_result(
+        agent_state,
+        runtime_mode,
+        active_scenario=active_scenario,
+    )
     status = "error" if failure_type.startswith("reference_") or failure_type in {"agent_error", "unexpected_error"} else "failed"
     return {
         "golden_run_id": batch_run_id,
-        "agent_run_id": agent_state.get("run_id", ""),
+        "agent_run_id": normalized_result.get("raw_result", {}).get("run_id", ""),
         "question_id": question.get("question_id", ""),
         "title": question.get("title", ""),
         "question": question.get("question", ""),
@@ -480,12 +634,13 @@ def build_error_result(
         "diff_summary": {"passed": False, "issues": [failure_type]},
         "validation_errors": [failure_reason] if "validation" in failure_type else [],
         "execution_errors": {failure_type: failure_reason} if "execution" in failure_type else {},
-        "model_used": agent_state.get("model_used") or agent_state.get("selected_model", ""),
+        "model_used": normalized_result.get("model_used", ""),
         "memory_templates_enabled": use_approved_memory,
         "backend": active_backend_name(),
         "timestamp": started_at_iso,
-        "agent_result_status": agent_state.get("result_status", ""),
-        "agent_trace_steps": agent_state.get("trace_steps", []),
+        "agent_result_status": normalized_result.get("result_status", ""),
+        "agent_trace_steps": normalized_result.get("trace_steps", []),
+        **_golden_runtime_metadata(normalized_result),
     }
 
 
@@ -495,9 +650,11 @@ def run_golden_agent(
     schema_context: str,
     use_approved_memory: bool,
     config: SQLAgentConfig | None,
-    use_orchestrator: bool = False,
+    runtime_mode: GoldenRuntimeMode | str | None = None,
+    use_orchestrator: bool | None = None,
 ) -> dict[str, Any]:
-    if use_orchestrator:
+    resolved_runtime_mode = resolve_golden_runtime_mode(runtime_mode, use_orchestrator)
+    if resolved_runtime_mode == "orchestrator":
         return run_orchestrator_for_golden(
             question,
             schema_context=schema_context,
@@ -511,6 +668,7 @@ def run_golden_agent(
             config=config,
             run_context="golden_test",
             use_approved_memory=use_approved_memory,
+            use_legacy_memory=False,
             enable_memory_candidate_generation=False,
             log_to_query_log=False,
             schema_loader=lambda: schema_context,
@@ -527,6 +685,7 @@ def run_golden_agent(
             config=config,
             run_context="golden_test",
             use_approved_memory=use_approved_memory,
+            use_legacy_memory=False,
             enable_memory_candidate_generation=False,
             log_to_query_log=False,
             schema_loader=lambda: schema_context,
@@ -541,11 +700,9 @@ def run_orchestrator_for_golden(
     use_approved_memory: bool,
     config: SQLAgentConfig | None,
 ) -> dict[str, Any]:
-    # TODO: Add dependency injection for schema_loader/sql_executor to the
-    # orchestrator so golden tests can use the exact same frozen schema context
-    # as the direct SQL-agent path. Until then this opt-in entry point exercises
-    # router, model selection, SQL agent normalization, and final metadata using
-    # the configured runtime backend.
+    # Default Golden mode intentionally exercises the same runtime path as
+    # Streamlit Chat. The frozen schema_context is retained for direct SQL-agent
+    # debug mode and reference-output comparison, not injected here.
     _ = schema_context
     from src.agent.orchestrator import run_orchestrator
 
@@ -566,8 +723,11 @@ def evaluate_golden_question(
     schema_context: str,
     use_approved_memory: bool,
     config: SQLAgentConfig | None = None,
-    use_orchestrator: bool = False,
+    runtime_mode: GoldenRuntimeMode | str | None = None,
+    use_orchestrator: bool | None = None,
 ) -> dict[str, Any]:
+    resolved_runtime_mode = resolve_golden_runtime_mode(runtime_mode, use_orchestrator)
+    active_scenario = get_active_scenario().scenario_id
     started_at = perf_counter()
     started_at_iso = current_timestamp()
     reference_sql = read_solution_sql(question)
@@ -587,6 +747,8 @@ def evaluate_golden_question(
             failure_reason=reference_validation.error,
             reference_sql=reference_sql,
             use_approved_memory=use_approved_memory,
+            runtime_mode=resolved_runtime_mode,
+            active_scenario=active_scenario,
         )
 
     try:
@@ -602,6 +764,8 @@ def evaluate_golden_question(
             reference_sql=reference_validation.sql,
             expected_result=expected_result,
             use_approved_memory=use_approved_memory,
+            runtime_mode=resolved_runtime_mode,
+            active_scenario=active_scenario,
         )
 
     try:
@@ -610,7 +774,7 @@ def evaluate_golden_question(
             schema_context=schema_context,
             use_approved_memory=use_approved_memory,
             config=config,
-            use_orchestrator=use_orchestrator,
+            runtime_mode=resolved_runtime_mode,
         )
     except Exception as error:
         return build_error_result(
@@ -623,9 +787,32 @@ def evaluate_golden_question(
             reference_sql=reference_validation.sql,
             expected_result=expected_result,
             use_approved_memory=use_approved_memory,
+            runtime_mode=resolved_runtime_mode,
+            active_scenario=active_scenario,
         )
 
-    generated_sql = str(agent_state.get("generated_sql", ""))
+    normalized_agent_result = _normalize_golden_runtime_result(
+        agent_state,
+        resolved_runtime_mode,
+        active_scenario=active_scenario,
+    )
+    if normalized_agent_result.get("route_status") != "routed_to_sql":
+        return build_error_result(
+            batch_run_id=batch_run_id,
+            question=question,
+            started_at_iso=started_at_iso,
+            runtime_seconds=perf_counter() - started_at,
+            failure_type="router_not_routed_to_sql",
+            failure_reason=str(normalized_agent_result.get("route_status", "failed")),
+            reference_sql=reference_validation.sql,
+            agent_state=normalized_agent_result,
+            expected_result=expected_result,
+            use_approved_memory=use_approved_memory,
+            runtime_mode=resolved_runtime_mode,
+            active_scenario=active_scenario,
+        )
+
+    generated_sql = str(normalized_agent_result.get("generated_sql", ""))
     agent_validation = validate_generated_sql(generated_sql, schema_context)
     if not agent_validation.is_valid:
         return build_error_result(
@@ -637,9 +824,11 @@ def evaluate_golden_question(
             failure_reason=agent_validation.error,
             reference_sql=reference_validation.sql,
             generated_sql=agent_validation.sql or generated_sql,
-            agent_state=agent_state,
+            agent_state=normalized_agent_result,
             expected_result=expected_result,
             use_approved_memory=use_approved_memory,
+            runtime_mode=resolved_runtime_mode,
+            active_scenario=active_scenario,
         )
 
     try:
@@ -654,10 +843,12 @@ def evaluate_golden_question(
             failure_reason=str(error),
             reference_sql=reference_validation.sql,
             generated_sql=agent_validation.sql,
-            agent_state=agent_state,
+            agent_state=normalized_agent_result,
             expected_result=expected_result,
             actual_result=actual_result,
             use_approved_memory=use_approved_memory,
+            runtime_mode=resolved_runtime_mode,
+            active_scenario=active_scenario,
         )
 
     diff_summary = compare_query_results(expected_result, actual_result, question)
@@ -686,12 +877,13 @@ def evaluate_golden_question(
         "diff_summary": diff_summary,
         "validation_errors": [],
         "execution_errors": {},
-        "model_used": agent_state.get("model_used") or agent_state.get("selected_model", ""),
+        "model_used": normalized_agent_result.get("model_used", ""),
         "memory_templates_enabled": use_approved_memory,
         "backend": active_backend_name(),
         "timestamp": started_at_iso,
-        "agent_result_status": agent_state.get("result_status", ""),
-        "agent_trace_steps": agent_state.get("trace_steps", []),
+        "agent_result_status": normalized_agent_result.get("result_status", ""),
+        "agent_trace_steps": normalized_agent_result.get("trace_steps", []),
+        **_golden_runtime_metadata(normalized_agent_result),
     }
 
 
@@ -732,8 +924,11 @@ def run_golden_tests(
     *,
     use_approved_memory: bool = True,
     config: SQLAgentConfig | None = None,
-    use_orchestrator: bool = False,
+    runtime_mode: GoldenRuntimeMode | str | None = None,
+    use_orchestrator: bool | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    resolved_runtime_mode = resolve_golden_runtime_mode(runtime_mode, use_orchestrator)
+    active_scenario = get_active_scenario().scenario_id
     question_map = load_golden_question_map()
     selected_ids = [question_id.upper() for question_id in question_ids if question_id.upper() in question_map]
     batch_run_id = f"golden_{generate_run_id()}"
@@ -748,7 +943,7 @@ def run_golden_tests(
                 schema_context=schema_context,
                 use_approved_memory=use_approved_memory,
                 config=config,
-                use_orchestrator=use_orchestrator,
+                runtime_mode=resolved_runtime_mode,
             )
         except Exception as error:
             question = question_map[question_id]
@@ -760,6 +955,8 @@ def run_golden_tests(
                 failure_type="unexpected_error",
                 failure_reason=str(error),
                 use_approved_memory=use_approved_memory,
+                runtime_mode=resolved_runtime_mode,
+                active_scenario=active_scenario,
             )
         append_golden_result(result)
         results.append(result)
