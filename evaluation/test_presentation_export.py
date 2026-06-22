@@ -35,6 +35,7 @@ from src.agent.presentation_planner import (
     EvidenceTablePage,
     ExecutiveBullet,
     PlanningAudit,
+    PresentationPlanningConfig,
     PresentationPlan,
     TextSpan,
     build_presentation_plan,
@@ -402,6 +403,179 @@ class PresentationPlannerEvidenceTests(unittest.TestCase):
         self.assertTrue(plan.audit.fallback_reasons)
         self.assertFalse(eligibility.can_export)
         self.assertIn("row", eligibility.reason)
+
+
+class PresentationPlanningJsonModeTests(unittest.TestCase):
+    def _valid_json_plan(self) -> str:
+        return json.dumps({
+            "title": "Regionale Lieferanalyse",
+            "language": "de",
+            "executive_bullets": [
+                {
+                    "spans": [
+                        {"text": "90", "bold": True},
+                        {"text": " Lieferungen in Sued bilden den Spitzenwert.", "bold": False},
+                    ]
+                }
+            ],
+            "charts": [
+                {
+                    "chart_type": "top_n_bar",
+                    "title": "Top Regionen",
+                    "rows": [
+                        {"label": "Sued", "value": 90},
+                        {"label": "Nord", "value": 75},
+                    ],
+                    "orientation": "horizontal",
+                    "render_allowed": True,
+                    "x_label": "Region",
+                    "y_label": "Lieferungen",
+                    "notes": ["Validierte Ergebnisdaten"],
+                    "category_column": "region",
+                }
+            ],
+            "table_pages": [
+                {
+                    "page_number": 1,
+                    "columns": ["region", "shipment_count"],
+                    "rows": [
+                        {"region": "Sued", "shipment_count": "90"},
+                        {"region": "Nord", "shipment_count": "75"},
+                    ],
+                    "row_range_label": "Zeilen 1-2 von 9",
+                    "notes": ["Zeilen 1-2 von 9"],
+                    "hidden_columns": [],
+                    "start_row": 1,
+                    "end_row": 2,
+                    "total_rows": 9,
+                }
+            ],
+            "caveats": ["Keine Ursachenableitung aus Aggregaten."],
+            "warnings": ["planner_note"],
+            "audit": {"fallback_reasons": []},
+        })
+
+    def test_from_env_defaults_to_deterministic_and_never_calls_fake_invocation(self) -> None:
+        calls: list[str] = []
+
+        with patch.dict(os.environ, {}, clear=True):
+            config = PresentationPlanningConfig.from_env()
+            plan = build_presentation_plan(
+                record=valid_record(),
+                config=config,
+                planner_invocation=lambda prompt: calls.append(prompt) or self._valid_json_plan(),
+            )
+
+        self.assertEqual(config.mode, "deterministic")
+        self.assertEqual(plan.audit.planning_mode, "deterministic")
+        self.assertEqual(calls, [])
+
+    def test_llm_mode_applies_valid_json_after_strict_local_validation(self) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_invocation(prompt: str) -> str:
+            captured["prompt"] = prompt
+            return self._valid_json_plan()
+
+        with patch.dict(
+            os.environ,
+            {
+                "PRESENTATION_PLANNING_MODE": "llm",
+                "PRESENTATION_PLANNING_MAX_ROWS": "2",
+            },
+            clear=False,
+        ):
+            config = PresentationPlanningConfig.from_env()
+            plan = build_presentation_plan(
+                record=valid_record(),
+                config=config,
+                planner_invocation=fake_invocation,
+            )
+
+        payload = json.loads(captured["prompt"].split("PLANNER_PAYLOAD_JSON:\n", 1)[1])
+        self.assertEqual(config.mode, "llm")
+        self.assertEqual(plan.audit.planning_mode, "llm")
+        self.assertEqual(plan.title, "Regionale Lieferanalyse")
+        self.assertEqual(plan.executive_bullets[0].spans[0].text, "90")
+        self.assertTrue(plan.executive_bullets[0].spans[0].bold)
+        self.assertEqual(plan.charts[0].chart_type, "top_n_bar")
+        self.assertEqual(plan.charts[0].category_column, "region")
+        self.assertEqual(plan.caveats, ["Keine Ursachenableitung aus Aggregaten."])
+        self.assertLessEqual(len(payload["result_sample"]["rows"]), 2)
+        self.assertIn("column_profiles", payload)
+        self.assertIn("aggregates", payload)
+        self.assertIn("deterministic_defaults", payload)
+        self.assertNotIn("\x00", json.dumps(payload))
+
+    def test_llm_mode_falls_back_for_invalid_refused_malformed_or_over_budget_output(self) -> None:
+        cases: list[tuple[str, object]] = [
+            ("invalid_json", "{not-json"),
+            ("missing_key", json.dumps({"title": "Unvollstaendig"})),
+            ("refused", json.dumps({"refusal": "I cannot comply."})),
+            (
+                "unsupported_chart",
+                json.dumps({
+                    **json.loads(self._valid_json_plan()),
+                    "charts": [{"chart_type": "heatmap", "title": "Heatmap"}],
+                }),
+            ),
+            (
+                "over_budget_title",
+                json.dumps({
+                    **json.loads(self._valid_json_plan()),
+                    "title": "x" * 90,
+                }),
+            ),
+            ("exception", TimeoutError("planner timeout")),
+        ]
+
+        for name, response in cases:
+            with self.subTest(name=name):
+                calls: list[str] = []
+
+                def fake_invocation(prompt: str) -> str:
+                    calls.append(prompt)
+                    if isinstance(response, Exception):
+                        raise response
+                    return str(response)
+
+                config = PresentationPlanningConfig(mode="llm")
+                plan = build_presentation_plan(
+                    record=valid_record(),
+                    config=config,
+                    planner_invocation=fake_invocation,
+                )
+
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(plan.audit.planning_mode, "fallback")
+                self.assertEqual(plan.title, "Lieferungen nach Region")
+                self.assertTrue(any("planner_fallback" in warning for warning in plan.warnings))
+                self.assertTrue(plan.audit.fallback_reasons)
+
+    def test_non_llm_mode_is_the_only_path_that_can_call_injected_invocation(self) -> None:
+        calls: list[str] = []
+
+        config = PresentationPlanningConfig(mode="experimental")
+        plan = build_presentation_plan(
+            record=valid_record(),
+            config=config,
+            planner_invocation=lambda prompt: calls.append(prompt) or self._valid_json_plan(),
+        )
+
+        self.assertEqual(plan.audit.planning_mode, "deterministic")
+        self.assertEqual(calls, [])
+
+    def test_env_example_documents_non_secret_planner_toggles(self) -> None:
+        env_text = Path(".env.example").read_text(encoding="utf-8")
+
+        self.assertIn("PRESENTATION_EXPORT_MODE=deterministic", env_text)
+        self.assertIn("PRESENTATION_PLANNING_MODE=deterministic", env_text)
+        self.assertIn("PRESENTATION_PLANNING_MODEL=claude-sonnet-4-6", env_text)
+        self.assertIn("PRESENTATION_PLANNING_TIMEOUT_SECONDS=30", env_text)
+        self.assertIn("PRESENTATION_PLANNING_MAX_ROWS=50", env_text)
+        self.assertIn("PRESENTATION_PLANNING_MAX_TOKENS=2048", env_text)
+        self.assertNotIn("PRESENTATION_PLANNING_API_KEY", env_text)
+        self.assertNotIn("OPENAI_API_KEY", env_text)
 
 
 class PresentationExportPlanRenderingTests(unittest.TestCase):
