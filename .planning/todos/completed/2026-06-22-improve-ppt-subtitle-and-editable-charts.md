@@ -1,5 +1,6 @@
 ---
 created: 2026-06-22T12:25:03.914Z
+completed: 2026-06-22T12:39:00Z
 title: Improve PPT subtitle and editable charts
 area: presentation-export
 files:
@@ -24,3 +25,7 @@ Charts are currently rendered as image output in the deck. They look acceptable,
 2. Investigate native editable PowerPoint charts with `python-pptx` `slide.shapes.add_chart(...)` and embedded chart data. If the library supports the needed chart types cleanly, render simple bar, line, and possibly pie or doughnut charts as native charts first.
 3. Keep the current image-based chart renderer as a fallback for chart shapes that cannot be represented well as native PowerPoint charts.
 4. Add regression tests that detect native chart shapes for supported cases and still allow image fallback for unsupported or unsafe cases.
+
+## Completion
+
+Implemented cover subtitle trimming without ellipses and native editable PowerPoint charts for supported bar, horizontal top-N, and line chart specs. The existing PNG renderer remains as fallback when native chart generation is unavailable or unsuitable.
