@@ -490,7 +490,7 @@ def build_slide_deck_spec(
             if not chart_rows:
                 warnings.append("Diagramm wurde ausgelassen, weil keine geplanten Werte vorhanden sind.")
                 continue
-            body = _unique([*chart.notes, "Diagramm aus validierten Ergebnisdaten."])
+            body = _chart_evidence_body(chart)
             slides.append(
                 SlideSpec(
                     slide_type="chart_evidence",
@@ -1281,7 +1281,7 @@ def _render_content_slide(slide: Any, slide_spec: SlideSpec) -> None:
     if slide_spec.slide_type == "chart_evidence":
         chart_image = _chart_image(slide_spec)
         if chart_image is not None:
-            _replace_shape_with_picture(slide, content_shape, chart_image)
+            _replace_shape_with_picture(slide, content_shape, chart_image, notes=slide_spec.body)
             return
         fallback_body = [
             "Diagramm konnte nicht gerendert werden.",
@@ -1511,10 +1511,36 @@ def _replace_shape_with_table(
     _add_table(slide, bounds=table_bounds, columns=columns[:MAX_EVIDENCE_COLUMNS], rows=rows[:MAX_EVIDENCE_ROWS])
 
 
-def _replace_shape_with_picture(slide: Any, shape: Any, image: BytesIO) -> None:
+def _replace_shape_with_picture(
+    slide: Any,
+    shape: Any,
+    image: BytesIO,
+    *,
+    notes: list[str] | None = None,
+) -> None:
     bounds = (shape.left, shape.top, shape.width, shape.height)
     _remove_shape(shape)
-    slide.shapes.add_picture(image, bounds[0], bounds[1], width=bounds[2], height=bounds[3])
+    note_items = [str(note) for note in notes or [] if str(note).strip()]
+    if note_items:
+        note_height = Inches(0.48)
+        note_shape = slide.shapes.add_textbox(bounds[0], bounds[1], bounds[2], note_height)
+        note_shape.name = "chart_notes"
+        _set_shape_bullets(note_shape, [" | ".join(note_items)], font_size=9)
+        picture_bounds = (
+            bounds[0],
+            bounds[1] + note_height,
+            bounds[2],
+            max(Inches(0.5), bounds[3] - note_height),
+        )
+    else:
+        picture_bounds = bounds
+    slide.shapes.add_picture(
+        image,
+        picture_bounds[0],
+        picture_bounds[1],
+        width=picture_bounds[2],
+        height=picture_bounds[3],
+    )
 
 
 def _add_table(
@@ -1763,6 +1789,14 @@ def _chart_body(chart_plan: dict[str, Any], reporting: dict[str, Any]) -> list[s
     if interpretation:
         body.append(_trim_text(interpretation, 220))
     return body[:MAX_BODY_ITEMS_PER_SLIDE]
+
+
+def _chart_evidence_body(chart: Any) -> list[str]:
+    body = [*list(getattr(chart, "notes", []) or []), "Diagramm aus validierten Ergebnisdaten."]
+    rows = list(getattr(chart, "rows", []) or [])
+    if any(str(row.get("label", "")) == "Sonstige" for row in rows if isinstance(row, dict)):
+        body.append("Sonstige buendelt weitere Kategorien.")
+    return _unique(body)
 
 
 def _is_planned_chart_supported(chart: Any) -> bool:
