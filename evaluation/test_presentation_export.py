@@ -577,6 +577,45 @@ class PresentationPlanningJsonModeTests(unittest.TestCase):
         self.assertNotIn("PRESENTATION_PLANNING_API_KEY", env_text)
         self.assertNotIn("OPENAI_API_KEY", env_text)
 
+    def test_deterministic_export_remains_available_when_json_planner_fails(self) -> None:
+        def failing_invocation(prompt: str) -> str:
+            raise RuntimeError("planner down")
+
+        with patch.dict(os.environ, {"PRESENTATION_PLANNING_MODE": "llm"}, clear=False):
+            export = build_deterministic_presentation_export(
+                record=valid_record(),
+                planner_invocation=failing_invocation,
+            )
+
+        self.assertTrue(export.available, export.warnings)
+        Presentation(BytesIO(export.content))
+        self.assertIsNotNone(export.deck_spec)
+        self.assertEqual(export.deck_spec.metadata["planning_mode"], "fallback")
+        self.assertIn("RuntimeError", export.deck_spec.metadata["planning_fallback_reasons"])
+        self.assertTrue(any("planner_fallback" in warning for warning in export.warnings))
+        self.assertEqual(len(export.warnings), len(set(export.warnings)))
+        self.assertTrue(any("embedded object" in warning.lower() for warning in export.warnings))
+
+    def test_planner_fallback_metadata_excludes_unbounded_result_rows(self) -> None:
+        rows = [
+            (f"Region-{index}", index)
+            for index in range(1, 15)
+        ]
+        result = query_result(["region", "shipment_count"], rows)
+
+        with patch.dict(os.environ, {"PRESENTATION_PLANNING_MODE": "llm"}, clear=False):
+            spec = build_slide_deck_spec(
+                record=orchestrator_record(query_result=result, row_count=14),
+                planner_invocation=lambda prompt: "{not-json",
+            )
+
+        metadata_text = json.dumps(spec.metadata, sort_keys=True)
+        self.assertEqual(spec.metadata["planning_mode"], "fallback")
+        self.assertIn("planner_fallback_reasons", spec.metadata)
+        self.assertIn("invalid_json", spec.metadata["planning_fallback_reasons"])
+        self.assertNotIn("Region-14", metadata_text)
+        self.assertNotIn("shipment_count", spec.metadata["planner_warning_codes"])
+
 
 class PresentationExportPlanRenderingTests(unittest.TestCase):
     def test_build_slide_deck_spec_calls_planner_after_eligibility_passes(self) -> None:
