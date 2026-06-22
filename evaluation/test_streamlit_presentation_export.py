@@ -386,6 +386,47 @@ class StreamlitPresentationExportHelperTests(unittest.TestCase):
         self.assertFalse(forbidden & imported, forbidden & imported)
 
 
+class StreamlitPresentationExportWarningTests(unittest.TestCase):
+    def test_format_presentation_warning_maps_known_backend_codes(self) -> None:
+        app = _load_streamlit_app()
+        cases = {
+            "presentation_planner_fallback": "PPT-Planung nutzt den deterministischen Fallback.",
+            "planner_fallback: TimeoutError": "PPT-Planung nutzt den deterministischen Fallback.",
+            "presentation_table_truncated": "Tabelle wurde fuer die Folie gekuerzt.",
+            "table_rows_truncated": "Tabelle wurde fuer die Folie gekuerzt.",
+            "table_columns_truncated": "Tabelle wurde fuer die Folie gekuerzt.",
+            "presentation_chart_fallback": "Diagramm wurde durch eine lesbare Ersatzdarstellung ersetzt.",
+            "chart_fallback": "Diagramm wurde durch eine lesbare Ersatzdarstellung ersetzt.",
+            "presentation_label_truncated": "Lange Beschriftungen wurden fuer die Folie gekuerzt.",
+            "label_truncated: customer_material": "Lange Beschriftungen wurden fuer die Folie gekuerzt.",
+            "Template contains preserved embedded object warning.": "Template contains preserved embedded object warning.",
+        }
+
+        for warning, expected in cases.items():
+            with self.subTest(warning=warning):
+                self.assertEqual(app.format_presentation_warning(warning), expected)
+
+    def test_render_feedback_shows_mapped_and_unknown_warnings_in_expander(self) -> None:
+        app = _load_streamlit_app()
+        container = _FakePresentationContainer()
+        _install_fake_streamlit_runtime(app, container)
+        export = _export(warnings=[
+            "table_rows_truncated",
+            "planner_fallback: TimeoutError",
+            "Raw backend warning.",
+        ])
+
+        app.render_presentation_export_feedback(export, container.container())
+
+        self.assertIn("PPT created with warnings.", container.warnings)
+        self.assertIn("Slides: 5", container.captions)
+        self.assertEqual(container.expanders, [{"label": "PPT warnings", "expanded": False}])
+        self.assertIn("Tabelle wurde fuer die Folie gekuerzt.", container.writes)
+        self.assertIn("PPT-Planung nutzt den deterministischen Fallback.", container.writes)
+        self.assertIn("Raw backend warning.", container.writes)
+        self.assertNotIn("table_rows_truncated", container.writes)
+
+
 class StreamlitPresentationExportWiringTests(unittest.TestCase):
     def test_streamlit_imports_only_allowed_backend_export_symbols(self) -> None:
         source = STREAMLIT_APP_PATH.read_text(encoding="utf-8")
