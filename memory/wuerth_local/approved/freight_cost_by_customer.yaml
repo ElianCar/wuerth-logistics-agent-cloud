@@ -1,0 +1,50 @@
+id: freight_cost_by_customer
+scenario: wuerth_local
+status: approved
+is_active: true
+title: Freight cost by customer
+intent: freight_cost_by_customer
+trigger_phrases:
+  - Frachtkosten pro Kunde
+  - Fracht je Kunde
+  - Freight cost by customer
+  - Freight costs by ship to party
+searchable_summary: Sum verified shipment freight_costs grouped by shiptoparty customer.
+searchable_terms:
+  - freight
+  - freight_costs
+  - customer
+  - shiptoparty
+  - fracht
+  - frachtkosten
+  - kunde
+synonyms:
+  fracht: freight
+  frachtkosten: freight
+  freight cost: freight
+  freight costs: freight
+  kunde: customer
+  shiptoparty: customer
+required_tables:
+  - wuerth.shipments
+required_columns:
+  - freight_costs
+  - shiptoparty
+business_rules:
+  - Freight cost is verified in wuerth.shipments.freight_costs.
+  - Use SUM(freight_costs) for freight cost aggregation.
+  - Group customer-level freight reports by shiptoparty unless the user explicitly asks for soldtoparty.
+  - Do not infer packing costs from freight costs.
+sql_pattern: SELECT shiptoparty, SUM(freight_costs) AS freight_costs FROM wuerth.shipments GROUP BY shiptoparty ORDER BY freight_costs DESC LIMIT 50
+do_not_use_when:
+  - The user asks for packing cost or packaging cost.
+  - The user asks for revenue, invoice amount, gross profit, shipment date, or shipping point.
+validation_checks:
+  - SQL must be read-only SELECT.
+  - SQL must use wuerth.shipments.freight_costs for freight.
+  - SQL must not invent packing cost columns.
+source_question: Frachtkosten pro Kunde
+source_sql: ""
+approved_by: manual_seed_from_verified_wuerth_assets
+approved_at: "2026-06-05T00:00:00"
+version: 1

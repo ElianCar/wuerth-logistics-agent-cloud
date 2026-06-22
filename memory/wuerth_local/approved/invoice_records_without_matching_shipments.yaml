@@ -1,0 +1,60 @@
+id: invoice_records_without_matching_shipments
+scenario: wuerth_local
+status: approved
+is_active: true
+title: Invoice records without matching shipments
+intent: unmatched_invoices_to_shipments
+trigger_phrases:
+  - Rechnungen ohne passende Lieferungen
+  - Aufträge mit Rechnung aber ohne Lieferung
+  - Invoice records without matching shipment records
+  - Invoices without shipments
+searchable_summary: Find invoice-side order/customer/material candidate keys without matching pre-aggregated shipment keys.
+searchable_terms:
+  - invoice
+  - shipment
+  - unmatched
+  - order
+  - customer
+  - material
+  - rechnung
+  - lieferung
+  - invoice_without_shipment
+synonyms:
+  rechnungen: invoice
+  lieferungen: shipment
+  ohne: unmatched
+  ohne passende: unmatched
+  without matching: unmatched
+  invoices without shipments: invoice_without_shipment
+  invoice records without matching shipment records: invoice_without_shipment
+  material number: material
+required_tables:
+  - wuerth.invoices
+  - wuerth.shipments
+required_columns:
+  - order_number
+  - customer
+  - material_price
+  - shiptoparty
+  - customer_material
+business_rules:
+  - Pre-aggregate invoices by order_number, customer, and material_price before joining.
+  - Pre-aggregate shipments by order_number, shiptoparty, and customer_material before joining.
+  - Match invoices to shipments on order_number, customer equals shiptoparty, and material_price equals customer_material.
+  - The material_price to customer_material mapping is a project candidate and still needs business confirmation.
+  - Use a LEFT JOIN anti-join pattern to return invoice-side keys without shipment matches.
+sql_pattern: Use invoice_keys and shipment_keys CTEs grouped by verified join keys, then LEFT JOIN shipment_keys to invoice_keys and filter where the shipment side is NULL.
+do_not_use_when:
+  - The user asks for revenue, gross profit, packing costs, or delivery performance.
+  - The user asks for row-level raw joins without aggregation.
+validation_checks:
+  - SQL must be read-only SELECT.
+  - SQL must use only wuerth.invoices and wuerth.shipments.
+  - SQL must pre-aggregate both sides before joining.
+  - SQL must not join invoices.order_item to shipments.number_delivery_items.
+source_question: Which order numbers have invoice records but no matching shipment records?
+source_sql: ""
+approved_by: manual_seed_from_verified_wuerth_assets
+approved_at: "2026-06-05T00:00:00"
+version: 1

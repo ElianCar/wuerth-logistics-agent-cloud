@@ -7,24 +7,32 @@ import streamlit as st
 import yaml
 
 from src.agent.db import get_active_backend_metadata
-from src.agent.golden_test_runner import load_golden_questions, run_golden_tests
+from src.agent.golden_test_runner import (
+    DEFAULT_GOLDEN_RUNTIME_MODE,
+    GOLDEN_RUNTIME_MODES,
+    GoldenRuntimeMode,
+    load_golden_questions,
+    run_golden_tests,
+)
 from src.agent.langgraph_sql_agent import SQLAgentConfig
 from src.agent.orchestrator import run_orchestrator
 from src.agent.logging_utils import log_feedback
 from src.agent.memory_store import (
     MemoryStoreError,
-    approve_candidate,
     audit_candidate_validation,
     create_candidate_from_run,
-    disable_template,
     initialize_memory_files,
     load_candidates,
     load_templates,
     mark_candidate_needs_changes,
     parse_source_tables,
-    reactivate_template,
     reject_candidate,
     update_candidate_proposed_template,
+)
+from src.agent.memory_lifecycle import (
+    MemoryLifecycleError,
+    approve_candidate_to_vsm,
+    load_approved_template_records,
 )
 from src.agent.memory_validation import validate_proposed_template
 from src.agent.presentation_export import (
@@ -57,10 +65,21 @@ PAGE_GOLDEN = "Golden-Testmodus"
 PAGE_MEMORY = "Memory-Prüfung"
 PAGE_TEMPLATES = "Freigegebene Templates"
 
+GOLDEN_RUNTIME_LABELS: dict[GoldenRuntimeMode, str] = {
+    "orchestrator": "Real chat path: Orchestrator",
+    "direct_sql_agent": "Direct SQL agent: Debug only",
+}
+
+GOLDEN_RUNTIME_HELP: dict[GoldenRuntimeMode, str] = {
+    "orchestrator": "Nutzt denselben Router-, Modell-, Memory- und SQL-Agent-Pfad wie der normale Chat.",
+    "direct_sql_agent": "Debug-Modus: umgeht Router, Modellklassifizierung und VSM Memory Retrieval.",
+}
+
 _STEP_LABELS: dict[str, str] = {
     "run_router": "Anfrage analysieren",
     "select_model": "Modell auswählen",
     "terminal_response": "Direkte Antwort erstellen",
+    "data_overview": "Datenüberblick erstellen",
     "load_schema": "Datenbankschema laden",
     "generate_sql": "SQL generieren",
     "validate_sql": "SQL validieren",
@@ -74,6 +93,7 @@ _STEP_SYMBOLS: dict[str, str] = {
     "run_router": "⊙",
     "select_model": "⚙",
     "terminal_response": "◉",
+    "data_overview": "▤",
     "load_schema": "≡",
     "generate_sql": "✎",
     "validate_sql": "✓",
@@ -214,17 +234,35 @@ def _build_chat_context(history: list[dict]) -> str:
         success = record.get("execution_success", False)
         row_count = record.get("row_count")
         a = record.get("final_answer", "").strip()
+        is_clarification = (
+            record.get("result_status") == "clarification_needed"
+            or record.get("error_type") == "clarification_needed"
+        )
+        is_overview = record.get("result_status") == "data_overview"
 
         if q:
             lines.append(f"F: {q}")
-        if sql:
-            lines.append(f"SQL: {sql}")
-        status = "Erfolg" if success else "Fehlgeschlagen"
-        if row_count is not None:
-            status += f", {row_count} Zeile(n)"
-        lines.append(f"Status: {status}")
-        if a:
-            lines.append(f"A: {a}")
+
+        if is_overview:
+            # Langen Katalogtext nicht in den Kontext spiegeln.
+            lines.append("A: Datenüberblick ausgegeben.")
+            lines.append("")
+            continue
+
+        if is_clarification:
+            # Offene Rückfrage – kein "Fehlgeschlagen". Die nächste Nutzernachricht
+            # ist potenziell die Antwort darauf.
+            if a:
+                lines.append(f"RÜCKFRAGE DES SYSTEMS: {a}")
+        else:
+            if sql:
+                lines.append(f"SQL: {sql}")
+            status = "Erfolg" if success else "Fehlgeschlagen"
+            if row_count is not None:
+                status += f", {row_count} Zeile(n)"
+            lines.append(f"Status: {status}")
+            if a:
+                lines.append(f"A: {a}")
         lines.append("")
     return "\n".join(lines)
 
@@ -887,6 +925,8 @@ def render_candidate_details(candidate: dict) -> None:
     col2.write(f"run_id: `{candidate.get('run_id', '')}`")
     col3.write(f"Status: `{format_filter_value(candidate.get('status', ''))}`")
     col4.write(f"Typ: `{format_filter_value(candidate.get('candidate_type', ''))}`")
+    st.write(f"Szenario: `{candidate.get('scenario', '')}`")
+    st.write(f"Dataset: `{candidate.get('dataset_id', '')}`")
     st.write(f"Erstellt am: `{candidate.get('created_at', '')}`")
     st.write(f"Aktualisiert am: `{candidate.get('updated_at', '')}`")
 
@@ -924,18 +964,95 @@ def render_candidate_details(candidate: dict) -> None:
     st.write(feedback.get("comment") if isinstance(feedback, dict) else "")
 
 
+def render_memory_approval_result(result: dict) -> None:
+    if not result:
+        return
+
+    template = result.get("template", {}) if isinstance(result.get("template"), dict) else {}
+    smoke_test = result.get("smoke_test", {}) if isinstance(result.get("smoke_test"), dict) else {}
+    st.subheader("Letzter VSM-Freigabecheck")
+    meta1, meta2, meta3, meta4 = st.columns(4)
+    meta1.write(f"Template: `{template.get('id', '')}`")
+    meta2.write(f"Szenario: `{template.get('scenario', smoke_test.get('scenario', ''))}`")
+    meta3.write(f"Index-Templates: `{smoke_test.get('indexed_template_count', 0)}`")
+    meta4.write(f"Prompt-Guidance: `{format_yes_no(smoke_test.get('would_inject_prompt_guidance', False))}`")
+    st.write(f"Approved YAML: `{result.get('template_path', '')}`")
+    st.write(f"Master Index: `{smoke_test.get('index_path', result.get('index_path', ''))}`")
+    st.write(
+        "Retrieval: "
+        f"`enabled={smoke_test.get('enabled', False)}` "
+        f"`method={smoke_test.get('method', '')}` "
+        f"`no_match_reason={smoke_test.get('no_match_reason', '') or '-'}` "
+        f"`ambiguous={smoke_test.get('ambiguous', False)}`"
+    )
+
+    matches = smoke_test.get("top_matches", [])
+    if matches:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "template_id": match.get("template_id", ""),
+                        "score": match.get("score", ""),
+                        "matched_terms": ", ".join(match.get("matched_terms", []) or []),
+                        "threshold": format_yes_no(match.get("passed_threshold", False)),
+                    }
+                    for match in matches
+                    if isinstance(match, dict)
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("Der Smoke-Test hat keinen Treffer oberhalb des Schwellenwerts gefunden.")
+
+
 def render_memory_review_view() -> None:
     st.title("Memory-Prüfung")
     render_flash()
+    active_scenario = get_active_scenario()
+    st.caption(
+        f"Aktives Szenario: `{active_scenario.scenario_id}`. "
+        "Produktives Ziel: scenario-scoped `approved/*.yaml` plus `master_index.yaml`."
+    )
+
+    last_result = st.session_state.get("last_memory_approval_result")
+    if isinstance(last_result, dict):
+        smoke = last_result.get("smoke_test", {}) if isinstance(last_result.get("smoke_test"), dict) else {}
+        if smoke.get("scenario") == active_scenario.scenario_id:
+            render_memory_approval_result(last_result)
 
     try:
-        candidates = load_candidates()
+        all_candidates = load_candidates()
     except MemoryStoreError as error:
         st.error(str(error))
         return
 
+    missing_scenario_count = sum(1 for candidate in all_candidates if not candidate.get("scenario"))
+    other_scenario_count = sum(
+        1
+        for candidate in all_candidates
+        if candidate.get("scenario") and candidate.get("scenario") != active_scenario.scenario_id
+    )
+    if missing_scenario_count:
+        st.warning(
+            f"{missing_scenario_count} Legacy-Kandidat(en) ohne Szenario werden nicht angezeigt. "
+            "Bitte nur über eine explizite Migration einem Szenario zuordnen."
+        )
+    if other_scenario_count:
+        st.info(
+            f"{other_scenario_count} Kandidat(en) aus anderen Szenarien sind für dieses Szenario ausgeblendet."
+        )
+
+    candidates = [
+        candidate
+        for candidate in all_candidates
+        if candidate.get("scenario") == active_scenario.scenario_id
+    ]
+
     if not candidates:
-        st.info("Keine Memory-Vorschläge vorhanden.")
+        st.info("Keine Memory-Vorschläge für das aktive Szenario vorhanden.")
         return
 
     statuses = ["all", "pending_review", "needs_changes", "rejected", "approved"]
@@ -990,6 +1107,7 @@ def render_memory_review_view() -> None:
             {
                 "candidate_id": candidate.get("candidate_id", ""),
                 "run_id": candidate.get("run_id", ""),
+                "Szenario": candidate.get("scenario", ""),
                 "Status": format_filter_value(candidate.get("status", "")),
                 "Typ": format_filter_value(candidate.get("candidate_type", "")),
                 "Intent": proposed_template.get("intent", "") if isinstance(proposed_template, dict) else "",
@@ -1033,6 +1151,10 @@ def render_memory_review_view() -> None:
         height=360,
         disabled=editing_disabled,
         label_visibility="collapsed",
+    )
+    st.caption(
+        "Bei Freigabe wird daraus ein VSM-Template mit `status=approved` und "
+        "`is_active=true` unter dem aktiven Szenario erzeugt. `source_sql` bleibt Prompt-Guidance."
     )
 
     review_comment = st.text_area("Review-Kommentar", key=f"review_comment_{candidate_id}")
@@ -1083,11 +1205,20 @@ def render_memory_review_view() -> None:
                     show_validation_result(errors)
                 else:
                     try:
-                        _candidate, template = approve_candidate(candidate_id, parsed)
-                    except MemoryStoreError as error:
+                        result = approve_candidate_to_vsm(
+                            candidate_id,
+                            parsed,
+                            scenario=active_scenario.scenario_id,
+                        )
+                    except (MemoryStoreError, MemoryLifecycleError) as error:
                         st.warning(str(error))
                     else:
-                        set_flash("success", f"Template `{template.get('template_id')}` wurde freigegeben.")
+                        st.session_state["last_memory_approval_result"] = result
+                        template = result.get("template", {}) if isinstance(result.get("template"), dict) else {}
+                        set_flash(
+                            "success",
+                            f"Template `{template.get('id', '')}` wurde als VSM-Memory freigegeben und indexiert.",
+                        )
                         st.rerun()
 
     with col4:
@@ -1123,35 +1254,55 @@ def render_memory_review_view() -> None:
 def render_approved_templates_view() -> None:
     st.title("Freigegebene Templates")
     render_flash()
+    active_scenario = get_active_scenario()
+    st.caption(
+        f"Aktives Szenario: `{active_scenario.scenario_id}`. "
+        "Diese Ansicht zeigt die runtime-aktive VSM-Quelle `memory/<scenario>/approved/*.yaml`."
+    )
 
     try:
-        templates = load_templates()
-    except MemoryStoreError as error:
+        records = load_approved_template_records(active_scenario.scenario_id)
+    except (MemoryStoreError, MemoryLifecycleError) as error:
         st.error(str(error))
         return
 
-    if not templates:
-        st.info("Keine freigegebenen Templates vorhanden.")
+    try:
+        legacy_templates = load_templates()
+    except MemoryStoreError:
+        legacy_templates = []
+    if legacy_templates:
+        st.info(
+            f"Legacy `solution_templates.yaml` enthält {len(legacy_templates)} Template(s). "
+            "Diese Datei ist nicht mehr die produktive VSM-Runtime-Quelle."
+        )
+
+    if not records:
+        st.info("Keine freigegebenen VSM-Templates für das aktive Szenario vorhanden.")
         return
 
     table_rows = [
         {
-            "template_id": template.get("template_id", ""),
-            "Version": template.get("version", ""),
-            "Status": format_filter_value(template.get("status", "")),
-            "Aktiv": format_yes_no(template.get("is_active", False)),
-            "Intent": template.get("intent", ""),
-            "Benötigte Tabellen": ", ".join(parse_source_tables(template.get("required_tables"))),
-            "Erstellt aus Candidate": template.get("created_from_candidate_id", ""),
-            "Quell-Run": template.get("source_run_id", ""),
-            "Freigegeben am": template.get("approved_at", ""),
-            "Freigegeben von": template.get("approved_by", ""),
+            "template_id": record["template"].get("id", ""),
+            "Runtime-retrievable": format_yes_no(record.get("is_runtime_retrievable", False)),
+            "Schema gültig": format_yes_no(record.get("is_valid", False)),
+            "Status": format_filter_value(record["template"].get("status", "")),
+            "Aktiv": format_yes_no(record["template"].get("is_active", False)),
+            "Titel": record["template"].get("title", ""),
+            "Intent": record["template"].get("intent", ""),
+            "Benötigte Tabellen": ", ".join(parse_source_tables(record["template"].get("required_tables"))),
+            "Datei": record.get("path", ""),
+            "Freigegeben am": record["template"].get("approved_at", ""),
+            "Freigegeben von": record["template"].get("approved_by", ""),
         }
-        for template in templates
+        for record in records
     ]
     st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
 
-    template_by_id = {template.get("template_id"): template for template in templates}
+    template_by_id = {
+        record["template"].get("id"): record
+        for record in records
+        if isinstance(record.get("template"), dict)
+    }
     if st.session_state.get("selected_template_id") not in template_by_id:
         st.session_state.pop("selected_template_id", None)
     selected_template_id = st.selectbox(
@@ -1159,51 +1310,39 @@ def render_approved_templates_view() -> None:
         list(template_by_id.keys()),
         key="selected_template_id",
     )
-    template = template_by_id[selected_template_id]
+    selected_record = template_by_id[selected_template_id]
+    template = selected_record["template"]
 
     st.subheader("Details")
-    st.write(f"template_id: `{template.get('template_id', '')}`")
+    st.write(f"template_id: `{template.get('id', '')}`")
+    st.write(f"Szenario: `{template.get('scenario', '')}`")
+    st.write(f"Datei: `{selected_record.get('path', '')}`")
     st.write(f"Status: `{format_filter_value(template.get('status', ''))}`")
     st.write(f"Aktiv: `{format_yes_no(template.get('is_active', False))}`")
+    st.write(f"Runtime-retrievable: `{format_yes_no(selected_record.get('is_runtime_retrievable', False))}`")
+    if not selected_record.get("is_valid", False):
+        st.error("Dieses Template erfüllt die approved-template-Schema-Validierung nicht.")
+        st.json(selected_record.get("validation_errors", []), expanded=False)
     st.write(f"Intent: {template.get('intent', '')}")
     st.write("Auslösephrasen")
     st.json(template.get("trigger_phrases", []), expanded=False)
-    st.write("Metrikdefinitionen")
-    st.json(template.get("metric_definitions", {}), expanded=False)
-    st.write("Join-Logik")
-    st.json(template.get("join_logic", []), expanded=False)
-    st.write("Qualität")
-    st.json(template.get("quality", {}), expanded=False)
-    st.subheader("SQL-Gerüst")
-    st.code(template.get("sql_skeleton", "") or "(leer)", language="sql")
-
-    disabled_reason = st.text_area(
-        "Deaktivierungsgrund",
-        key=f"disabled_reason_{selected_template_id}",
-    )
-
-    if template.get("status") == "approved" and template.get("is_active") is True:
-        if st.button("Template deaktivieren", key=f"disable_{selected_template_id}"):
-            if not disabled_reason.strip():
-                st.warning("Bitte Deaktivierungsgrund angeben.")
-            else:
-                try:
-                    disable_template(str(selected_template_id), disabled_reason)
-                except MemoryStoreError as error:
-                    st.error(str(error))
-                else:
-                    set_flash("success", "Template wurde deaktiviert.")
-                    st.rerun()
-
-    if template.get("status") == "disabled":
-        if st.button("Template reaktivieren", key=f"reactivate_{selected_template_id}"):
-            try:
-                reactivate_template(str(selected_template_id))
-            except MemoryStoreError as error:
-                st.error(str(error))
-            else:
-                set_flash("success", "Template wurde reaktiviert.")
-                st.rerun()
+    st.write("Searchable Terms")
+    st.json(template.get("searchable_terms", []), expanded=False)
+    st.write("Synonyme")
+    st.json(template.get("synonyms", {}), expanded=False)
+    st.write("Benötigte Spalten")
+    st.json(template.get("required_columns", []), expanded=False)
+    st.write("Business Rules")
+    st.json(template.get("business_rules", []), expanded=False)
+    st.write("Do not use when")
+    st.json(template.get("do_not_use_when", []), expanded=False)
+    st.write("Validation Checks")
+    st.json(template.get("validation_checks", []), expanded=False)
+    st.subheader("SQL Pattern")
+    st.write(template.get("sql_pattern", "") or "(leer)")
+    st.subheader("Source SQL")
+    st.caption("Nur Prompt-Guidance; wird nicht ausgeführt und ersetzt keine SQL-Validierung.")
+    st.code(template.get("source_sql", "") or "(leer)", language="sql")
 
 
 def golden_checkbox_key(question_id: str) -> str:
@@ -1232,6 +1371,7 @@ def run_golden_question_ids(
     question_ids: list[str],
     *,
     use_approved_memory: bool,
+    runtime_mode: GoldenRuntimeMode,
     config: SQLAgentConfig,
 ) -> None:
     if not question_ids:
@@ -1242,6 +1382,7 @@ def run_golden_question_ids(
         batch_run_id, results, summary = run_golden_tests(
             question_ids,
             use_approved_memory=use_approved_memory,
+            runtime_mode=runtime_mode,
             config=config,
         )
 
@@ -1360,6 +1501,9 @@ def render_golden_results(results: list[dict]) -> None:
             "Frage": result.get("question_id", ""),
             "Titel": result.get("title", ""),
             "Status": format_status(result.get("status", "")),
+            "Runtime": result.get("runtime_mode", ""),
+            "Route": result.get("route_status", ""),
+            "Komplexität": result.get("complexity_tier", ""),
             "Bestanden": format_yes_no(result.get("passed", False)),
             "Laufzeit": f"{float(result.get('runtime_seconds', 0.0)):.2f}s",
             "Erwartete Zeilen": result.get("expected_row_count", 0),
@@ -1381,6 +1525,27 @@ def render_golden_results(results: list[dict]) -> None:
             meta2.write(f"Modell: `{result.get('model_used', '')}`")
             meta3.write(f"Backend: `{result.get('backend', '')}`")
             meta4.write(f"Memory/Templates: `{format_yes_no(result.get('memory_templates_enabled', False))}`")
+            runtime_meta1, runtime_meta2, runtime_meta3, runtime_meta4 = st.columns(4)
+            runtime_meta1.write(f"Runtime: `{result.get('runtime_mode', '')}`")
+            runtime_meta2.write(f"Szenario: `{result.get('active_scenario', '')}`")
+            runtime_meta3.write(f"Route: `{result.get('route_status', '')}`")
+            runtime_meta4.write(f"Komplexität: `{result.get('complexity_tier', '')}`")
+            model_meta1, model_meta2, model_meta3 = st.columns(3)
+            model_meta1.write(f"Ausgewählt: `{result.get('selected_model', '')}`")
+            model_meta2.write(f"Fallback: `{result.get('fallback_model', '')}`")
+            model_meta3.write(f"Fallback genutzt: `{format_yes_no(result.get('fallback_used', False))}`")
+            memory_meta1, memory_meta2, memory_meta3, memory_meta4 = st.columns(4)
+            memory_meta1.write(f"VSM Memory: `{format_yes_no(result.get('memory_retrieval_enabled', False))}`")
+            memory_meta2.write(f"Methode: `{result.get('memory_retrieval_method', '')}`")
+            memory_meta3.write(f"Memory-Szenario: `{result.get('memory_retrieval_scenario', '')}`")
+            memory_meta4.write(f"Ambiguous: `{format_yes_no(result.get('memory_retrieval_ambiguous', False))}`")
+            if result.get("memory_candidate_ids") or result.get("memory_retrieval_no_match_reason"):
+                st.caption(
+                    "Memory: "
+                    f"candidates=`{result.get('memory_candidate_ids', '') or '-'}` "
+                    f"scores=`{result.get('memory_candidate_scores', '') or '-'}` "
+                    f"reason=`{result.get('memory_retrieval_no_match_reason', '') or '-'}`"
+                )
 
             st.subheader("Frage")
             st.write(result.get("question", ""))
@@ -1452,6 +1617,19 @@ def render_golden_test_mode_view(config: SQLAgentConfig) -> None:
         value=True,
         key="golden_use_approved_memory",
     )
+    runtime_mode = st.radio(
+        "Golden Runtime",
+        GOLDEN_RUNTIME_MODES,
+        index=GOLDEN_RUNTIME_MODES.index(DEFAULT_GOLDEN_RUNTIME_MODE),
+        format_func=lambda mode: GOLDEN_RUNTIME_LABELS[mode],
+        key="golden_runtime_mode",
+        help=(
+            "Standard ist der echte Chat-Pfad. Der direkte SQL-Agent-Modus ist nur "
+            "für isoliertes Debugging und testet nicht den vollständigen Runtime-Pfad."
+        ),
+        horizontal=True,
+    )
+    st.caption(GOLDEN_RUNTIME_HELP[runtime_mode])
 
     if not st.session_state.last_golden_run_id:
         st.info("Es gibt noch keinen vorherigen Golden-Testlauf. Wiederholen-Buttons sind deaktiviert, bis ein Lauf abgeschlossen wurde.")
@@ -1472,6 +1650,7 @@ def render_golden_test_mode_view(config: SQLAgentConfig) -> None:
             run_golden_question_ids(
                 selected_golden_question_ids(questions),
                 use_approved_memory=use_approved_memory,
+                runtime_mode=runtime_mode,
                 config=config,
             )
     with control_cols[3]:
@@ -1479,6 +1658,7 @@ def render_golden_test_mode_view(config: SQLAgentConfig) -> None:
             run_golden_question_ids(
                 all_question_ids,
                 use_approved_memory=use_approved_memory,
+                runtime_mode=runtime_mode,
                 config=config,
             )
     with control_cols[4]:
@@ -1489,6 +1669,7 @@ def render_golden_test_mode_view(config: SQLAgentConfig) -> None:
             run_golden_question_ids(
                 ordered_subset(st.session_state.last_selected_question_ids, questions),
                 use_approved_memory=use_approved_memory,
+                runtime_mode=runtime_mode,
                 config=config,
             )
     with control_cols[5]:
@@ -1503,6 +1684,7 @@ def render_golden_test_mode_view(config: SQLAgentConfig) -> None:
             run_golden_question_ids(
                 failed_or_errored,
                 use_approved_memory=use_approved_memory,
+                runtime_mode=runtime_mode,
                 config=config,
             )
 
@@ -1521,6 +1703,17 @@ def render_golden_test_mode_view(config: SQLAgentConfig) -> None:
     render_golden_results(st.session_state.last_golden_results)
 
 
+def _format_token_usage(token_usage: dict | None) -> str:
+    if not token_usage:
+        return ""
+    total = int(token_usage.get("total_tokens", 0))
+    input_tokens = int(token_usage.get("input_tokens", 0))
+    output_tokens = int(token_usage.get("output_tokens", 0))
+    if total <= 0:
+        return ""
+    return f"Σ Tokens: {total:,} (Input: {input_tokens:,} · Output: {output_tokens:,})".replace(",", ".")
+
+
 def render_step_log(record: dict) -> None:
     step_log = record.get("agent_step_log", [])
     if not step_log:
@@ -1529,6 +1722,9 @@ def render_step_log(record: dict) -> None:
             with st.expander("Ablaufschritte", expanded=False):
                 for step in trace:
                     st.markdown(f"- {step}")
+                token_line = _format_token_usage(record.get("token_usage"))
+                if token_line:
+                    st.markdown(f"- {token_line}")
         return
 
     with st.expander("Ablaufschritte", expanded=False):
@@ -1555,6 +1751,11 @@ def render_step_log(record: dict) -> None:
                 if primary:
                     suffix = f" ({tier})" if tier else ""
                     st.caption(f"Modell: {primary}{suffix}")
+
+        token_line = _format_token_usage(record.get("token_usage"))
+        if token_line:
+            st.markdown("---")
+            st.markdown(f"**{token_line}**")
 
 
 def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
@@ -1717,6 +1918,9 @@ def main() -> None:
                 })
 
             record = run_orchestrator(question, config=config, chat_context=chat_context, step_callback=_on_step)
+            token_line = _format_token_usage(record.get("token_usage"))
+            if token_line:
+                status.write(token_line)
             status.update(label="Fertig ✓", state="complete", expanded=False)
         record["agent_step_log"] = _steps_log
         record["user_question"] = question

@@ -1,0 +1,48 @@
+id: delivered_quantity_by_customer
+scenario: wuerth_local
+status: approved
+is_active: true
+title: Delivered quantity by customer
+intent: delivered_quantity_by_customer
+trigger_phrases:
+  - Gelieferte Menge pro Kunde
+  - Liefermenge je Kunde
+  - Delivered quantity by customer
+  - Quantity delivered by ship to party
+searchable_summary: Sum actual quantity delivered grouped by verified shipment customer field shiptoparty.
+searchable_terms:
+  - delivered_quantity
+  - quantity
+  - shipment
+  - customer
+  - shiptoparty
+  - liefermenge
+  - kunde
+synonyms:
+  gelieferte menge: delivered_quantity
+  liefermenge: delivered_quantity
+  delivered quantity: delivered_quantity
+  kunde: customer
+  shiptoparty: customer
+required_tables:
+  - wuerth.shipments
+required_columns:
+  - actual_quantity_delivered_in_sales_units
+  - shiptoparty
+business_rules:
+  - Use SUM(actual_quantity_delivered_in_sales_units) for delivered quantity.
+  - Group customer-level shipment reports by shiptoparty unless the user explicitly asks for soldtoparty.
+  - Do not use number_delivery_items as a quantity measure.
+sql_pattern: SELECT shiptoparty, SUM(actual_quantity_delivered_in_sales_units) AS delivered_quantity FROM wuerth.shipments GROUP BY shiptoparty ORDER BY delivered_quantity DESC LIMIT 50
+do_not_use_when:
+  - The user asks for revenue, gross profit, packing costs, shipment date, or shipping point.
+  - The user asks for invoice quantity; no invoice quantity field is verified.
+validation_checks:
+  - SQL must be read-only SELECT.
+  - SQL must use only verified shipment columns.
+  - SQL must not join invoices for shipment-only quantity questions.
+source_question: Gelieferte Menge pro Kunde
+source_sql: ""
+approved_by: manual_seed_from_verified_wuerth_assets
+approved_at: "2026-06-05T00:00:00"
+version: 1

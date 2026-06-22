@@ -11,7 +11,8 @@ from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
-from src.agent.router_template_retriever import find_similar_templates_for_router
+from src.agent.router_template_retriever import retrieve_memory_for_router
+from src.config.scenarios import get_active_scenario_id, normalize_scenario_id
 from src.llm.model_adapter import invoke_model, get_provider
 
 
@@ -46,8 +47,10 @@ DETERMINISTIC_BLOCK_PATTERNS = (
 # ─────────────────────────────────────────────────────────────────────────────
 class RouterState(TypedDict, total=False):
     user_question: str
+    active_scenario: str
     llm_provider: str
     ollama_host: str
+    chat_context: str
 
     intent: str                # aggregation | ranking | time_series | cross_table | explanation
     needs_sql: bool
@@ -62,6 +65,7 @@ class RouterState(TypedDict, total=False):
     execution_plan: list
     clarification_question: str
     template_candidates: list[dict[str, Any]]
+    memory_retrieval: dict[str, Any]
     _router_raw_response: str
 
 
@@ -98,17 +102,25 @@ def _format_excerpt_for_prompt(excerpt: dict[str, Any]) -> str:
     )
 
 
-def build_router_prompt(question: str, excerpt_text: str) -> str:
+def build_router_prompt(question: str, excerpt_text: str, chat_context: str = "") -> str:
+    history_block = ""
+    if chat_context.strip():
+        history_block = f"""CONVERSATION HISTORY (resolve follow-up references from this; the latest question may omit the entity, sales area, metric, or grouping named earlier):
+{chat_context}
+
+"""
     return f"""Classify this user question for a data analytics system.
 Reply ONLY with a JSON object. No markdown, no explanation, no code fences.
 
 CONTEXT:
 {excerpt_text}
 
-CLASSIFICATION RULES:
-- intent: one of the question_types above (aggregation/ranking/time_series/cross_table/explanation)
-- needs_sql: false only when question matches no_sql_signals, true otherwise
-- needs_clarification: true only when too vague to act on (e.g. "how is it going?"). Default false.
+{history_block}CLASSIFICATION RULES:
+- intent: one of the question_types above (aggregation/ranking/time_series/cross_table/explanation/data_overview)
+- data_overview: set intent="data_overview" with needs_sql=false and needs_clarification=false when the user asks broadly what data, tables, columns, KPIs or metrics are available, or for an overview/catalog of the dataset (overview_signals). Do NOT treat such questions as clarification-needed.
+- needs_sql: false only when question matches no_sql_signals or is a data_overview, true otherwise
+- needs_clarification: true only when too vague to act on (e.g. "how is it going?"). Default false. If the question is a follow-up whose missing reference (entity, sales area, metric, grouping) is clearly resolvable from the CONVERSATION HISTORY, resolve it and set needs_clarification=false. Only ask when the history does not resolve the reference.
+- answering a pending clarification: if the most recent CONVERSATION HISTORY entry is a "RÜCKFRAGE DES SYSTEMS" (a clarification the system asked) and the current question answers it (e.g. supplies the missing time period, grouping, or entity — even as a bare value like "2025" or "01.07.2025 - 31.12.2025"), merge the earlier question with this answer, classify by the merged question, and set needs_clarification=false and needs_sql=true. Only keep needs_clarification=true if the answer still leaves the merged question ambiguous.
 - blocked_or_unsafe: true when blocked patterns appear
 - complexity_tier:
     "easy" → single table, simple aggregation (COUNT/SUM/AVG), no JOIN, no time comparison
@@ -192,21 +204,17 @@ def deterministic_block_reason(question: str) -> str:
     return ""
 
 
-def _template_candidates(
+def _candidate_list(memory_retrieval: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = memory_retrieval.get("candidates", [])
+    return candidates if isinstance(candidates, list) else []
+
+
+def _fallback_state(
+    reason: str,
     *,
-    question: str,
-    memory_intent_key: str | None,
-    intent: str | None,
-) -> list[dict[str, Any]]:
-    return find_similar_templates_for_router(
-        question,
-        memory_intent_key,
-        intent,
-        limit=3,
-    )
-
-
-def _fallback_state(reason: str, *, question: str = "") -> dict[str, Any]:
+    question: str = "",
+    memory_retrieval: dict[str, Any],
+) -> dict[str, Any]:
     return {
         "intent": "aggregation",
         "needs_sql": True,
@@ -220,16 +228,18 @@ def _fallback_state(reason: str, *, question: str = "") -> dict[str, Any]:
         "constraints": {"time_window": None, "grouping_level": []},
         "execution_plan": ["retrieve_templates", "run_sql_agent", "run_reporting_agent"],
         "clarification_question": "",
-        "template_candidates": _template_candidates(
-            question=question,
-            memory_intent_key="aggregation",
-            intent="aggregation",
-        ),
+        "template_candidates": _candidate_list(memory_retrieval),
+        "memory_retrieval": memory_retrieval,
         "_router_raw_response": "",
     }
 
 
-def _blocked_state(question: str, reason: str) -> dict[str, Any]:
+def _blocked_state(
+    question: str,
+    reason: str,
+    *,
+    memory_retrieval: dict[str, Any],
+) -> dict[str, Any]:
     return {
         "intent": "blocked",
         "needs_sql": False,
@@ -243,33 +253,41 @@ def _blocked_state(question: str, reason: str) -> dict[str, Any]:
         "constraints": {"time_window": None, "grouping_level": []},
         "execution_plan": [],
         "clarification_question": "Diese Anfrage kann aus Sicherheitsgründen nicht verarbeitet werden.",
-        "template_candidates": _template_candidates(
-            question=question,
-            memory_intent_key="blocked",
-            intent="blocked",
-        ),
+        "template_candidates": _candidate_list(memory_retrieval),
+        "memory_retrieval": memory_retrieval,
         "_router_raw_response": "",
     }
 
 
 def classify_intent(state: RouterState) -> dict[str, Any]:
     question     = state.get("user_question", "")
+    scenario_id  = normalize_scenario_id(state.get("active_scenario") or get_active_scenario_id())
     llm_provider = state.get("llm_provider", get_provider())
     ollama_host  = state.get("ollama_host", "http://localhost:11434")
+    chat_context = state.get("chat_context", "")
+    memory_retrieval = retrieve_memory_for_router(
+        question,
+        scenario=scenario_id,
+        limit=3,
+    )
 
     block_reason = deterministic_block_reason(question)
     if block_reason:
-        return _blocked_state(question, block_reason)
+        return _blocked_state(question, block_reason, memory_retrieval=memory_retrieval)
 
     try:
         excerpt      = load_router_excerpt()
         excerpt_text = _format_excerpt_for_prompt(excerpt)
     except Exception as e:
-        return _fallback_state(f"Excerpt konnte nicht geladen werden: {e}", question=question)
+        return _fallback_state(
+            f"Excerpt konnte nicht geladen werden: {e}",
+            question=question,
+            memory_retrieval=memory_retrieval,
+        )
 
     try:
         response = invoke_model(
-            build_router_prompt(question, excerpt_text),
+            build_router_prompt(question, excerpt_text, chat_context),
             model_name=_get_router_model(llm_provider),
             provider=llm_provider,
             ollama_host=ollama_host,
@@ -294,15 +312,16 @@ def classify_intent(state: RouterState) -> dict[str, Any]:
             "constraints":            parsed.get("constraints", {"time_window": None, "grouping_level": []}),
             "execution_plan":         parsed.get("execution_plan", []),
             "clarification_question": parsed.get("clarification_question", ""),
-            "template_candidates":    _template_candidates(
-                question=question,
-                memory_intent_key=memory_intent_key,
-                intent=intent,
-            ),
+            "template_candidates":    _candidate_list(memory_retrieval),
+            "memory_retrieval":       memory_retrieval,
             "_router_raw_response":   raw,
         }
     except Exception as e:
-        return _fallback_state(f"Parse-Fehler: {e}", question=question)
+        return _fallback_state(
+            f"Parse-Fehler: {e}",
+            question=question,
+            memory_retrieval=memory_retrieval,
+        )
 
 
 def clarification_gate(state: RouterState) -> dict[str, Any]:

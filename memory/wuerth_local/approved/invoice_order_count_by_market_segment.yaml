@@ -1,0 +1,46 @@
+id: invoice_order_count_by_market_segment
+scenario: wuerth_local
+status: approved
+is_active: true
+title: Invoice order count by market segment
+intent: invoice_order_count_by_market_segment
+trigger_phrases:
+  - Aufträge nach Marktsegment
+  - Rechnungsaufträge pro Marktsegment
+  - Invoice orders by market segment
+  - Order count by market segment
+searchable_summary: Count distinct invoice order numbers grouped by verified invoice market_segment.
+searchable_terms:
+  - invoice
+  - order_count
+  - order
+  - market_segment
+  - marktsegment
+synonyms:
+  aufträge: order
+  auftraege: order
+  rechnungen: invoice
+  market segment: market_segment
+  marktsegment: market_segment
+required_tables:
+  - wuerth.invoices
+required_columns:
+  - order_number
+  - market_segment
+business_rules:
+  - Use wuerth.invoices.market_segment for invoice-side market segment grouping.
+  - Use COUNT(DISTINCT order_number) for invoice order count.
+  - Do not translate market segment codes without a verified code dictionary.
+sql_pattern: SELECT market_segment, COUNT(DISTINCT order_number) AS invoice_order_count FROM wuerth.invoices GROUP BY market_segment ORDER BY invoice_order_count DESC LIMIT 50
+do_not_use_when:
+  - The user asks for revenue, invoice amount, gross profit, freight, packing costs, or shipment metrics.
+  - The user asks for sales area instead of market segment.
+validation_checks:
+  - SQL must be read-only SELECT.
+  - SQL must use only verified invoice columns.
+  - SQL must not use material_price as money.
+source_question: Aufträge nach Marktsegment
+source_sql: ""
+approved_by: manual_seed_from_verified_wuerth_assets
+approved_at: "2026-06-05T00:00:00"
+version: 1
