@@ -23,7 +23,7 @@ This roadmap turns successful Wuerth logistics analysis results into determinist
 
 - [x] **Phase 1: Deterministic Backend Deck Slice** - Backend code can validate export eligibility and render a deterministic Wuerth PPTX from a successful record. (completed 2026-06-21)
 - [x] **Phase 2: Streamlit Downloadable Deck Slice** - Users can download a Wuerth deck from a successful Streamlit analysis run. (completed 2026-06-21)
-- [ ] **Phase 3: Readable Evidence And Fallback Slice** - Evidence slides stay readable through truncation, top-N handling, and explicit fallbacks.
+- [x] **Phase 3: Readable Evidence And Fallback Slice** - Evidence slides stay readable through truncation, top-N handling, and explicit fallbacks. (completed 2026-06-22)
 - [ ] **Phase 4: Memory Governance And RBAC Slice** - Approved memory use becomes traceable and memory-template actions are role-controlled.
 - [ ] **Phase 5: Final Docs And Demo Slice** - Users can understand, run, demo, and explain the implemented Wuerth PPT export path.
 
@@ -103,7 +103,7 @@ Plans:
   4. Long text, empty result, unsupported chart shape, and table truncation cases are covered by automated tests.
 
 **Verification approach:** Run presentation export tests with long text, empty results, unsupported charts, and top-N categorical data, then inspect generated sample deck text for truncation notes and fallback reasons.
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans complete
 Plans:
 
 **Wave 1**
@@ -120,7 +120,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 03-04-PLAN.md - Add final Phase 3 regression coverage and thin Streamlit warning display
+- [x] 03-04-PLAN.md - Add final Phase 3 regression coverage and thin Streamlit warning display
 
 ### Phase 4: Memory Governance And RBAC Slice
 
@@ -210,6 +210,6 @@ Phases execute in numeric order: 1, 2, 3, 4, 5.
 |-------|----------------|--------|-----------|
 | 1. Deterministic Backend Deck Slice | 3/3 | Complete    | 2026-06-21 |
 | 2. Streamlit Downloadable Deck Slice | 3/3 | Complete   | 2026-06-21 |
-| 3. Readable Evidence And Fallback Slice | 3/4 | In Progress|  |
+| 3. Readable Evidence And Fallback Slice | 4/4 | Complete   | 2026-06-22 |
 | 4. Memory Governance And RBAC Slice | 0/TBD | Not started | - |
 | 5. Final Docs And Demo Slice | 0/TBD | Not started | - |
