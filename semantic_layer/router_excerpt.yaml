@@ -20,6 +20,9 @@ question_types:
   explanation:
     needs_sql: false
     complexity: none      # Definitionen, Erklärungen — kein SQL nötig
+  data_overview:
+    needs_sql: false
+    complexity: none      # Überblick: welche Daten/Tabellen/Spalten/KPIs vorhanden sind
 
 complexity_signals:
   hard:  [join, vergleich, entwicklung, trend, über zeit, mehrere, anteil, zeitreihe, pro monat, wöchentlich, compare, over time, per month, breakdown, by nation, by customer, by region]
@@ -28,6 +31,9 @@ complexity_signals:
 
 no_sql_signals:
   [bedeutet, definiere, erkläre, was ist, wie funktioniert, what is, explain, define, describe, was bedeutet]
+
+overview_signals:
+  [überblick, ueberblick, welche daten, welche tabellen, welche spalten, welche kpis, welche kennzahlen, was ist vorhanden, was kann ich fragen, was kannst du, datenkatalog, overview, what data, which tables, which columns]
 
 blocked:
   [drop, delete, truncate, update, insert, alter, passwort, password, credentials, pg_, information_schema, admin, root]

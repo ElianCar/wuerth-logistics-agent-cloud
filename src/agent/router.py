@@ -50,6 +50,7 @@ class RouterState(TypedDict, total=False):
     active_scenario: str
     llm_provider: str
     ollama_host: str
+    chat_context: str
 
     intent: str                # aggregation | ranking | time_series | cross_table | explanation
     needs_sql: bool
@@ -101,17 +102,25 @@ def _format_excerpt_for_prompt(excerpt: dict[str, Any]) -> str:
     )
 
 
-def build_router_prompt(question: str, excerpt_text: str) -> str:
+def build_router_prompt(question: str, excerpt_text: str, chat_context: str = "") -> str:
+    history_block = ""
+    if chat_context.strip():
+        history_block = f"""CONVERSATION HISTORY (resolve follow-up references from this; the latest question may omit the entity, sales area, metric, or grouping named earlier):
+{chat_context}
+
+"""
     return f"""Classify this user question for a data analytics system.
 Reply ONLY with a JSON object. No markdown, no explanation, no code fences.
 
 CONTEXT:
 {excerpt_text}
 
-CLASSIFICATION RULES:
-- intent: one of the question_types above (aggregation/ranking/time_series/cross_table/explanation)
-- needs_sql: false only when question matches no_sql_signals, true otherwise
-- needs_clarification: true only when too vague to act on (e.g. "how is it going?"). Default false.
+{history_block}CLASSIFICATION RULES:
+- intent: one of the question_types above (aggregation/ranking/time_series/cross_table/explanation/data_overview)
+- data_overview: set intent="data_overview" with needs_sql=false and needs_clarification=false when the user asks broadly what data, tables, columns, KPIs or metrics are available, or for an overview/catalog of the dataset (overview_signals). Do NOT treat such questions as clarification-needed.
+- needs_sql: false only when question matches no_sql_signals or is a data_overview, true otherwise
+- needs_clarification: true only when too vague to act on (e.g. "how is it going?"). Default false. If the question is a follow-up whose missing reference (entity, sales area, metric, grouping) is clearly resolvable from the CONVERSATION HISTORY, resolve it and set needs_clarification=false. Only ask when the history does not resolve the reference.
+- answering a pending clarification: if the most recent CONVERSATION HISTORY entry is a "RÜCKFRAGE DES SYSTEMS" (a clarification the system asked) and the current question answers it (e.g. supplies the missing time period, grouping, or entity — even as a bare value like "2025" or "01.07.2025 - 31.12.2025"), merge the earlier question with this answer, classify by the merged question, and set needs_clarification=false and needs_sql=true. Only keep needs_clarification=true if the answer still leaves the merged question ambiguous.
 - blocked_or_unsafe: true when blocked patterns appear
 - complexity_tier:
     "easy" → single table, simple aggregation (COUNT/SUM/AVG), no JOIN, no time comparison
@@ -255,6 +264,7 @@ def classify_intent(state: RouterState) -> dict[str, Any]:
     scenario_id  = normalize_scenario_id(state.get("active_scenario") or get_active_scenario_id())
     llm_provider = state.get("llm_provider", get_provider())
     ollama_host  = state.get("ollama_host", "http://localhost:11434")
+    chat_context = state.get("chat_context", "")
     memory_retrieval = retrieve_memory_for_router(
         question,
         scenario=scenario_id,
@@ -277,7 +287,7 @@ def classify_intent(state: RouterState) -> dict[str, Any]:
 
     try:
         response = invoke_model(
-            build_router_prompt(question, excerpt_text),
+            build_router_prompt(question, excerpt_text, chat_context),
             model_name=_get_router_model(llm_provider),
             provider=llm_provider,
             ollama_host=ollama_host,

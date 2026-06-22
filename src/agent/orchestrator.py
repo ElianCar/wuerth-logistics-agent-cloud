@@ -8,13 +8,14 @@ from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
+from src.agent.data_overview import build_data_overview
 from src.agent.id_utils import generate_run_id
 from src.agent.langgraph_sql_agent import SQLAgentConfig, StepCallback, run_sql_agent
 from src.agent.logging_utils import append_csv_row, current_timestamp, get_log_dir
 from src.agent.reporting_agent import build_reporting_result
 from src.agent.router import RouterState, build_router_graph
-from src.config.scenarios import get_active_scenario_id
-from src.llm.model_adapter import get_provider
+from src.config.scenarios import get_active_scenario, get_active_scenario_id
+from src.llm.model_adapter import get_provider, get_token_usage, reset_token_usage
 
 load_dotenv()
 
@@ -375,6 +376,7 @@ def run_router_node(state: OrchestratorState) -> dict[str, Any]:
         "active_scenario": get_active_scenario_id(),
         "llm_provider": state.get("llm_provider", get_provider()),
         "ollama_host": state.get("ollama_host", "http://localhost:11434"),
+        "chat_context": state.get("chat_context", ""),
     }
     result: RouterState = _get_compiled_router().invoke(router_input, {"recursion_limit": 10})
 
@@ -572,9 +574,51 @@ def terminal_response(state: OrchestratorState) -> dict[str, Any]:
     }
 
 
+def data_overview_response(state: OrchestratorState) -> dict[str, Any]:
+    try:
+        answer = build_data_overview(get_active_scenario())
+    except Exception as error:  # pragma: no cover - defensive
+        answer = (
+            "Der Datenüberblick konnte nicht erstellt werden: "
+            f"{error}"
+        )
+
+    overview_result = {
+        "final_answer": answer,
+        "answer": answer,
+        "execution_success": True,
+        "validation_success": True,
+        "fallback_used": False,
+        "generated_sql": "",
+        "final_sql": "",
+        "sql_valid": True,
+        "sql_error": "",
+        "query_result": {},
+        "source_tables": [],
+        "row_count": 0,
+        "total_attempts": 0,
+        "result_status": "data_overview",
+        "error_type": "",
+        "error_message": "",
+    }
+    router_context = _build_router_context(state)
+    reporting_result = _build_reporting_result(
+        user_question=state.get("user_question", ""),
+        router_context=router_context,
+        result=overview_result,
+    )
+    return {
+        **overview_result,
+        "chart_spec": reporting_result["chart_plan"],
+        "reporting_result": reporting_result,
+    }
+
+
 def route_after_router(
     state: OrchestratorState,
-) -> Literal["terminal_response", "select_model"]:
+) -> Literal["terminal_response", "select_model", "data_overview"]:
+    if state.get("intent") == "data_overview":
+        return "data_overview"
     if (
         state.get("needs_clarification")
         or state.get("blocked_or_unsafe")
@@ -626,16 +670,24 @@ def build_orchestrator_graph(step_callback: StepCallback | None = None):
         _notify_end("terminal_response", _start)
         return result
 
+    def _data_overview_with_callback(state: OrchestratorState) -> dict[str, Any]:
+        _start = perf_counter()
+        result = data_overview_response(state)
+        _notify_end("data_overview", _start)
+        return result
+
     graph = StateGraph(OrchestratorState)
     graph.add_node("run_router", _run_router_node_with_callback)
     graph.add_node("select_model", _select_model_with_callback)
     graph.add_node("run_sql_agent", _make_run_sql_agent_node(step_callback))
     graph.add_node("terminal_response", _terminal_response_with_callback)
+    graph.add_node("data_overview", _data_overview_with_callback)
     graph.add_edge(START, "run_router")
     graph.add_conditional_edges("run_router", route_after_router)
     graph.add_conditional_edges("select_model", route_after_select_model)
     graph.add_edge("run_sql_agent", END)
     graph.add_edge("terminal_response", END)
+    graph.add_edge("data_overview", END)
     return graph.compile()
 
 
@@ -861,6 +913,7 @@ def run_orchestrator(
     sql_config = _coerce_sql_config(config)
     run_id = generate_run_id()
     started = perf_counter()
+    reset_token_usage()
     initial = _initial_state(
         user_question,
         run_id=run_id,
@@ -894,6 +947,7 @@ def run_orchestrator(
     final["force_fallback"] = force_fallback
     final.setdefault("template_candidates", [])
     final.setdefault("memory_retrieval", {})
+    final["token_usage"] = get_token_usage()
 
     if log_to_query_log:
         _log_router(run_id, final)
