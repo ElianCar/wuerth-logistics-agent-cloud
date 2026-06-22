@@ -809,6 +809,117 @@ class PresentationExportRichEvidenceTests(unittest.TestCase):
         self.assertTrue(any("rich text" in error.lower() for error in validate_slide_deck_spec(invalid_spec)))
 
 
+class PresentationExportRegressionTests(unittest.TestCase):
+    def test_w05_style_reopened_deck_keeps_readable_evidence_and_bold_summary(self) -> None:
+        raw_question = (
+            "Which order numbers have shipment records but no matching invoice records, "
+            "including ship-to party, customer material, shipment rows, source details, "
+            "and a management explanation that would be much too long for a cover title?"
+        )
+        rows = [
+            (
+                order_number,
+                shiptoparty,
+                customer_material,
+                shipment_rows,
+                source_system,
+                (
+                    "Sehr langer Pruefhinweis fuer die Regression mit Zusatztext, "
+                    f"der nicht die Folien ueberlaufen darf: {index}"
+                ),
+            )
+            for index, (
+                order_number,
+                shiptoparty,
+                customer_material,
+                shipment_rows,
+                source_system,
+                _note,
+            ) in enumerate(w05_many_category_rows(), start=1)
+        ]
+        record = w05_record(rows, row_count=50) | {
+            "user_question": raw_question,
+            "final_answer": "Sehr lange Antwort, die nur als Quelle fuer kurze Foliencopy dienen darf.",
+        }
+
+        with patch.dict(os.environ, {"PRESENTATION_EXPORT_MODE": "deterministic"}, clear=False):
+            export = build_presentation_export(record=record)
+
+        self.assertTrue(export.available, export.warnings)
+        self.assertLessEqual(len(export.deck_spec.title), 52)
+        presentation = Presentation(BytesIO(export.content))
+        slide_texts = pptx_slide_texts(export.content)
+        rendered_text = "\n".join(slide_texts)
+
+        self.assertIn("Sendungen ohne passende Rechnung", slide_texts[0])
+        self.assertNotIn(raw_question, slide_texts[0])
+        self.assertIn("Management-Zusammenfassung", rendered_text)
+        self.assertIn("Kennzahlen", rendered_text)
+        self.assertIn("Zeilen 1-10 von 50", rendered_text)
+        self.assertIn("Weitere Spalten ausgeblendet", rendered_text)
+        self.assertIn("Diagramm aus validierten Ergebnisdaten.", rendered_text)
+        self.assertIn("Sonstige", rendered_text)
+
+        summary_slide = next(
+            slide for slide, text in zip(presentation.slides, slide_texts)
+            if "Management-Zusammenfassung" in text
+        )
+        bold_runs = [
+            run.text.strip()
+            for shape in summary_slide.shapes
+            if getattr(shape, "has_text_frame", False)
+            for paragraph in shape.text_frame.paragraphs
+            for run in paragraph.runs
+            if run.font.bold and run.text.strip()
+        ]
+        self.assertTrue(any(text == "25" for text in bold_runs), bold_runs)
+
+    def test_empty_result_export_remains_unavailable_with_existing_reason(self) -> None:
+        result = {"columns": ["region", "shipment_count"], "rows": [], "row_count": 0}
+        record = orchestrator_record(
+            query_result=result,
+            row_count=0,
+            reporting_result=reporting_result(result),
+        )
+
+        with patch.dict(os.environ, {"PRESENTATION_EXPORT_MODE": "deterministic"}, clear=False):
+            export = build_presentation_export(record=record)
+
+        self.assertFalse(export.available)
+        self.assertEqual(export.content, b"")
+        self.assertEqual(export.unavailable_reason, "missing_query_rows")
+
+    def test_unsupported_chart_shape_stays_available_with_visible_german_fallback(self) -> None:
+        result = query_result(
+            ["region", "shipment_count", "cost"],
+            [("Sued", 90, 12), ("Nord", 80, 8), ("West", 70, 5)],
+        )
+        reporting = reporting_result(result)
+        reporting["chart_plan"] = {
+            "chart_type": "heatmap",
+            "render_allowed": True,
+            "x_axis": "region",
+            "y_axis": "shipment_count",
+            "reason": "User requested heatmap.",
+        }
+
+        with patch.dict(os.environ, {"PRESENTATION_EXPORT_MODE": "deterministic"}, clear=False):
+            export = build_presentation_export(
+                record=orchestrator_record(
+                    query_result=result,
+                    row_count=3,
+                    reporting_result=reporting,
+                )
+            )
+
+        self.assertTrue(export.available, export.warnings)
+        rendered_text = pptx_text(export.content)
+        self.assertIn("Darstellungshinweis", rendered_text)
+        self.assertIn("Diagrammtyp heatmap", rendered_text)
+        self.assertIn("nicht unterstuetzt", rendered_text)
+        self.assertIn("Die Evidenz wird als geordnete Tabelle gezeigt.", rendered_text)
+
+
 def generated_pptx_bytes() -> bytes:
     presentation = Presentation()
     slide = presentation.slides.add_slide(presentation.slide_layouts[0])
