@@ -106,6 +106,14 @@ _PRESENTATION_UNAVAILABLE_REASON_COPY: dict[str, str] = {
     "missing_query_columns": "The query result has no columns.",
     "missing_query_rows": "The query result has no rows.",
     "zero_row_count": "The query returned zero rows.",
+    "presentation_mode_invalid": "The configured PPT export mode is unsupported.",
+    "anthropic_api_key_missing": "ANTHROPIC_API_KEY is missing for Claude PPT generation.",
+    "anthropic_dependency_missing": "The Anthropic dependency is missing in the app environment.",
+    "claude_upload_failed": "Claude could not receive the template or analysis payload.",
+    "claude_generation_failed": "Claude PPT generation failed.",
+    "claude_generation_incomplete": "Claude PPT generation did not finish before the retry limit.",
+    "claude_output_missing": "Claude did not return a PowerPoint file.",
+    "claude_output_invalid": "Claude returned a file, but it was not a readable PowerPoint deck.",
 }
 
 

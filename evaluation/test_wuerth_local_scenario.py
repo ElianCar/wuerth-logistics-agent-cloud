@@ -64,10 +64,10 @@ class WuerthLocalScenarioTests(unittest.TestCase):
     def tearDown(self) -> None:
         reset_active_scenario_id()
 
-    def test_local_sidebar_options_are_demo_and_wuerth_local(self) -> None:
+    def test_sidebar_options_include_supported_scenarios(self) -> None:
         self.assertEqual(
             [scenario.scenario_id for scenario in get_scenario_options()],
-            ["demo", "wuerth_local"],
+            ["demo", "wuerth_local", "databricks"],
         )
 
     def test_wuerth_local_scenario_uses_postgres_and_local_allowed_tables(self) -> None:
