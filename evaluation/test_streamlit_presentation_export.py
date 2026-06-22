@@ -122,6 +122,9 @@ def _load_streamlit_app() -> types.ModuleType:
     fake_db = _module("src.agent.db", get_active_backend_metadata=lambda: {})
     fake_golden = _module(
         "src.agent.golden_test_runner",
+        DEFAULT_GOLDEN_RUNTIME_MODE="orchestrator",
+        GOLDEN_RUNTIME_MODES=("orchestrator", "direct_sql_agent"),
+        GoldenRuntimeMode=str,
         load_golden_questions=lambda: [],
         run_golden_tests=lambda *args, **kwargs: [],
     )
@@ -179,6 +182,12 @@ def _load_streamlit_app() -> types.ModuleType:
         "src.agent.memory_validation",
         validate_proposed_template=lambda *args, **kwargs: [],
     )
+    fake_memory_lifecycle = _module(
+        "src.agent.memory_lifecycle",
+        MemoryLifecycleError=RuntimeError,
+        approve_candidate_to_vsm=lambda *args, **kwargs: {},
+        load_approved_template_records=lambda *args, **kwargs: [],
+    )
     fake_scenarios = _module(
         "src.config.scenarios",
         SCENARIOS={},
@@ -212,6 +221,7 @@ def _load_streamlit_app() -> types.ModuleType:
         "src.agent.logging_utils": fake_logging,
         "src.agent.presentation_export": fake_presentation_export,
         "src.agent.memory_store": fake_memory_store,
+        "src.agent.memory_lifecycle": fake_memory_lifecycle,
         "src.agent.memory_validation": fake_memory_validation,
         "src.config.scenarios": fake_scenarios,
         "src.llm.model_adapter": fake_model_adapter,
