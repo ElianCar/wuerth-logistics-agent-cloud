@@ -13,6 +13,7 @@ TITLE_LIMIT = 52
 TABLE_ROWS_PER_PAGE = 10
 TABLE_COLUMN_LIMIT = 5
 TABLE_PAGE_LIMIT = 3
+CHART_POINT_LIMIT = 50
 TOP_N_CATEGORY_LIMIT = 8
 TOP_N_LABEL_LIMIT = 32
 EXECUTIVE_BULLET_LIMIT = 8
@@ -894,6 +895,17 @@ def _build_chart_plans(
             )
         )
 
+    if render_requested and chart_type in {"bar", "line"}:
+        planned_chart, fallback_reason = _chart_from_reporting_plan(
+            chart_plan=chart_plan,
+            columns=columns,
+            rows=rows,
+        )
+        if planned_chart is not None:
+            return [planned_chart], []
+        if fallback_reason:
+            fallback_reasons.append(fallback_reason)
+
     if not rows:
         reason = "Keine Ergebniszeilen fuer eine Visualisierung vorhanden."
         fallback_reasons.append(reason)
@@ -931,6 +943,67 @@ def _build_chart_plans(
         )
 
     return charts, _unique(fallback_reasons)
+
+
+def _chart_from_reporting_plan(
+    *,
+    chart_plan: dict[str, Any],
+    columns: list[str],
+    rows: list[dict[str, str]],
+) -> tuple[EvidenceChartPlan | None, str]:
+    chart_type = str(chart_plan.get("chart_type") or "").strip().lower()
+    x_axis = str(chart_plan.get("x_axis") or "").strip()
+    y_axis = str(chart_plan.get("y_axis") or "").strip()
+    if chart_type not in {"bar", "line"}:
+        return None, ""
+    if x_axis not in columns or y_axis not in columns:
+        return None, "Geplantes Diagramm konnte nicht erstellt werden, weil Achsenspalten im Ergebnis fehlen."
+
+    chart_rows: list[dict[str, Any]] = []
+    for row in rows[:CHART_POINT_LIMIT]:
+        label = str(row.get(x_axis, "")).strip()
+        value = _decimal_or_none(row.get(y_axis))
+        if not label or value is None:
+            continue
+        chart_rows.append(
+            {
+                "label": _trim_label(label),
+                "source_label": label,
+                "value": _json_safe_value(value),
+            }
+        )
+
+    if not chart_rows:
+        return None, "Geplantes Diagramm konnte nicht erstellt werden, weil keine numerischen Diagrammwerte vorhanden sind."
+
+    notes = [str(note).strip() for note in (chart_plan.get("note"), chart_plan.get("reason")) if str(note or "").strip()]
+    if len(rows) > CHART_POINT_LIMIT and not any("50" in note for note in notes):
+        notes.append("Diagramm zeigt die ersten 50 Ergebniszeilen.")
+
+    title = str(chart_plan.get("title") or "").strip()
+    if not title:
+        title = f"{_display_column_name(y_axis)} nach {_display_column_name(x_axis)}"
+
+    orientation = str(chart_plan.get("orientation") or "vertical").strip().lower()
+    if orientation not in {"vertical", "horizontal"}:
+        orientation = "vertical"
+    if chart_type == "line":
+        orientation = "vertical"
+
+    return (
+        EvidenceChartPlan(
+            chart_type=chart_type,
+            title=_trim_text(title, 90),
+            rows=chart_rows,
+            orientation=orientation,
+            render_allowed=True,
+            x_label=str(chart_plan.get("x_label") or _display_column_name(x_axis)),
+            y_label=str(chart_plan.get("y_label") or _display_column_name(y_axis)),
+            notes=_unique([_trim_text(note, 160) for note in notes]),
+            category_column=x_axis,
+        ),
+        "",
+    )
 
 
 def _top_n_chart(*, column: str, rows: list[dict[str, str]]) -> EvidenceChartPlan | None:

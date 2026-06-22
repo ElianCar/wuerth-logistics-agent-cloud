@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import date, datetime
 from hashlib import sha256
 from io import BytesIO
 import json
@@ -18,6 +19,7 @@ from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx import Presentation
 from pptx.util import Inches, Pt
 
+from src.agent.logging_utils import current_timestamp, get_log_dir
 from src.agent.presentation_planner import (
     PlannerInvocation,
     PresentationPlanningConfig,
@@ -43,11 +45,13 @@ DEFAULT_PRESENTATION_MAX_TOKENS = 16000
 DEFAULT_PRESENTATION_TIMEOUT_SECONDS = 480
 DEFAULT_PRESENTATION_MAX_ROWS_FOR_CLAUDE = 80
 DEFAULT_PRESENTATION_PAUSE_RETRIES = 8
+PRESENTATION_PLANNER_LOG_NAME = "presentation_planner_debug.jsonl"
 MAX_TABLE_ROWS_PER_SLIDE = 10
+MAX_CHART_POINTS_PER_SLIDE = 50
 MAX_TABLE_COLUMNS_PER_SLIDE = 5
 MAX_BODY_ITEMS_PER_SLIDE = 8
 MAX_BODY_TEXT_CHARS_PER_SLIDE = 700
-COVER_SUBTITLE_TEXT_CHARS = 170
+COVER_SUBTITLE_TEXT_CHARS = 118
 EXPECTED_TEMPLATE_SHA256 = "041DE8AC3214DC1892F127021F223D5B9C9D5571B10D6949D022B5A357190EA5"
 FIXED_PPTX_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 FIXED_PPTX_CORE_TIMESTAMP = "1980-01-01T00:00:00Z"
@@ -169,6 +173,10 @@ class PresentationExportError(ValueError):
     """Raised when deterministic PPTX rendering fails unexpectedly."""
 
 
+class PresentationPlannerInvocationError(RuntimeError):
+    """Raised when the optional Sonnet planner request cannot return text."""
+
+
 class ClaudePresentationExportError(PresentationExportError):
     def __init__(self, reason: str, warning: str) -> None:
         super().__init__(warning)
@@ -259,6 +267,10 @@ def build_deterministic_presentation_export(
         return _unavailable_export(eligibility.reason)
 
     try:
+        planning_config, planner_invocation = _resolve_planner_dependencies(
+            planning_config=planning_config,
+            planner_invocation=planner_invocation,
+        )
         deck_spec = build_slide_deck_spec(
             record=record,
             include_closing=include_closing,
@@ -307,6 +319,74 @@ def build_deterministic_presentation_export(
         template_audit=audit,
         deck_spec=deck_spec,
     )
+
+
+def build_sonnet_presentation_planner_invocation(
+    config: PresentationPlanningConfig,
+    *,
+    anthropic_client: Any | None = None,
+) -> PlannerInvocation:
+    """Build the optional Sonnet JSON-planner invocation for PPT planning."""
+
+    client_holder = anthropic_client
+
+    def invoke(prompt: str) -> str:
+        nonlocal client_holder
+        log_payload: dict[str, Any] = {
+            "timestamp": current_timestamp(),
+            "event": "success",
+            "mode": config.mode,
+            "model": config.model,
+            "max_tokens": config.max_tokens,
+            "timeout_seconds": config.timeout_seconds,
+            "prompt": prompt,
+        }
+        if client_holder is None:
+            try:
+                client_holder = _create_anthropic_client()
+            except ClaudePresentationExportError as error:
+                log_payload.update({"event": "failure", "error_type": type(error).__name__})
+                _append_presentation_planner_log(log_payload)
+                raise PresentationPlannerInvocationError(error.reason) from error
+        try:
+            response = _create_presentation_planner_message(
+                client_holder,
+                prompt=prompt,
+                config=config,
+            )
+            response_text = _response_text(response)
+            if not response_text:
+                raise PresentationPlannerInvocationError("planner_empty_response")
+            log_payload["response_text"] = response_text
+            _append_presentation_planner_log(log_payload)
+            return response_text
+        except Exception as error:
+            log_payload.update({"event": "failure", "error_type": type(error).__name__})
+            _append_presentation_planner_log(log_payload)
+            raise
+
+    return invoke
+
+
+def _append_presentation_planner_log(payload: dict[str, Any]) -> None:
+    try:
+        log_path = get_log_dir() / PRESENTATION_PLANNER_LOG_NAME
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+    except Exception as error:
+        print(f"Presentation planner logging failed: {type(error).__name__}")
+
+
+def _resolve_planner_dependencies(
+    *,
+    planning_config: PresentationPlanningConfig | None,
+    planner_invocation: PlannerInvocation | None,
+) -> tuple[PresentationPlanningConfig | None, PlannerInvocation | None]:
+    config = planning_config or PresentationPlanningConfig.from_env()
+    if config.mode == "llm" and planner_invocation is None:
+        return config, build_sonnet_presentation_planner_invocation(config)
+    return planning_config, planner_invocation
 
 
 def build_claude_presentation_export(
@@ -697,7 +777,8 @@ def validate_slide_deck_spec(
             errors.append(f"Slide {index} is missing required content.")
         if slide.slide_type in TABLE_REQUIRED_SLIDE_TYPES and (not slide.table_columns or not slide.table_rows):
             errors.append(f"Slide {index} is missing required table content.")
-        if len(slide.table_rows) > MAX_TABLE_ROWS_PER_SLIDE:
+        table_row_limit = MAX_CHART_POINTS_PER_SLIDE if slide.slide_type == "chart_evidence" else MAX_TABLE_ROWS_PER_SLIDE
+        if len(slide.table_rows) > table_row_limit:
             errors.append(f"Slide {index} table exceeds row limit.")
         if len(slide.table_columns) > MAX_TABLE_COLUMNS_PER_SLIDE:
             errors.append(f"Slide {index} table exceeds column limit.")
@@ -968,6 +1049,26 @@ def _create_claude_message(client: Any, *, messages: list[dict[str, Any]], conta
         ) from error
 
 
+def _create_presentation_planner_message(
+    client: Any,
+    *,
+    prompt: str,
+    config: PresentationPlanningConfig,
+) -> Any:
+    try:
+        return client.messages.create(
+            model=config.model,
+            max_tokens=config.max_tokens,
+            temperature=0,
+            messages=[{"role": "user", "content": prompt}],
+            timeout=config.timeout_seconds,
+        )
+    except Exception as error:
+        raise PresentationPlannerInvocationError(
+            f"planner_request_failed:{type(error).__name__}"
+        ) from error
+
+
 def _download_first_pptx(client: Any, file_ids: list[str]) -> tuple[bytes, str, list[str]]:
     warnings: list[str] = []
     for file_id in file_ids:
@@ -1170,6 +1271,10 @@ def _extract_file_ids(value: Any) -> list[str]:
 
 
 def _response_text_excerpt(response: Any) -> str:
+    return _trim_text(" ".join(_response_text(response).split()), 350)
+
+
+def _response_text(response: Any) -> str:
     chunks: list[str] = []
 
     def visit(item: Any) -> None:
@@ -1193,7 +1298,7 @@ def _response_text_excerpt(response: Any) -> str:
             visit(getattr(item, "content"))
 
     visit(getattr(response, "content", response))
-    return _trim_text(" ".join(chunks), 350)
+    return "\n".join(chunk.strip() for chunk in chunks if chunk.strip()).strip()
 
 
 def _presentation_env_int(name: str, default: int) -> int:
@@ -1240,6 +1345,8 @@ def _normalize_zip_package(content: bytes, *, normalize_embedded_workbooks: bool
             payload = source.read(name)
             if name == "docProps/core.xml":
                 payload = _normalize_core_properties(payload)
+            if name == "ppt/viewProps.xml":
+                payload = _force_normal_powerpoint_view(payload)
             if normalize_embedded_workbooks and name.endswith(".xlsx"):
                 payload = _normalize_zip_package(payload)
             target.writestr(info, payload)
@@ -1254,7 +1361,14 @@ def _normalize_core_properties(payload: bytes) -> bytes:
     return payload
 
 
+def _force_normal_powerpoint_view(payload: bytes) -> bytes:
+    if b"lastView=" in payload:
+        return re.sub(rb'lastView="[^"]+"', b'lastView="sldView"', payload, count=1)
+    return re.sub(rb"(<p:viewPr\b)", rb'\1 lastView="sldView"', payload, count=1)
+
+
 def _render_slide(slide: Any, slide_spec: SlideSpec, *, slide_number: int, deck_title: str) -> None:
+    is_cover_slide = slide_spec.layout_name == LAYOUT_COVER
     if slide_spec.layout_name == LAYOUT_COVER:
         _render_cover_slide(slide, slide_spec)
     elif slide_spec.layout_name == LAYOUT_KPI:
@@ -1265,7 +1379,8 @@ def _render_slide(slide: Any, slide_spec: SlideSpec, *, slide_number: int, deck_
         _render_two_column_slide(slide, slide_spec)
     else:
         _render_content_slide(slide, slide_spec)
-    _render_common_footer(slide, slide_spec, slide_number=slide_number, deck_title=deck_title)
+    if not is_cover_slide:
+        _render_common_footer(slide, slide_spec, slide_number=slide_number, deck_title=deck_title)
     _clear_unresolved_placeholder_text(slide)
 
 
@@ -1280,7 +1395,7 @@ def _render_cover_slide(slide: Any, slide_spec: SlideSpec) -> None:
     cover_text_color = RGBColor(255, 255, 255)
     _set_named_text(slide, "title", slide_spec.title, font_size=48, bold=True, color=cover_text_color)
     subtitle = slide_spec.body[0] if slide_spec.body else ""
-    _set_named_text(slide, "subtitle", subtitle, font_size=18, bold=True, color=cover_text_color)
+    _set_named_text(slide, "subtitle", subtitle, font_size=15, bold=True, color=cover_text_color)
     _set_named_text(
         slide,
         "footer_author",
@@ -1422,12 +1537,32 @@ def _add_layout_overlay_textbox(slide: Any, name: str) -> Any | None:
     if layout_shape is None:
         return None
     shape = slide.shapes.add_textbox(layout_shape.left, layout_shape.top, layout_shape.width, layout_shape.height)
-    fill_color = RGBColor(210, 0, 0) if slide.slide_layout.name == LAYOUT_COVER else RGBColor(255, 255, 255)
-    shape.fill.solid()
-    shape.fill.fore_color.rgb = fill_color
+    _copy_text_frame_layout(layout_shape, shape)
+    shape.fill.background()
     shape.line.fill.background()
     shape.name = name
     return shape
+
+
+def _copy_text_frame_layout(source_shape: Any, target_shape: Any) -> None:
+    if not getattr(source_shape, "has_text_frame", False) or not getattr(target_shape, "has_text_frame", False):
+        return
+    source_frame = source_shape.text_frame
+    target_frame = target_shape.text_frame
+    for attribute in (
+        "margin_left",
+        "margin_right",
+        "margin_top",
+        "margin_bottom",
+        "vertical_anchor",
+        "word_wrap",
+    ):
+        try:
+            value = getattr(source_frame, attribute)
+            if value is not None:
+                setattr(target_frame, attribute, value)
+        except (AttributeError, TypeError, ValueError):
+            continue
 
 
 def _set_named_text(
@@ -1441,7 +1576,7 @@ def _set_named_text(
     color: RGBColor | None = None,
 ) -> None:
     shape = _shape_by_name(slide, name)
-    if shape is None and name.startswith("footer_"):
+    if shape is None and name.startswith("footer_") and str(text).strip():
         shape = _add_layout_overlay_textbox(slide, name)
     if shape is None:
         return
@@ -1644,7 +1779,7 @@ def _native_chart_payload(slide_spec: SlideSpec) -> _NativeChartPayload | None:
         return None
 
     data = CategoryChartData()
-    if chart_type == "top_n_bar" and slide_spec.metadata.get("chart_orientation") == "horizontal":
+    if chart_type in {"bar", "top_n_bar"} and slide_spec.metadata.get("chart_orientation") == "horizontal":
         data.categories = list(reversed(categories))
         series_values = list(reversed(values))
     else:
@@ -1659,7 +1794,7 @@ def _native_chart_type(slide_spec: SlideSpec) -> Any | None:
     chart_type = str(slide_spec.metadata.get("chart_type", "bar") or "bar").lower()
     if chart_type == "line":
         return XL_CHART_TYPE.LINE_MARKERS
-    if chart_type == "top_n_bar" and slide_spec.metadata.get("chart_orientation") == "horizontal":
+    if chart_type in {"bar", "top_n_bar"} and slide_spec.metadata.get("chart_orientation") == "horizontal":
         return XL_CHART_TYPE.BAR_CLUSTERED
     if chart_type in {"bar", "top_n_bar"}:
         return XL_CHART_TYPE.COLUMN_CLUSTERED
@@ -1765,7 +1900,7 @@ def _chart_image(slide_spec: SlideSpec) -> BytesIO | None:
         ax.set_ylabel(_display_column_name(slide_spec.table_columns[1]), fontsize=9)
         ax.tick_params(axis="x", labelrotation=30, labelsize=8)
         ax.tick_params(axis="y", labelsize=8)
-    elif chart_type == "top_n_bar" and slide_spec.metadata.get("chart_orientation") == "horizontal":
+    elif chart_type in {"bar", "top_n_bar"} and slide_spec.metadata.get("chart_orientation") == "horizontal":
         labels = list(reversed(x_values))
         values = list(reversed(y_values))
         ax.barh(labels, values, color="#D00000")
@@ -1890,8 +2025,37 @@ def _cover_subtitle(record: dict[str, Any], reporting: dict[str, Any]) -> str:
 
 def _display_date(record: dict[str, Any]) -> str:
     generated_at = str(record.get("generated_at") or "").strip()
-    if generated_at:
-        return generated_at[:10]
+    for value in (generated_at, _date_from_run_id(record), date.today()):
+        formatted = _format_display_date(value)
+        if formatted:
+            return formatted
+    return ""
+
+
+def _date_from_run_id(record: dict[str, Any]) -> str:
+    run_id = str(record.get("run_id") or "").strip()
+    match = re.search(r"(?:^|_)((?:19|20)\d{6})(?:_|$)", run_id)
+    return match.group(1) if match else ""
+
+
+def _format_display_date(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.date().strftime("%d.%m.%Y")
+    if isinstance(value, date):
+        return value.strftime("%d.%m.%Y")
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", text):
+        return text
+    for pattern, candidate in (
+        ("%Y-%m-%d", text[:10]),
+        ("%Y%m%d", text[:8]),
+    ):
+        try:
+            return datetime.strptime(candidate, pattern).strftime("%d.%m.%Y")
+        except ValueError:
+            continue
     return ""
 
 

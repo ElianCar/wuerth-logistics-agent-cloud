@@ -11,7 +11,7 @@ CHART_DISPLAY_ROW_LIMIT = 50
 MAX_CATEGORICAL_VALUES = CHART_DISPLAY_ROW_LIMIT
 
 _DATE_NAME_PATTERN = re.compile(
-    r"(^|_)(date|day|week|month|quarter|year|time|period|created_at|updated_at)($|_)",
+    r"(^|_)(date|datum|day|tag|week|woche|month|monat|quarter|quartal|year|jahr|time|zeit|period|periode|created_at|updated_at)($|_)",
     re.IGNORECASE,
 )
 _AGGREGATE_NAME_PATTERN = re.compile(
@@ -525,7 +525,7 @@ def _unique_preserving_order(values: list[str]) -> list[str]:
 
 
 def _mostly_date_like(values: list[Any], normalized_name: str) -> bool:
-    if normalized_name in {"year", "o_year", "fiscal_year"}:
+    if normalized_name in {"year", "jahr", "o_year", "o_jahr", "fiscal_year", "fiscal_jahr"}:
         return all(_is_year_like(value) for value in values)
     date_like_count = sum(1 for value in values if _is_date_like(value))
     return bool(values) and date_like_count / len(values) >= 0.8

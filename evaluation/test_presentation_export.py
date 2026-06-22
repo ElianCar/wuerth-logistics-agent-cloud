@@ -15,16 +15,19 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pptx import Presentation
+from pptx.enum.dml import MSO_FILL
 
 from src.agent.presentation_export import (
     DEFAULT_TEMPLATE_PATH,
     PPTX_MIME_TYPE,
+    PRESENTATION_PLANNER_LOG_NAME,
     SlideDeckSpec,
     SlideSpec,
     FIXED_PPTX_TIMESTAMP,
     build_claude_presentation_export,
     build_deterministic_presentation_export,
     build_presentation_export,
+    build_sonnet_presentation_planner_invocation,
     build_slide_deck_spec,
     can_export_presentation,
     validate_slide_deck_spec,
@@ -402,6 +405,48 @@ class PresentationPlannerEvidenceTests(unittest.TestCase):
         self.assertTrue(plan.table_pages)
         self.assertIn(fallback.fallback_reason, plan.audit.fallback_reasons)
 
+    def test_reporting_line_chart_plan_creates_editable_ppt_line_chart(self) -> None:
+        rows = [(f"{2018 + (index // 12):04d}-{(index % 12) + 1:02d}", index + 1) for index in range(55)]
+        result = query_result(["monat", "anzahl_auftraege"], rows)
+        reporting = reporting_result(result)
+        reporting["interpretation"] = "Der sichtbare Verlauf steigt von 2018-01 bis 2022-07."
+        reporting["chart_plan"] = {
+            "chart_type": "line",
+            "title": "Auftraege je Monat",
+            "render_allowed": True,
+            "x_axis": "monat",
+            "y_axis": "anzahl_auftraege",
+            "x_label": "Monat",
+            "y_label": "Auftraege",
+            "reason": "Chart requested and result has one time dimension with one numeric measure.",
+            "note": "Die Visualisierung zeigt die ersten 50 Zeilen in der Reihenfolge des SQL Ergebnisses.",
+            "truncated": True,
+        }
+        record = orchestrator_record(
+            user_question="Zeige die Anzahl der Auftraege pro Monat als Trenddiagramm",
+            final_sql="SELECT monat, anzahl_auftraege FROM result ORDER BY monat",
+            query_result=result,
+            row_count=55,
+            reporting_result=reporting,
+            source_tables=["wuerth.invoices"],
+        )
+
+        plan = build_presentation_plan(record=record)
+        self.assertEqual(plan.charts[0].chart_type, "line")
+        self.assertEqual(len(plan.charts[0].rows), 50)
+        self.assertFalse(plan.audit.fallback_reasons)
+
+        spec = build_slide_deck_spec(record=record)
+        chart_slide = next(slide for slide in spec.slides if slide.slide_type == "chart_evidence")
+        self.assertEqual(chart_slide.metadata["chart_type"], "line")
+        self.assertEqual(len(chart_slide.table_rows), 50)
+
+        export = build_deterministic_presentation_export(record=record)
+        self.assertTrue(export.available, export.warnings)
+        self.assertNotIn("Keine robuste kategoriale Struktur", "\n".join(pptx_text_values(export.content)))
+        chart_shapes = pptx_shapes_for_slide_containing(export.content, "Auftraege je Monat")
+        self.assertTrue(any(getattr(shape, "has_chart", False) for shape in chart_shapes))
+
     def test_empty_result_planning_is_deterministic_while_export_eligibility_stays_separate(self) -> None:
         result = {"columns": ["region", "shipment_count"], "rows": [], "row_count": 0}
         record = orchestrator_record(query_result=result, row_count=0)
@@ -584,13 +629,120 @@ class PresentationPlanningJsonModeTests(unittest.TestCase):
         env_text = Path(".env.example").read_text(encoding="utf-8")
 
         self.assertIn("PRESENTATION_EXPORT_MODE=deterministic", env_text)
-        self.assertIn("PRESENTATION_PLANNING_MODE=deterministic", env_text)
+        self.assertIn("PRESENTATION_PLANNING_MODE=llm", env_text)
         self.assertIn("PRESENTATION_PLANNING_MODEL=claude-sonnet-4-6", env_text)
         self.assertIn("PRESENTATION_PLANNING_TIMEOUT_SECONDS=30", env_text)
         self.assertIn("PRESENTATION_PLANNING_MAX_ROWS=50", env_text)
         self.assertIn("PRESENTATION_PLANNING_MAX_TOKENS=2048", env_text)
+        self.assertIn("ANTHROPIC_PRESENTATION_MODEL=claude-opus-4-8", env_text)
         self.assertNotIn("PRESENTATION_PLANNING_API_KEY", env_text)
         self.assertNotIn("OPENAI_API_KEY", env_text)
+        readme_text = Path("README.md").read_text(encoding="utf-8")
+        self.assertIn("PRESENTATION_PLANNING_MODE=llm", readme_text)
+        self.assertIn("claude-sonnet-4-6", readme_text)
+        self.assertIn("logs/presentation_planner_debug.jsonl", readme_text)
+        self.assertIn("PRESENTATION_EXPORT_MODE=claude", readme_text)
+
+    def test_sonnet_planner_invocation_uses_planning_model_tokens_and_timeout(self) -> None:
+        config = PresentationPlanningConfig(
+            mode="llm",
+            model="claude-sonnet-4-6",
+            timeout_seconds=17,
+            max_rows=3,
+            max_tokens=333,
+        )
+        client = FakePlannerClient(response_text=self._valid_json_plan())
+
+        with tempfile.TemporaryDirectory() as log_dir:
+            with patch.dict(os.environ, {"LOG_DIR": log_dir}, clear=False):
+                invocation = build_sonnet_presentation_planner_invocation(config, anthropic_client=client)
+                response_text = invocation("planner prompt")
+
+        self.assertEqual(response_text, self._valid_json_plan())
+        self.assertEqual(len(client.messages.calls), 1)
+        call = client.messages.calls[0]
+        self.assertEqual(call["model"], "claude-sonnet-4-6")
+        self.assertEqual(call["max_tokens"], 333)
+        self.assertEqual(call["timeout"], 17)
+        self.assertEqual(call["temperature"], 0)
+        self.assertEqual(call["messages"], [{"role": "user", "content": "planner prompt"}])
+
+    def test_sonnet_planner_invocation_logs_prompt_and_response_debug_jsonl(self) -> None:
+        config = PresentationPlanningConfig(
+            mode="llm",
+            model="claude-sonnet-4-6",
+            timeout_seconds=17,
+            max_rows=3,
+            max_tokens=333,
+        )
+        client = FakePlannerClient(response_text=self._valid_json_plan())
+
+        with tempfile.TemporaryDirectory() as log_dir:
+            with patch.dict(os.environ, {"LOG_DIR": log_dir}, clear=False):
+                invocation = build_sonnet_presentation_planner_invocation(config, anthropic_client=client)
+                invocation("planner prompt")
+
+            log_path = Path(log_dir) / PRESENTATION_PLANNER_LOG_NAME
+            self.assertTrue(log_path.exists())
+            log_record = json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1])
+
+        self.assertEqual(log_record["event"], "success")
+        self.assertEqual(log_record["mode"], "llm")
+        self.assertEqual(log_record["model"], "claude-sonnet-4-6")
+        self.assertEqual(log_record["max_tokens"], 333)
+        self.assertEqual(log_record["timeout_seconds"], 17)
+        self.assertEqual(log_record["prompt"], "planner prompt")
+        self.assertEqual(log_record["response_text"], self._valid_json_plan())
+        self.assertNotIn("ANTHROPIC_API_KEY", json.dumps(log_record))
+
+    def test_export_llm_planning_mode_builds_sonnet_planner_invocation(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PRESENTATION_EXPORT_MODE": "deterministic",
+                    "PRESENTATION_PLANNING_MODE": "llm",
+                },
+                clear=False,
+            ),
+            patch(
+                "src.agent.presentation_export.build_sonnet_presentation_planner_invocation",
+                return_value=lambda prompt: self._valid_json_plan(),
+            ) as planner_factory,
+        ):
+            export = build_presentation_export(record=valid_record())
+
+        self.assertTrue(export.available, export.warnings)
+        self.assertIsNotNone(export.deck_spec)
+        self.assertEqual(export.deck_spec.metadata["planning_mode"], "llm")
+        planner_factory.assert_called_once()
+
+    def test_sonnet_planner_failure_keeps_local_export_available_with_fallback_metadata(self) -> None:
+        def failing_invocation(_prompt: str) -> str:
+            raise TimeoutError("SECRET_ORDER_45001_TOKEN")
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PRESENTATION_EXPORT_MODE": "deterministic",
+                    "PRESENTATION_PLANNING_MODE": "llm",
+                },
+                clear=False,
+            ),
+            patch(
+                "src.agent.presentation_export.build_sonnet_presentation_planner_invocation",
+                return_value=failing_invocation,
+            ),
+        ):
+            export = build_presentation_export(record=valid_record())
+
+        self.assertTrue(export.available, export.warnings)
+        self.assertIsNotNone(export.deck_spec)
+        self.assertEqual(export.deck_spec.metadata["planning_mode"], "fallback")
+        self.assertIn("planner_exception:TimeoutError", export.deck_spec.metadata["planning_fallback_reasons"])
+        warning_text = json.dumps([*export.warnings, export.deck_spec.metadata], sort_keys=True)
+        self.assertNotIn("SECRET_ORDER_45001_TOKEN", warning_text)
 
     def test_deterministic_export_remains_available_when_json_planner_fails(self) -> None:
         def failing_invocation(prompt: str) -> str:
@@ -714,7 +866,7 @@ class PresentationExportPlanRenderingTests(unittest.TestCase):
             if getattr(shape, "has_text_frame", False) and "hoechste sichtbare Wert" in shape.text
         ]
         self.assertTrue(subtitles)
-        self.assertLessEqual(len(subtitles[0]), 170)
+        self.assertLessEqual(len(subtitles[0]), 118)
         self.assertNotIn("...", subtitles[0])
 
     def test_unsupported_chart_fallback_remains_exportable_and_visible(self) -> None:
@@ -1056,6 +1208,25 @@ class FakeClaudeClient:
         )
 
 
+class FakePlannerMessages:
+    def __init__(self, response_text: str = "{}") -> None:
+        self.response_text = response_text
+        self.calls: list[dict[str, object]] = []
+
+    def create(self, **kwargs: object) -> object:
+        self.calls.append(kwargs)
+        return types.SimpleNamespace(
+            content=[
+                types.SimpleNamespace(type="text", text=self.response_text),
+            ],
+        )
+
+
+class FakePlannerClient:
+    def __init__(self, response_text: str = "{}") -> None:
+        self.messages = FakePlannerMessages(response_text=response_text)
+
+
 class PresentationExportSuccessTests(unittest.TestCase):
     def test_successful_record_returns_dynamic_pptx_export(self) -> None:
         export = build_deterministic_presentation_export(record=valid_record())
@@ -1089,6 +1260,16 @@ class PresentationExportSuccessTests(unittest.TestCase):
                 all(info.date_time == FIXED_PPTX_TIMESTAMP for info in package.infolist())
             )
 
+    def test_generated_pptx_opens_in_normal_slide_view_not_slide_master(self) -> None:
+        export = build_deterministic_presentation_export(record=valid_record())
+
+        self.assertTrue(export.available)
+        with zipfile.ZipFile(BytesIO(export.content)) as package:
+            view_props = package.read("ppt/viewProps.xml").decode("utf-8")
+
+        self.assertIn('lastView="sldView"', view_props)
+        self.assertNotIn('lastView="sldMasterView"', view_props)
+
     def test_rendered_deck_populates_named_template_placeholders(self) -> None:
         export = build_deterministic_presentation_export(record=valid_record())
 
@@ -1120,6 +1301,35 @@ class PresentationExportSuccessTests(unittest.TestCase):
             "Erlaeuterung",
         ):
             self.assertNotIn(stale_fragment, rendered_text)
+
+    def test_cover_footer_date_uses_run_id_date_when_generated_at_is_missing(self) -> None:
+        record = orchestrator_record(run_id="run_20260622_100044_c595", generated_at="")
+
+        export = build_deterministic_presentation_export(record=record)
+
+        self.assertTrue(export.available)
+        presentation = Presentation(BytesIO(export.content))
+        cover_footer_date_shapes = [
+            shape
+            for shape in presentation.slides[0].shapes
+            if getattr(shape, "has_text_frame", False) and shape.name == "footer_date"
+        ]
+        self.assertEqual(len(cover_footer_date_shapes), 1)
+        cover_footer_date = cover_footer_date_shapes[0]
+        self.assertEqual(cover_footer_date.text.strip(), "22.06.2026")
+        self.assertEqual(cover_footer_date.fill.type, MSO_FILL.BACKGROUND)
+        self.assertEqual(int(cover_footer_date.text_frame.margin_left), 0)
+        self.assertEqual(int(cover_footer_date.text_frame.margin_right), 0)
+        self.assertEqual(int(cover_footer_date.text_frame.margin_top), 0)
+        self.assertEqual(int(cover_footer_date.text_frame.margin_bottom), 0)
+        date_runs = [
+            run
+            for paragraph in cover_footer_date.text_frame.paragraphs
+            for run in paragraph.runs
+            if run.text.strip()
+        ]
+        self.assertTrue(date_runs)
+        self.assertEqual(str(date_runs[0].font.color.rgb), "FFFFFF")
 
     def test_missing_generated_at_and_run_id_use_deterministic_fallbacks(self) -> None:
         record = orchestrator_record(run_id="", generated_at="")
@@ -1255,6 +1465,28 @@ class ClaudePresentationExportTests(unittest.TestCase):
         self.assertIn("Do not dump all result rows", prompt)
         self.assertIn("4 to 6 slides", prompt)
         self.assertIn("No overlapping text", prompt)
+
+    def test_claude_ppt_skill_export_does_not_invoke_sonnet_planner(self) -> None:
+        client = FakeClaudeClient()
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PRESENTATION_EXPORT_MODE": "claude",
+                    "PRESENTATION_PLANNING_MODE": "llm",
+                },
+                clear=False,
+            ),
+            patch(
+                "src.agent.presentation_export.build_sonnet_presentation_planner_invocation",
+                side_effect=AssertionError("planner should not run for Claude PPT skill export"),
+            ),
+        ):
+            export = build_presentation_export(record=valid_record(), anthropic_client=client)
+
+        self.assertTrue(export.available, export.warnings)
+        self.assertEqual(len(client.beta.messages.calls), 1)
 
     def test_claude_payload_caps_rows_and_preserves_evidence_profile(self) -> None:
         rows = [(f"order-{index % 3}", f"party-{index}", f"material-{index}") for index in range(20)]
