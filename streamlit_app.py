@@ -74,6 +74,7 @@ _STEP_LABELS: dict[str, str] = {
     "run_router": "Anfrage analysieren",
     "select_model": "Modell auswählen",
     "terminal_response": "Direkte Antwort erstellen",
+    "data_overview": "Datenüberblick erstellen",
     "load_schema": "Datenbankschema laden",
     "generate_sql": "SQL generieren",
     "validate_sql": "SQL validieren",
@@ -87,6 +88,7 @@ _STEP_SYMBOLS: dict[str, str] = {
     "run_router": "⊙",
     "select_model": "⚙",
     "terminal_response": "◉",
+    "data_overview": "▤",
     "load_schema": "≡",
     "generate_sql": "✎",
     "validate_sql": "✓",
@@ -134,17 +136,35 @@ def _build_chat_context(history: list[dict]) -> str:
         success = record.get("execution_success", False)
         row_count = record.get("row_count")
         a = record.get("final_answer", "").strip()
+        is_clarification = (
+            record.get("result_status") == "clarification_needed"
+            or record.get("error_type") == "clarification_needed"
+        )
+        is_overview = record.get("result_status") == "data_overview"
 
         if q:
             lines.append(f"F: {q}")
-        if sql:
-            lines.append(f"SQL: {sql}")
-        status = "Erfolg" if success else "Fehlgeschlagen"
-        if row_count is not None:
-            status += f", {row_count} Zeile(n)"
-        lines.append(f"Status: {status}")
-        if a:
-            lines.append(f"A: {a}")
+
+        if is_overview:
+            # Langen Katalogtext nicht in den Kontext spiegeln.
+            lines.append("A: Datenüberblick ausgegeben.")
+            lines.append("")
+            continue
+
+        if is_clarification:
+            # Offene Rückfrage – kein "Fehlgeschlagen". Die nächste Nutzernachricht
+            # ist potenziell die Antwort darauf.
+            if a:
+                lines.append(f"RÜCKFRAGE DES SYSTEMS: {a}")
+        else:
+            if sql:
+                lines.append(f"SQL: {sql}")
+            status = "Erfolg" if success else "Fehlgeschlagen"
+            if row_count is not None:
+                status += f", {row_count} Zeile(n)"
+            lines.append(f"Status: {status}")
+            if a:
+                lines.append(f"A: {a}")
         lines.append("")
     return "\n".join(lines)
 
@@ -1480,6 +1500,17 @@ def render_golden_test_mode_view(config: SQLAgentConfig) -> None:
     render_golden_results(st.session_state.last_golden_results)
 
 
+def _format_token_usage(token_usage: dict | None) -> str:
+    if not token_usage:
+        return ""
+    total = int(token_usage.get("total_tokens", 0))
+    input_tokens = int(token_usage.get("input_tokens", 0))
+    output_tokens = int(token_usage.get("output_tokens", 0))
+    if total <= 0:
+        return ""
+    return f"Σ Tokens: {total:,} (Input: {input_tokens:,} · Output: {output_tokens:,})".replace(",", ".")
+
+
 def render_step_log(record: dict) -> None:
     step_log = record.get("agent_step_log", [])
     if not step_log:
@@ -1488,6 +1519,9 @@ def render_step_log(record: dict) -> None:
             with st.expander("Ablaufschritte", expanded=False):
                 for step in trace:
                     st.markdown(f"- {step}")
+                token_line = _format_token_usage(record.get("token_usage"))
+                if token_line:
+                    st.markdown(f"- {token_line}")
         return
 
     with st.expander("Ablaufschritte", expanded=False):
@@ -1514,6 +1548,11 @@ def render_step_log(record: dict) -> None:
                 if primary:
                     suffix = f" ({tier})" if tier else ""
                     st.caption(f"Modell: {primary}{suffix}")
+
+        token_line = _format_token_usage(record.get("token_usage"))
+        if token_line:
+            st.markdown("---")
+            st.markdown(f"**{token_line}**")
 
 
 def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
@@ -1673,6 +1712,9 @@ def main() -> None:
                 })
 
             record = run_orchestrator(question, config=config, chat_context=chat_context, step_callback=_on_step)
+            token_line = _format_token_usage(record.get("token_usage"))
+            if token_line:
+                status.write(token_line)
             status.update(label="Fertig ✓", state="complete", expanded=False)
         record["agent_step_log"] = _steps_log
         record["user_question"] = question
