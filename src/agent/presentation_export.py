@@ -458,6 +458,9 @@ def build_slide_deck_spec(
 
     for chart in plan.charts:
         if chart.render_allowed:
+            if not _is_planned_chart_supported(chart):
+                warnings.append(f"Geplantes Diagramm '{chart.title}' wurde ausgelassen, weil die Kategorie wie eine Kennzahl wirkt.")
+                continue
             chart_rows = [
                 [str(row.get("label", "")), str(row.get("value", ""))]
                 for row in chart.rows
@@ -639,6 +642,23 @@ def validate_slide_deck_spec(
             errors.append(f"Slide {index} body exceeds text budget.")
         if len(slide.body) > MAX_BODY_ITEMS_PER_SLIDE:
             errors.append(f"Slide {index} body exceeds item budget.")
+        if slide.rich_body:
+            if len(slide.rich_body) != len(slide.body):
+                errors.append(f"Slide {index} rich text run count does not match body item count.")
+            for body_index, spans in enumerate(slide.rich_body):
+                if body_index >= len(slide.body):
+                    continue
+                if not isinstance(spans, list) or not spans:
+                    errors.append(f"Slide {index} rich text item {body_index + 1} has no runs.")
+                    continue
+                joined_text = ""
+                for span in spans:
+                    if not isinstance(span, dict):
+                        errors.append(f"Slide {index} rich text item {body_index + 1} has an invalid run.")
+                        continue
+                    joined_text += str(span.get("text") or "")
+                if joined_text != slide.body[body_index]:
+                    errors.append(f"Slide {index} rich text item {body_index + 1} does not match body text.")
         if slide.slide_type in BODY_REQUIRED_SLIDE_TYPES and not any(str(item).strip() for item in slide.body):
             errors.append(f"Slide {index} is missing required content.")
         if slide.slide_type in TABLE_REQUIRED_SLIDE_TYPES and (not slide.table_columns or not slide.table_rows):
@@ -655,6 +675,9 @@ def validate_slide_deck_spec(
                 errors.append(f"Slide {index} has unsupported chart payload: {chart_type}.")
             if not slide.table_columns or not slide.table_rows:
                 errors.append(f"Slide {index} chart evidence is missing required result data.")
+            for row_number, row in enumerate(slide.table_rows, start=1):
+                if row and len(str(row[0])) > 40:
+                    errors.append(f"Slide {index} chart label {row_number} exceeds text budget.")
 
     repeated = {
         layout_name
@@ -1228,11 +1251,21 @@ def _render_content_slide(slide: Any, slide_spec: SlideSpec) -> None:
     content_shape = _shape_by_name(slide, "content") or _shape_by_name(slide, "body")
     if content_shape is None:
         return
+    if slide_spec.rich_body:
+        _set_shape_rich_bullets(content_shape, slide_spec.rich_body, font_size=18)
+        return
     if slide_spec.slide_type == "chart_evidence":
         chart_image = _chart_image(slide_spec)
         if chart_image is not None:
             _replace_shape_with_picture(slide, content_shape, chart_image)
             return
+        fallback_body = [
+            "Diagramm konnte nicht gerendert werden.",
+            "Evidenzwerte werden tabellarisch gezeigt.",
+            *slide_spec.body,
+        ]
+        _set_shape_bullets(content_shape, fallback_body, font_size=16)
+        return
     if slide_spec.table_rows:
         _replace_shape_with_table(
             slide,
@@ -1412,6 +1445,26 @@ def _set_shape_bullets(shape: Any, items: list[str], *, font_size: int) -> None:
             run.font.size = Pt(font_size)
 
 
+def _set_shape_rich_bullets(shape: Any, rich_items: list[list[dict[str, Any]]], *, font_size: int) -> None:
+    if not getattr(shape, "has_text_frame", False):
+        return
+    frame = shape.text_frame
+    frame.clear()
+    frame.word_wrap = True
+    frame.vertical_anchor = MSO_ANCHOR.TOP
+    for item_index, spans in enumerate(rich_items[:MAX_BODY_ITEMS_PER_SLIDE]):
+        paragraph = frame.paragraphs[0] if item_index == 0 else frame.add_paragraph()
+        paragraph.level = 0
+        for span in spans:
+            text = str(span.get("text") or "")
+            if not text:
+                continue
+            run = paragraph.add_run()
+            run.text = text
+            run.font.size = Pt(font_size)
+            run.font.bold = bool(span.get("bold"))
+
+
 def _replace_shape_with_table(
     slide: Any,
     shape: Any,
@@ -1492,7 +1545,7 @@ def _chart_image(slide_spec: SlideSpec) -> BytesIO | None:
     except Exception:
         return None
 
-    x_values = [row[0] for row in slide_spec.table_rows]
+    x_values = [_trim_text(row[0], 32) for row in slide_spec.table_rows]
     y_values: list[float] = []
     for row in slide_spec.table_rows:
         try:
@@ -1504,13 +1557,25 @@ def _chart_image(slide_spec: SlideSpec) -> BytesIO | None:
     chart_type = slide_spec.metadata.get("chart_type", "bar")
     if chart_type == "line":
         ax.plot(x_values, y_values, color="#D00000", linewidth=2.5, marker="o")
+        ax.set_xlabel(_display_column_name(slide_spec.table_columns[0]), fontsize=9)
+        ax.set_ylabel(_display_column_name(slide_spec.table_columns[1]), fontsize=9)
+        ax.tick_params(axis="x", labelrotation=30, labelsize=8)
+        ax.tick_params(axis="y", labelsize=8)
+    elif chart_type == "top_n_bar" and slide_spec.metadata.get("chart_orientation") == "horizontal":
+        labels = list(reversed(x_values))
+        values = list(reversed(y_values))
+        ax.barh(labels, values, color="#D00000")
+        ax.set_xlabel(_display_column_name(slide_spec.table_columns[1]), fontsize=9)
+        ax.set_ylabel(_display_column_name(slide_spec.table_columns[0]), fontsize=9)
+        ax.tick_params(axis="x", labelsize=8)
+        ax.tick_params(axis="y", labelsize=8)
     else:
         ax.bar(x_values, y_values, color="#D00000")
+        ax.set_xlabel(_display_column_name(slide_spec.table_columns[0]), fontsize=9)
+        ax.set_ylabel(_display_column_name(slide_spec.table_columns[1]), fontsize=9)
+        ax.tick_params(axis="x", labelrotation=30, labelsize=8)
+        ax.tick_params(axis="y", labelsize=8)
     ax.set_title(slide_spec.title, loc="left", fontsize=13, fontweight="bold")
-    ax.set_xlabel(_display_column_name(slide_spec.table_columns[0]), fontsize=9)
-    ax.set_ylabel(_display_column_name(slide_spec.table_columns[1]), fontsize=9)
-    ax.tick_params(axis="x", labelrotation=30, labelsize=8)
-    ax.tick_params(axis="y", labelsize=8)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     fig.tight_layout()
@@ -1674,6 +1739,17 @@ def _chart_body(chart_plan: dict[str, Any], reporting: dict[str, Any]) -> list[s
     if interpretation:
         body.append(_trim_text(interpretation, 220))
     return body[:MAX_BODY_ITEMS_PER_SLIDE]
+
+
+def _is_planned_chart_supported(chart: Any) -> bool:
+    category_column = str(getattr(chart, "category_column", "") or "").lower()
+    chart_type = str(getattr(chart, "chart_type", "") or "").lower()
+    if chart_type != "top_n_bar":
+        return True
+    if category_column in {"order_number", "shiptoparty", "customer_material"}:
+        return True
+    measure_tokens = ("count", "sum", "total", "amount", "quantity", "rows", "metric", "value")
+    return not any(token in category_column for token in measure_tokens)
 
 
 def _chart_table_columns(chart_plan: dict[str, Any]) -> list[str]:
