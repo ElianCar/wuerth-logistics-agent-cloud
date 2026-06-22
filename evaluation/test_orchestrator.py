@@ -21,6 +21,16 @@ def test_config() -> SQLAgentConfig:
 
 
 def router_state(**overrides: object) -> dict[str, object]:
+    memory_retrieval = {
+        "enabled": False,
+        "method": "tfidf_vector_space",
+        "scenario": "demo",
+        "query_original": "Wie viele Bestellungen gibt es?",
+        "query_preprocessed": "",
+        "candidates": [],
+        "no_match_reason": "memory_retrieval_disabled",
+        "ambiguous": False,
+    }
     state: dict[str, object] = {
         "intent": "aggregation",
         "needs_sql": True,
@@ -35,6 +45,7 @@ def router_state(**overrides: object) -> dict[str, object]:
         "execution_plan": ["retrieve_templates", "run_sql_agent"],
         "clarification_question": "",
         "template_candidates": [],
+        "memory_retrieval": memory_retrieval,
     }
     state.update(overrides)
     return state
@@ -76,6 +87,7 @@ class OrchestratorTests(unittest.TestCase):
         self,
         router_output: dict[str, object],
         sql_output: dict[str, object] | None = None,
+        config: SQLAgentConfig | None = None,
         **kwargs: object,
     ) -> tuple[dict[str, object], Mock]:
         sql_mock = Mock(return_value=sql_output or sql_result())
@@ -85,7 +97,7 @@ class OrchestratorTests(unittest.TestCase):
         ):
             result = orchestrator.run_orchestrator(
                 "Wie viele Bestellungen gibt es?",
-                config=test_config(),
+                config=config or test_config(),
                 log_to_query_log=False,
                 **kwargs,
             )
@@ -103,6 +115,9 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(router_context["constraints"], {"time_window": None, "grouping_level": []})
         self.assertEqual(router_context["execution_plan"], ["retrieve_templates", "run_sql_agent"])
         self.assertEqual(router_context["template_candidates"], [])
+        self.assertEqual(router_context["memory_retrieval"]["enabled"], False)
+        self.assertEqual(sql_mock.call_args.kwargs["memory_retrieval"]["enabled"], False)
+        self.assertEqual(sql_mock.call_args.kwargs["use_legacy_memory"], False)
         for field in (
             "final_sql",
             "generated_sql",
@@ -120,6 +135,7 @@ class OrchestratorTests(unittest.TestCase):
             self.assertIn(field, result)
         self.assertEqual(result["final_sql"], "SELECT 1")
         self.assertEqual(result["template_candidates"], [])
+        self.assertIn("memory_retrieval", result)
 
     def test_force_fallback_skips_router_and_cannot_be_overwritten(self) -> None:
         sql_mock = Mock(return_value=sql_result(model_used="fallback-model", selected_model="fallback-model"))
@@ -141,6 +157,7 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(called_config.primary_model, "fallback-model")
         self.assertEqual(called_config.fallback_model, "fallback-model")
         self.assertTrue(sql_mock.call_args.kwargs["force_fallback"])
+        self.assertEqual(sql_mock.call_args.kwargs["use_legacy_memory"], False)
         self.assertEqual(result["selected_model"], "fallback-model")
 
     def test_retry_context_is_forwarded_to_sql_agent(self) -> None:
@@ -218,6 +235,105 @@ class OrchestratorTests(unittest.TestCase):
         called_config = sql_mock.call_args.kwargs["config"]
         self.assertEqual(called_config.primary_model, "hard-primary")
 
+    def test_anthropic_easy_uses_haiku_sonnet_then_opus(self) -> None:
+        config = SQLAgentConfig(
+            primary_model="env-sonnet",
+            fallback_model="env-opus",
+            max_primary_attempts=2,
+            llm_provider="anthropic",
+            ollama_host="http://localhost:11434",
+            secondary_fallback_model="env-opus",
+        )
+        with patch.dict(
+            orchestrator.ANTHROPIC_TIER_MODELS,
+            {"easy": "haiku", "medium": "sonnet", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_FALLBACK_MODELS,
+            {"easy": "sonnet", "medium": "opus", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_SECONDARY_FALLBACK_MODELS,
+            {"easy": "opus", "medium": "opus", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_MAX_PRIMARY_ATTEMPTS,
+            {"easy": 1, "medium": 1, "hard": 2},
+        ):
+            _, sql_mock = self.run_with_fake_router(
+                router_state(complexity_tier="easy"),
+                config=config,
+            )
+
+        called_config = sql_mock.call_args.kwargs["config"]
+        self.assertEqual(called_config.primary_model, "haiku")
+        self.assertEqual(called_config.fallback_model, "sonnet")
+        self.assertEqual(called_config.secondary_fallback_model, "opus")
+        self.assertEqual(called_config.max_primary_attempts, 1)
+
+    def test_anthropic_medium_uses_sonnet_then_opus(self) -> None:
+        config = SQLAgentConfig(
+            primary_model="env-sonnet",
+            fallback_model="env-opus",
+            max_primary_attempts=2,
+            llm_provider="anthropic",
+            ollama_host="http://localhost:11434",
+            secondary_fallback_model="env-opus",
+        )
+        with patch.dict(
+            orchestrator.ANTHROPIC_TIER_MODELS,
+            {"easy": "haiku", "medium": "sonnet", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_FALLBACK_MODELS,
+            {"easy": "sonnet", "medium": "opus", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_SECONDARY_FALLBACK_MODELS,
+            {"easy": "opus", "medium": "opus", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_MAX_PRIMARY_ATTEMPTS,
+            {"easy": 1, "medium": 1, "hard": 2},
+        ):
+            _, sql_mock = self.run_with_fake_router(
+                router_state(complexity_tier="medium"),
+                config=config,
+            )
+
+        called_config = sql_mock.call_args.kwargs["config"]
+        self.assertEqual(called_config.primary_model, "sonnet")
+        self.assertEqual(called_config.fallback_model, "opus")
+        self.assertEqual(called_config.secondary_fallback_model, "opus")
+        self.assertEqual(called_config.max_primary_attempts, 1)
+
+    def test_anthropic_hard_uses_opus_with_opus_fallback(self) -> None:
+        config = SQLAgentConfig(
+            primary_model="env-sonnet",
+            fallback_model="env-opus",
+            max_primary_attempts=2,
+            llm_provider="anthropic",
+            ollama_host="http://localhost:11434",
+            secondary_fallback_model="env-opus",
+        )
+        with patch.dict(
+            orchestrator.ANTHROPIC_TIER_MODELS,
+            {"easy": "haiku", "medium": "sonnet", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_FALLBACK_MODELS,
+            {"easy": "sonnet", "medium": "opus", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_SECONDARY_FALLBACK_MODELS,
+            {"easy": "opus", "medium": "opus", "hard": "opus"},
+        ), patch.dict(
+            orchestrator.ANTHROPIC_MAX_PRIMARY_ATTEMPTS,
+            {"easy": 1, "medium": 1, "hard": 2},
+        ):
+            _, sql_mock = self.run_with_fake_router(
+                router_state(complexity_tier="hard"),
+                config=config,
+            )
+
+        called_config = sql_mock.call_args.kwargs["config"]
+        self.assertEqual(called_config.primary_model, "opus")
+        self.assertEqual(called_config.fallback_model, "opus")
+        self.assertEqual(called_config.secondary_fallback_model, "opus")
+        self.assertEqual(called_config.max_primary_attempts, 2)
+
     def test_memory_intent_key_is_preserved_as_router_context_metadata(self) -> None:
         result, sql_mock = self.run_with_fake_router(
             router_state(memory_intent_key="ranking", intent="ranking")
@@ -226,6 +342,66 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(result["memory_intent_key"], "ranking")
         self.assertNotIn("memory_intent_key", sql_mock.call_args.kwargs)
         self.assertEqual(sql_mock.call_args.kwargs["router_context"]["memory_intent_key"], "ranking")
+
+    def test_passes_demo_memory_retrieval_to_sql_agent(self) -> None:
+        memory_retrieval = {
+            "enabled": True,
+            "method": "tfidf_vector_space",
+            "scenario": "demo",
+            "query_original": "Revenue by customer",
+            "query_preprocessed": "revenue customer",
+            "candidates": [{"template_id": "demo_revenue", "score": 0.71, "matched_terms": ["revenue"]}],
+            "no_match_reason": "",
+            "ambiguous": False,
+        }
+        result, sql_mock = self.run_with_fake_router(
+            router_state(memory_retrieval=memory_retrieval, template_candidates=memory_retrieval["candidates"])
+        )
+
+        self.assertEqual(sql_mock.call_args.kwargs["memory_retrieval"], memory_retrieval)
+        self.assertEqual(result["memory_retrieval"], memory_retrieval)
+        self.assertTrue(any("Memory retrieval: enabled=True" in step for step in result["trace_steps"]))
+
+    def test_passes_wuerth_memory_retrieval_to_sql_agent(self) -> None:
+        memory_retrieval = {
+            "enabled": True,
+            "method": "tfidf_vector_space",
+            "scenario": "wuerth_local",
+            "query_original": "Frachtkosten pro Kunde",
+            "query_preprocessed": "freight customer",
+            "candidates": [{"template_id": "freight_cost_by_customer", "score": 0.83, "matched_terms": ["freight", "customer"]}],
+            "no_match_reason": "",
+            "ambiguous": False,
+        }
+        _result, sql_mock = self.run_with_fake_router(
+            router_state(memory_retrieval=memory_retrieval, template_candidates=memory_retrieval["candidates"])
+        )
+
+        self.assertEqual(sql_mock.call_args.kwargs["memory_retrieval"]["scenario"], "wuerth_local")
+
+    def test_unsupported_route_does_not_call_sql_agent_because_of_memory(self) -> None:
+        memory_retrieval = {
+            "enabled": True,
+            "method": "tfidf_vector_space",
+            "scenario": "demo",
+            "query_original": "Explain the schema",
+            "query_preprocessed": "explain schema",
+            "candidates": [{"template_id": "demo_candidate", "score": 0.9}],
+            "no_match_reason": "",
+            "ambiguous": False,
+        }
+        result, sql_mock = self.run_with_fake_router(
+            router_state(
+                intent="explanation",
+                needs_sql=False,
+                execution_plan=["run_reporting_agent"],
+                memory_retrieval=memory_retrieval,
+                template_candidates=memory_retrieval["candidates"],
+            )
+        )
+
+        sql_mock.assert_not_called()
+        self.assertEqual(result["result_status"], "no_sql_needed")
 
     def test_chart_spec_is_added_after_successful_sql_when_router_requests_chart(self) -> None:
         result, _sql_mock = self.run_with_fake_router(

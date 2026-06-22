@@ -17,7 +17,7 @@ DEFAULT_OLLAMA_BACKUP_MODEL = "llama3.2:3b"
 DEFAULT_ANTHROPIC_EASY_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_ANTHROPIC_MEDIUM_MODEL = "claude-sonnet-4-6"
 DEFAULT_ANTHROPIC_HARD_MODEL = "claude-opus-4-8"
-DEFAULT_ANTHROPIC_FALLBACK_MODEL = "claude-sonnet-4-6"
+DEFAULT_ANTHROPIC_FALLBACK_MODEL = DEFAULT_ANTHROPIC_HARD_MODEL
 PLACEHOLDER_API_KEY = "key"
 
 
@@ -209,12 +209,22 @@ def _get_anthropic_llm(model_name: str) -> Any:
             "Missing Anthropic dependency. Install requirements.txt so langchain-anthropic is available."
         ) from error
 
-    return ChatAnthropic(
-        model=model_name,
-        api_key=api_key,
-        temperature=get_temperature(),
-        max_tokens=get_max_output_tokens(),
-    )
+    return ChatAnthropic(**_anthropic_llm_kwargs(model_name=model_name, api_key=api_key))
+
+
+def _anthropic_llm_kwargs(*, model_name: str, api_key: str) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "model": model_name,
+        "api_key": api_key,
+        "max_tokens": get_max_output_tokens(),
+    }
+    if _anthropic_model_accepts_temperature(model_name):
+        kwargs["temperature"] = get_temperature()
+    return kwargs
+
+
+def _anthropic_model_accepts_temperature(model_name: str) -> bool:
+    return "opus" not in model_name.lower()
 
 
 def _get_ollama_llm(model_name: str, *, ollama_host: str | None = None) -> Any:

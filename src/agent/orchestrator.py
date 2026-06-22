@@ -13,6 +13,7 @@ from src.agent.langgraph_sql_agent import SQLAgentConfig, StepCallback, run_sql_
 from src.agent.logging_utils import append_csv_row, current_timestamp, get_log_dir
 from src.agent.reporting_agent import build_reporting_result
 from src.agent.router import RouterState, build_router_graph
+from src.config.scenarios import get_active_scenario_id
 from src.llm.model_adapter import get_provider
 
 load_dotenv()
@@ -23,7 +24,21 @@ ANTHROPIC_TIER_MODELS = {
     "medium": os.getenv("ANTHROPIC_MEDIUM_MODEL", "claude-sonnet-4-6"),
     "hard": os.getenv("ANTHROPIC_HARD_MODEL", "claude-opus-4-8"),
 }
-ANTHROPIC_FALLBACK_MODEL = os.getenv("ANTHROPIC_FALLBACK_MODEL", "claude-sonnet-4-6")
+ANTHROPIC_FALLBACK_MODELS = {
+    "easy": os.getenv("ANTHROPIC_MEDIUM_MODEL", "claude-sonnet-4-6"),
+    "medium": os.getenv("ANTHROPIC_HARD_MODEL", "claude-opus-4-8"),
+    "hard": os.getenv("ANTHROPIC_HARD_MODEL", "claude-opus-4-8"),
+}
+ANTHROPIC_SECONDARY_FALLBACK_MODELS = {
+    "easy": os.getenv("ANTHROPIC_HARD_MODEL", "claude-opus-4-8"),
+    "medium": os.getenv("ANTHROPIC_HARD_MODEL", "claude-opus-4-8"),
+    "hard": os.getenv("ANTHROPIC_HARD_MODEL", "claude-opus-4-8"),
+}
+ANTHROPIC_MAX_PRIMARY_ATTEMPTS = {
+    "easy": int(os.getenv("ANTHROPIC_EASY_MAX_PRIMARY_ATTEMPTS", "1")),
+    "medium": int(os.getenv("ANTHROPIC_MEDIUM_MAX_PRIMARY_ATTEMPTS", "1")),
+    "hard": int(os.getenv("ANTHROPIC_HARD_MAX_PRIMARY_ATTEMPTS", "2")),
+}
 
 GEMINI_TIER_MODELS = {
     "easy": os.getenv("GEMINI_EASY_MODEL", "gemini-3.1-flash-lite"),
@@ -66,11 +81,13 @@ class OrchestratorState(TypedDict, total=False):
     execution_plan: list[str]
     clarification_question: str
     template_candidates: list[dict[str, Any]]
+    memory_retrieval: dict[str, Any]
 
     selected_model: str
     model_used: str
     primary_model: str
     fallback_model: str
+    secondary_fallback_model: str
     max_primary_attempts: int
 
     schema_context: str
@@ -108,6 +125,7 @@ class OrchestratorState(TypedDict, total=False):
 
     config_primary_model: str
     config_fallback_model: str
+    config_secondary_fallback_model: str
     config_max_primary_attempts: int
 
 
@@ -133,6 +151,7 @@ def _coerce_sql_config(config: Any | None) -> SQLAgentConfig:
         max_primary_attempts=int(getattr(config, "max_primary_attempts")),
         llm_provider=str(getattr(config, "llm_provider")),
         ollama_host=str(getattr(config, "ollama_host")),
+        secondary_fallback_model=str(getattr(config, "secondary_fallback_model", "")),
     )
 
 
@@ -144,6 +163,30 @@ def _tier_primary_model(config: SQLAgentConfig, tier: str) -> str:
     if provider == "gemini":
         return GEMINI_TIER_MODELS.get(tier) or config.primary_model
     return OLLAMA_TIER_MODELS.get(tier) or config.primary_model
+
+
+def _tier_fallback_model(config: SQLAgentConfig, tier: str) -> str:
+    provider = get_provider(config.llm_provider)
+    tier = tier if tier in {"easy", "medium", "hard"} else "hard"
+    if provider == "anthropic":
+        return ANTHROPIC_FALLBACK_MODELS.get(tier) or config.fallback_model
+    return config.fallback_model
+
+
+def _tier_secondary_fallback_model(config: SQLAgentConfig, tier: str) -> str:
+    provider = get_provider(config.llm_provider)
+    tier = tier if tier in {"easy", "medium", "hard"} else "hard"
+    if provider == "anthropic":
+        return ANTHROPIC_SECONDARY_FALLBACK_MODELS.get(tier) or config.secondary_fallback_model
+    return config.secondary_fallback_model
+
+
+def _tier_max_primary_attempts(config: SQLAgentConfig, tier: str) -> int:
+    provider = get_provider(config.llm_provider)
+    tier = tier if tier in {"easy", "medium", "hard"} else "hard"
+    if provider == "anthropic":
+        return ANTHROPIC_MAX_PRIMARY_ATTEMPTS.get(tier, config.max_primary_attempts)
+    return config.max_primary_attempts
 
 
 def _router_template_candidate_ids(candidates: list[dict[str, Any]]) -> str:
@@ -168,6 +211,67 @@ def _router_template_candidate_scores(candidates: list[dict[str, Any]]) -> str:
     return "|".join(scores)
 
 
+def _memory_candidate_ids(memory_retrieval: dict[str, Any]) -> str:
+    candidates = memory_retrieval.get("candidates", [])
+    if not isinstance(candidates, list):
+        return ""
+    return "|".join(
+        str(candidate.get("template_id", ""))
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("template_id")
+    )
+
+
+def _memory_candidate_scores(memory_retrieval: dict[str, Any]) -> str:
+    candidates = memory_retrieval.get("candidates", [])
+    if not isinstance(candidates, list):
+        return ""
+    return "|".join(
+        str(candidate.get("score", ""))
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("score") is not None
+    )
+
+
+def _format_memory_candidate_trace(memory_retrieval: dict[str, Any]) -> str:
+    candidates = memory_retrieval.get("candidates", [])
+    if not isinstance(candidates, list) or not candidates:
+        return "Memory candidates: none"
+
+    parts = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        terms = candidate.get("matched_terms", [])
+        if isinstance(terms, list):
+            terms_text = ",".join(str(term) for term in terms)
+        else:
+            terms_text = ""
+        parts.append(
+            f"{candidate.get('template_id', '-')}"
+            f"(score={candidate.get('score', '-')}, matched_terms={terms_text})"
+        )
+    return "Memory candidates: " + "; ".join(parts)
+
+
+def _memory_trace_steps(memory_retrieval: dict[str, Any]) -> list[str]:
+    if not memory_retrieval:
+        return ["Memory retrieval: not present"]
+    scenario = memory_retrieval.get("scenario", "-")
+    return [
+        (
+            "Memory retrieval: "
+            f"enabled={memory_retrieval.get('enabled', False)} "
+            f"method={memory_retrieval.get('method', '-')} "
+            f"scenario={scenario} "
+            f"no_match_reason={memory_retrieval.get('no_match_reason', '') or '-'} "
+            f"ambiguous={memory_retrieval.get('ambiguous', False)}"
+        ),
+        f"Memory scenario isolation: active scenario index only ({scenario}).",
+        _format_memory_candidate_trace(memory_retrieval),
+    ]
+
+
 def _build_router_context(state: OrchestratorState) -> dict[str, Any]:
     return {
         "intent": state.get("intent", ""),
@@ -182,6 +286,7 @@ def _build_router_context(state: OrchestratorState) -> dict[str, Any]:
         "constraints": state.get("constraints", {}),
         "execution_plan": state.get("execution_plan", []),
         "template_candidates": state.get("template_candidates", []),
+        "memory_retrieval": state.get("memory_retrieval", {}),
     }
 
 
@@ -267,6 +372,7 @@ def _reporting_failure_result(*, result: dict[str, Any], error: Exception) -> di
 def run_router_node(state: OrchestratorState) -> dict[str, Any]:
     router_input: RouterState = {
         "user_question": state.get("user_question", ""),
+        "active_scenario": get_active_scenario_id(),
         "llm_provider": state.get("llm_provider", get_provider()),
         "ollama_host": state.get("ollama_host", "http://localhost:11434"),
     }
@@ -275,6 +381,7 @@ def run_router_node(state: OrchestratorState) -> dict[str, Any]:
     raw_tier = str(result.get("complexity_tier", "hard")).strip().lower()
     tier = raw_tier if raw_tier in {"easy", "medium", "hard"} else "hard"
     template_candidates = result.get("template_candidates", [])
+    memory_retrieval = result.get("memory_retrieval", {})
 
     return {
         "intent": result.get("intent", "aggregation"),
@@ -290,6 +397,7 @@ def run_router_node(state: OrchestratorState) -> dict[str, Any]:
         "execution_plan": result.get("execution_plan", []),
         "clarification_question": result.get("clarification_question", ""),
         "template_candidates": template_candidates,
+        "memory_retrieval": memory_retrieval,
         "trace_steps": [
             "Router decision",
             f"Intent: {result.get('intent', '-')}",
@@ -302,6 +410,7 @@ def run_router_node(state: OrchestratorState) -> dict[str, Any]:
             f"Language: {result.get('language', '-')}",
             f"Memory intent key: {result.get('memory_intent_key', '-')}",
             f"Template candidates: {len(template_candidates)}",
+            *_memory_trace_steps(memory_retrieval),
         ],
     }
 
@@ -315,20 +424,26 @@ def select_model(state: OrchestratorState) -> dict[str, Any]:
         max_primary_attempts=int(state.get("config_max_primary_attempts", 2)),
         llm_provider=state.get("llm_provider", get_provider()),
         ollama_host=state.get("ollama_host", os.getenv("OLLAMA_HOST", "http://localhost:11434")),
+        secondary_fallback_model=state.get("config_secondary_fallback_model", ""),
     )
     primary = _tier_primary_model(config, tier)
-    fallback = config.fallback_model
-    max_attempts = config.max_primary_attempts
+    fallback = _tier_fallback_model(config, tier)
+    secondary_fallback = _tier_secondary_fallback_model(config, tier)
+    max_attempts = _tier_max_primary_attempts(config, tier)
     trace = state.get("trace_steps", [])
 
     return {
         "selected_model": primary,
         "primary_model": primary,
         "fallback_model": fallback,
+        "secondary_fallback_model": secondary_fallback,
         "max_primary_attempts": max_attempts,
         "trace_steps": [
             *trace,
-            f"Model selection: primary={primary} tier={tier} fallback={fallback} max_attempts={max_attempts}",
+            (
+                f"Model selection: primary={primary} tier={tier} fallback={fallback} "
+                f"secondary_fallback={secondary_fallback or '-'} max_attempts={max_attempts}"
+            ),
         ],
     }
 
@@ -352,6 +467,10 @@ def _run_sql_agent_node_impl(state: OrchestratorState, step_callback: StepCallba
         ),
         llm_provider=state.get("llm_provider", get_provider()),
         ollama_host=state.get("ollama_host", os.getenv("OLLAMA_HOST", "http://localhost:11434")),
+        secondary_fallback_model=state.get(
+            "secondary_fallback_model",
+            state.get("config_secondary_fallback_model", ""),
+        ),
     )
     trace = state.get("trace_steps", [])
     trace_extension = []
@@ -373,12 +492,14 @@ def _run_sql_agent_node_impl(state: OrchestratorState, step_callback: StepCallba
         user_correction=state.get("user_correction", ""),
         run_context=state.get("run_context", "chat"),
         use_approved_memory=bool(state.get("use_approved_memory", True)),
+        use_legacy_memory=False,
         enable_memory_candidate_generation=bool(
             state.get("enable_memory_candidate_generation", True)
         ),
         log_to_query_log=bool(state.get("log_to_query_log", True)),
         language=state.get("language", ""),
         router_context=router_context,
+        memory_retrieval=state.get("memory_retrieval", {}),
         step_callback=step_callback,
         chat_context=state.get("chat_context", ""),
     )
@@ -535,6 +656,13 @@ _ROUTER_LOG_FIELDS = [
     "force_fallback",
     "template_candidate_ids",
     "template_candidate_scores",
+    "memory_retrieval_enabled",
+    "memory_retrieval_method",
+    "memory_retrieval_scenario",
+    "memory_retrieval_no_match_reason",
+    "memory_retrieval_ambiguous",
+    "memory_candidate_ids",
+    "memory_candidate_scores",
     "execution_success",
     "row_count",
     "error_type",
@@ -543,6 +671,7 @@ _ROUTER_LOG_FIELDS = [
 
 def _log_router(run_id: str, state: OrchestratorState) -> None:
     candidates = state.get("template_candidates", [])
+    memory_retrieval = state.get("memory_retrieval", {})
     try:
         append_csv_row(
             get_log_dir() / "router_log.csv",
@@ -564,6 +693,13 @@ def _log_router(run_id: str, state: OrchestratorState) -> None:
                 "force_fallback": state.get("force_fallback", False),
                 "template_candidate_ids": _router_template_candidate_ids(candidates),
                 "template_candidate_scores": _router_template_candidate_scores(candidates),
+                "memory_retrieval_enabled": memory_retrieval.get("enabled", ""),
+                "memory_retrieval_method": memory_retrieval.get("method", ""),
+                "memory_retrieval_scenario": memory_retrieval.get("scenario", ""),
+                "memory_retrieval_no_match_reason": memory_retrieval.get("no_match_reason", ""),
+                "memory_retrieval_ambiguous": memory_retrieval.get("ambiguous", ""),
+                "memory_candidate_ids": _memory_candidate_ids(memory_retrieval),
+                "memory_candidate_scores": _memory_candidate_scores(memory_retrieval),
                 "execution_success": state.get("execution_success", ""),
                 "row_count": state.get("row_count", ""),
                 "error_type": state.get("error_type", ""),
@@ -604,6 +740,7 @@ def _initial_state(
         "total_attempts": 0,
         "fallback_used": False,
         "template_candidates": [],
+        "memory_retrieval": {},
         "previous_failed_sql": previous_failed_sql,
         "previous_sql_error": previous_sql_error,
         "previous_final_answer": previous_final_answer,
@@ -615,6 +752,7 @@ def _initial_state(
         "force_fallback": force_fallback,
         "config_primary_model": config.primary_model,
         "config_fallback_model": config.fallback_model,
+        "config_secondary_fallback_model": config.secondary_fallback_model,
         "config_max_primary_attempts": config.max_primary_attempts,
     }
 
@@ -633,6 +771,7 @@ def _run_forced_fallback(
         max_primary_attempts=config.max_primary_attempts,
         llm_provider=config.llm_provider,
         ollama_host=config.ollama_host,
+        secondary_fallback_model=config.fallback_model,
     )
     forced_router_context = {
         "intent": "forced_fallback",
@@ -647,6 +786,7 @@ def _run_forced_fallback(
         "constraints": {},
         "execution_plan": ["run_sql_agent"],
         "template_candidates": [],
+        "memory_retrieval": {},
     }
     result = run_sql_agent(
         user_question,
@@ -659,11 +799,13 @@ def _run_forced_fallback(
         user_correction=initial.get("user_correction", ""),
         run_context=initial.get("run_context", "chat"),
         use_approved_memory=bool(initial.get("use_approved_memory", True)),
+        use_legacy_memory=False,
         enable_memory_candidate_generation=bool(
             initial.get("enable_memory_candidate_generation", True)
         ),
         log_to_query_log=bool(initial.get("log_to_query_log", True)),
         router_context=forced_router_context,
+        memory_retrieval=forced_router_context.get("memory_retrieval", {}),
         step_callback=step_callback,
     )
     reporting_result = _build_reporting_result(
@@ -692,6 +834,7 @@ def _run_forced_fallback(
         "fallback_model": config.fallback_model,
         "max_primary_attempts": config.max_primary_attempts,
         "template_candidates": [],
+        "memory_retrieval": {},
         "chart_spec": reporting_result["chart_plan"],
         "reporting_result": reporting_result,
         "answer": result.get("final_answer", ""),
@@ -750,6 +893,7 @@ def run_orchestrator(
     final["user_question"] = user_question
     final["force_fallback"] = force_fallback
     final.setdefault("template_candidates", [])
+    final.setdefault("memory_retrieval", {})
 
     if log_to_query_log:
         _log_router(run_id, final)

@@ -1,0 +1,48 @@
+id: shipment_delivery_count_by_customer
+scenario: wuerth_local
+status: approved
+is_active: true
+title: Shipment delivery count by customer
+intent: shipment_count_by_customer
+trigger_phrases:
+  - Lieferungen pro Kunde
+  - Anzahl Lieferungen je Kunde
+  - Shipments by customer
+  - Delivery count by ship to party
+searchable_summary: Count distinct shipment delivery numbers grouped by verified shipment customer field shiptoparty.
+searchable_terms:
+  - shipment
+  - delivery_count
+  - customer
+  - shiptoparty
+  - lieferungen
+  - kunde
+synonyms:
+  lieferungen: shipment
+  lieferanzahl: shipment
+  kunde: customer
+  ship to party: customer
+  shiptoparty: customer
+required_tables:
+  - wuerth.shipments
+required_columns:
+  - delivery_number
+  - shiptoparty
+business_rules:
+  - Use wuerth.shipments for shipment and delivery count questions.
+  - Use COUNT(DISTINCT delivery_number) for delivery count.
+  - Group customer-level shipment reports by shiptoparty unless the user explicitly asks for soldtoparty.
+  - Do not join invoices unless the user asks for invoice-side attributes.
+sql_pattern: SELECT shiptoparty, COUNT(DISTINCT delivery_number) AS delivery_count FROM wuerth.shipments GROUP BY shiptoparty ORDER BY delivery_count DESC LIMIT 50
+do_not_use_when:
+  - The user asks for revenue, invoice amount, gross profit, packing costs, shipment date, or shipping point.
+  - The user explicitly asks for sold-to-party instead of ship-to-party.
+validation_checks:
+  - SQL must be read-only SELECT.
+  - SQL must use only wuerth.shipments unless invoice-side fields are requested.
+  - SQL must not treat order_number as unique.
+source_question: Lieferungen pro Kunde
+source_sql: ""
+approved_by: manual_seed_from_verified_wuerth_assets
+approved_at: "2026-06-05T00:00:00"
+version: 1

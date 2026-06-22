@@ -1,0 +1,45 @@
+id: delivered_quantity_by_delivery_type
+scenario: wuerth_local
+status: approved
+is_active: true
+title: Delivered quantity by delivery type
+intent: delivered_quantity_by_delivery_type
+trigger_phrases:
+  - Gelieferte Menge nach Lieferart
+  - Liefermenge pro Lieferart
+  - Delivered quantity by delivery type
+  - Quantity delivered by delivery type
+searchable_summary: Sum actual quantity delivered grouped by verified shipment delivery_type.
+searchable_terms:
+  - delivered_quantity
+  - quantity
+  - delivery_type
+  - shipment
+  - liefermenge
+  - lieferart
+synonyms:
+  gelieferte menge: delivered_quantity
+  liefermenge: delivered_quantity
+  delivery type: delivery_type
+  lieferart: delivery_type
+required_tables:
+  - wuerth.shipments
+required_columns:
+  - actual_quantity_delivered_in_sales_units
+  - delivery_type
+business_rules:
+  - Use SUM(actual_quantity_delivered_in_sales_units) for delivered quantity.
+  - Use wuerth.shipments.delivery_type for delivery type grouping.
+  - Do not use number_delivery_items as delivered quantity.
+sql_pattern: SELECT delivery_type, SUM(actual_quantity_delivered_in_sales_units) AS delivered_quantity FROM wuerth.shipments GROUP BY delivery_type ORDER BY delivered_quantity DESC LIMIT 50
+do_not_use_when:
+  - The user asks for shipment date, delivery performance, or delay metrics.
+  - The user asks for invoice-side quantity.
+validation_checks:
+  - SQL must be read-only SELECT.
+  - SQL must use only verified shipment columns.
+source_question: Gelieferte Menge nach Lieferart
+source_sql: ""
+approved_by: manual_seed_from_verified_wuerth_assets
+approved_at: "2026-06-05T00:00:00"
+version: 1

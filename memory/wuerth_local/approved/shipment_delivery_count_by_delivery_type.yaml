@@ -1,0 +1,45 @@
+id: shipment_delivery_count_by_delivery_type
+scenario: wuerth_local
+status: approved
+is_active: true
+title: Shipment delivery count by delivery type
+intent: shipment_count_by_delivery_type
+trigger_phrases:
+  - Lieferungen nach Lieferart
+  - Anzahl Lieferungen pro Lieferart
+  - Shipments by delivery type
+  - Delivery count by delivery type
+searchable_summary: Count distinct shipment delivery numbers grouped by verified shipment delivery_type.
+searchable_terms:
+  - shipment
+  - delivery_count
+  - delivery_type
+  - lieferungen
+  - lieferart
+synonyms:
+  lieferungen: shipment
+  lieferart: delivery_type
+  delivery type: delivery_type
+  delivery count: shipment
+required_tables:
+  - wuerth.shipments
+required_columns:
+  - delivery_number
+  - delivery_type
+business_rules:
+  - Use COUNT(DISTINCT delivery_number) for delivery count.
+  - Use wuerth.shipments.delivery_type for delivery type grouping.
+  - Do not translate delivery type codes without a verified code dictionary.
+sql_pattern: SELECT delivery_type, COUNT(DISTINCT delivery_number) AS delivery_count FROM wuerth.shipments GROUP BY delivery_type ORDER BY delivery_count DESC LIMIT 50
+do_not_use_when:
+  - The user asks for shipment date, delivery performance, or delay metrics.
+  - The user asks for revenue, gross profit, or packing costs.
+validation_checks:
+  - SQL must be read-only SELECT.
+  - SQL must use only verified shipment columns.
+  - SQL must not infer delivery performance from delivery_type.
+source_question: Lieferungen nach Lieferart
+source_sql: ""
+approved_by: manual_seed_from_verified_wuerth_assets
+approved_at: "2026-06-05T00:00:00"
+version: 1
