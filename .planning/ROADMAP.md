@@ -103,7 +103,7 @@ Plans:
   4. Long text, empty result, unsupported chart shape, and table truncation cases are covered by automated tests.
 
 **Verification approach:** Run presentation export tests with long text, empty results, unsupported charts, and top-N categorical data, then inspect generated sample deck text for truncation notes and fallback reasons.
-**Plans:** 1/4 plans executed
+**Plans:** 3/4 plans executed
 Plans:
 
 **Wave 1**
@@ -112,11 +112,11 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 03-02-PLAN.md - Render German planned content, rich summary runs, truncation notes, and top-N evidence
+- [x] 03-02-PLAN.md - Render German planned content, rich summary runs, truncation notes, and top-N evidence
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 03-03-PLAN.md - Add disabled optional JSON planning boundary with deterministic fallback
+- [x] 03-03-PLAN.md - Add disabled optional JSON planning boundary with deterministic fallback
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -210,6 +210,6 @@ Phases execute in numeric order: 1, 2, 3, 4, 5.
 |-------|----------------|--------|-----------|
 | 1. Deterministic Backend Deck Slice | 3/3 | Complete    | 2026-06-21 |
 | 2. Streamlit Downloadable Deck Slice | 3/3 | Complete   | 2026-06-21 |
-| 3. Readable Evidence And Fallback Slice | 1/4 | In Progress|  |
+| 3. Readable Evidence And Fallback Slice | 3/4 | In Progress|  |
 | 4. Memory Governance And RBAC Slice | 0/TBD | Not started | - |
 | 5. Final Docs And Demo Slice | 0/TBD | Not started | - |

@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-last_updated: "2026-06-22T11:05:45.082Z"
+last_updated: "2026-06-22T11:36:39.218Z"
 last_activity: 2026-06-22
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 10
-  completed_plans: 7
+  completed_plans: 9
   percent: 40
 ---
 
@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-06-21)
 ## Current Position
 
 Phase: 03 (readable-evidence-and-fallback-slice) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-06-22
 
-Progress: [███████░░░] 70%
+Progress: [█████████░] 90%
 
 ## Performance Metrics
 
@@ -55,6 +55,7 @@ Progress: [███████░░░] 70%
 | Phase 02 P02 | 3 min | 2 tasks | 2 files |
 | Phase 02 P03 | 19min | 2 tasks | 2 files |
 | Phase 03 P01 | 8 min | 2 tasks | 2 files |
+| Phase 03 P03 | 11 min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -88,6 +89,9 @@ Recent decisions affecting current work:
 - [Phase 03]: Use a pure deterministic presentation planner module before renderer integration.
 - [Phase 03]: Keep zero-row PPT export eligibility owned by can_export_presentation while allowing deterministic empty-result planning.
 - [Phase 03]: Duplicate current table budget values inside the pure planner to preserve import isolation from pptx.
+- [Phase 03]: Keep deterministic presentation planning as the default export path. Presentation export should not spend tokens or depend on live providers by default.
+- [Phase 03]: Allow JSON planning only through explicit PRESENTATION_PLANNING_MODE=llm plus an injected invocation function.
+- [Phase 03]: Treat unusable planner output as deterministic fallback with audit metadata before it can affect PresentationPlan.
 
 ### Pending Todos
 
@@ -107,6 +111,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-06-22T11:05:45.046Z
-Stopped at: Completed 03-01-PLAN.md
+Last session: 2026-06-22T11:36:39.162Z
+Stopped at: Completed 03-03-PLAN.md
 Resume file: None
