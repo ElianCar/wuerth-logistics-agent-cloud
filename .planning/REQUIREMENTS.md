@@ -11,7 +11,7 @@
 - [x] **PPT-02**: Export uses the tracked Wuerth master template at `assets/templates/PPT_Vorlage_Wuerth.pptx` through a repo-relative path.
 - [x] **PPT-03**: Export is blocked for failed SQL, unsafe SQL, clarification-only responses, missing query results, or unvalidated runs.
 - [x] **PPT-04**: Generated deck includes a title or takeaway slide, result summary, KPI or key metric section, chart or table evidence, caveats or limitations, source tables, and run metadata.
-- [ ] **PPT-05**: Generated deck preserves SQL result order for evidence tables and clearly marks row or column truncation.
+- [x] **PPT-05**: Generated deck preserves SQL result order for evidence tables and clearly marks row or column truncation.
 - [x] **PPT-06**: Missing or unreadable PPT template produces a clear user-facing error and does not crash the Streamlit app.
 - [x] **PPT-07**: Export logic is implemented in a testable backend module, not embedded in Streamlit callbacks.
 
@@ -26,8 +26,8 @@
 
 - [x] **VIS-01**: PowerPoint export reuses the same chart eligibility rules as `src/agent/visualization_spec.py`.
 - [x] **VIS-02**: User can export simple bar and line chart evidence when the current chart spec is renderable.
-- [ ] **VIS-03**: Unsupported chart shapes fall back to a table or limitation slide with a reason.
-- [ ] **VIS-04**: Presentation output can handle top-N categorical comparisons without unreadable slide overflow.
+- [x] **VIS-03**: Unsupported chart shapes fall back to a table or limitation slide with a reason.
+- [x] **VIS-04**: Presentation output can handle top-N categorical comparisons without unreadable slide overflow.
 
 ### Memory Governance
 
@@ -60,7 +60,7 @@
 - [x] **TEST-01**: Tests verify PPT template path resolution and missing-template failure behavior.
 - [x] **TEST-02**: Tests verify a generated PPTX file is created, non-empty, and openable by the chosen Python library without local Microsoft PowerPoint.
 - [x] **TEST-03**: Tests verify export eligibility blocks failed, unsafe, clarification-only, and unvalidated records.
-- [ ] **TEST-04**: Tests verify long text, empty result, unsupported chart shape, and table truncation behavior.
+- [x] **TEST-04**: Tests verify long text, empty result, unsupported chart shape, and table truncation behavior.
 - [ ] **TEST-05**: Tests verify memory RBAC blocks unauthorized backend actions.
 - [ ] **TEST-06**: Tests verify memory retrieval returns only approved active templates and exposes used template IDs.
 
@@ -110,7 +110,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PPT-02 | Phase 1 | Complete |
 | PPT-03 | Phase 1 | Complete |
 | PPT-04 | Phase 2 | Complete |
-| PPT-05 | Phase 3 | Pending |
+| PPT-05 | Phase 3 | Complete |
 | PPT-06 | Phase 1 | Complete |
 | PPT-07 | Phase 1 | Complete |
 | SPEC-01 | Phase 1 | Complete |
@@ -119,8 +119,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SPEC-04 | Phase 1 | Complete |
 | VIS-01 | Phase 2 | Complete |
 | VIS-02 | Phase 2 | Complete |
-| VIS-03 | Phase 3 | Pending |
-| VIS-04 | Phase 3 | Pending |
+| VIS-03 | Phase 3 | Complete |
+| VIS-04 | Phase 3 | Complete |
 | MEM-01 | Phase 4 | Pending |
 | MEM-02 | Phase 4 | Pending |
 | MEM-03 | Phase 4 | Pending |
@@ -141,7 +141,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | TEST-01 | Phase 1 | Complete |
 | TEST-02 | Phase 1 | Complete |
 | TEST-03 | Phase 1 | Complete |
-| TEST-04 | Phase 3 | Pending |
+| TEST-04 | Phase 3 | Complete |
 | TEST-05 | Phase 4 | Pending |
 | TEST-06 | Phase 4 | Pending |
 

@@ -37,8 +37,8 @@ wuerth-logistics-agent/
 
 **`src/agent/`:**
 - Purpose: Active agent runtime and deterministic post-processing.
-- Contains: LangGraph orchestration, router, SQL generation workflow, SQL validation, reporting, visualization spec, memory store/retrieval, golden runner, logging, ids, and Ollama compatibility helper.
-- Key files: `src/agent/orchestrator.py`, `src/agent/router.py`, `src/agent/langgraph_sql_agent.py`, `src/agent/sql_validator.py`, `src/agent/reporting_agent.py`, `src/agent/visualization_spec.py`, `src/agent/db.py`, `src/agent/memory_store.py`, `src/agent/golden_test_runner.py`
+- Contains: LangGraph orchestration, router, SQL generation workflow, SQL validation, reporting, visualization spec, presentation planning/export, memory store/retrieval, golden runner, logging, ids, and Ollama compatibility helper.
+- Key files: `src/agent/orchestrator.py`, `src/agent/router.py`, `src/agent/langgraph_sql_agent.py`, `src/agent/sql_validator.py`, `src/agent/reporting_agent.py`, `src/agent/visualization_spec.py`, `src/agent/presentation_planner.py`, `src/agent/presentation_export.py`, `src/agent/db.py`, `src/agent/memory_store.py`, `src/agent/golden_test_runner.py`
 
 **`src/backends/`:**
 - Purpose: Data-source boundary for SQL execution and schema context.
@@ -149,6 +149,7 @@ wuerth-logistics-agent/
 - `src/agent/sql_validator.py`: Active SQL safety and allowlist validator.
 - `src/agent/reporting_agent.py`: Deterministic result summary, table plan, chart plan, KPI cards, and audit output.
 - `src/agent/visualization_spec.py`: Deterministic chart eligibility and spec builder.
+- `src/agent/presentation_planner.py`: Pure deterministic presentation plan, evidence table page, W05 profile, top-N chart, and fallback audit builder.
 - `src/agent/db.py`: Facade for active backend schema loading and SQL execution.
 - `src/backends/factory.py`: Active backend selection.
 - `src/backends/demo/postgres_adapter.py`: PostgreSQL schema context and query execution adapter.
@@ -244,7 +245,8 @@ wuerth-logistics-agent/
 - Tests: `evaluation/test_reporting_agent.py`, `evaluation/test_visualization_spec.py`
 
 **New PowerPoint Export:**
-- Primary code: create `src/agent/presentation_export.py`
+- Primary code: `src/agent/presentation_export.py`
+- Planner code: `src/agent/presentation_planner.py`
 - Template asset: read `assets/templates/PPT_Vorlage_Wuerth.pptx`
 - Input data: use `reporting_result`, `query_result`, `final_sql`, and `source_tables` from orchestrator records.
 - UI trigger/download: `streamlit_app.py`
