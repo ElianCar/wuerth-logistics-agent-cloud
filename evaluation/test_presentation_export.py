@@ -526,7 +526,7 @@ class PresentationPlanningJsonModeTests(unittest.TestCase):
                     "title": "x" * 90,
                 }),
             ),
-            ("exception", TimeoutError("planner timeout")),
+            ("exception", TimeoutError("SECRET_ORDER_45001_TOKEN")),
         ]
 
         for name, response in cases:
@@ -551,6 +551,10 @@ class PresentationPlanningJsonModeTests(unittest.TestCase):
                 self.assertEqual(plan.title, "Lieferungen nach Region")
                 self.assertTrue(any("planner_fallback" in warning for warning in plan.warnings))
                 self.assertTrue(plan.audit.fallback_reasons)
+                if name == "exception":
+                    warning_text = json.dumps(plan.warnings + plan.audit.fallback_reasons)
+                    self.assertIn("planner_exception:TimeoutError", warning_text)
+                    self.assertNotIn("SECRET_ORDER_45001_TOKEN", warning_text)
 
     def test_non_llm_mode_is_the_only_path_that_can_call_injected_invocation(self) -> None:
         calls: list[str] = []
@@ -579,7 +583,7 @@ class PresentationPlanningJsonModeTests(unittest.TestCase):
 
     def test_deterministic_export_remains_available_when_json_planner_fails(self) -> None:
         def failing_invocation(prompt: str) -> str:
-            raise RuntimeError("planner down")
+            raise RuntimeError("SECRET_ORDER_45001_TOKEN")
 
         with patch.dict(os.environ, {"PRESENTATION_PLANNING_MODE": "llm"}, clear=False):
             export = build_deterministic_presentation_export(
@@ -591,10 +595,18 @@ class PresentationPlanningJsonModeTests(unittest.TestCase):
         Presentation(BytesIO(export.content))
         self.assertIsNotNone(export.deck_spec)
         self.assertEqual(export.deck_spec.metadata["planning_mode"], "fallback")
-        self.assertIn("RuntimeError", export.deck_spec.metadata["planning_fallback_reasons"])
+        self.assertIn("planner_exception:RuntimeError", export.deck_spec.metadata["planning_fallback_reasons"])
         self.assertTrue(any("planner_fallback" in warning for warning in export.warnings))
         self.assertEqual(len(export.warnings), len(set(export.warnings)))
         self.assertTrue(any("embedded object" in warning.lower() for warning in export.warnings))
+        warning_text = json.dumps(
+            [
+                *export.warnings,
+                export.deck_spec.metadata,
+            ],
+            sort_keys=True,
+        )
+        self.assertNotIn("SECRET_ORDER_45001_TOKEN", warning_text)
 
     def test_planner_fallback_metadata_excludes_unbounded_result_rows(self) -> None:
         rows = [

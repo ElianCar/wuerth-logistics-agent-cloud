@@ -230,12 +230,16 @@ def build_presentation_plan(
         )
         prompt = _build_planner_prompt(payload=payload, config=planning_config)
         response = planner_invocation(prompt)
+    except Exception as error:
+        return _fallback_plan(deterministic_plan, _planner_exception_reason(error))
+
+    try:
         return _parse_planner_response(
             response,
             deterministic_plan=deterministic_plan,
         )
-    except Exception as error:
-        return _fallback_plan(deterministic_plan, f"{type(error).__name__}: {error}")
+    except ValueError as error:
+        return _fallback_plan(deterministic_plan, _planner_validation_reason(error))
 
 
 def _build_deterministic_presentation_plan(*, record: dict[str, Any]) -> PresentationPlan:
@@ -486,6 +490,33 @@ def _fallback_plan(plan: PresentationPlan, reason: str) -> PresentationPlan:
         warnings=_unique([*warnings, *plan.audit.warnings]),
     )
     return replace(plan, warnings=warnings, audit=audit)
+
+
+def _planner_exception_reason(error: Exception) -> str:
+    return f"planner_exception:{type(error).__name__}"
+
+
+def _planner_validation_reason(error: ValueError) -> str:
+    message = str(error)
+    if message.startswith("invalid_json"):
+        return "invalid_json"
+    if message == "planner_refusal":
+        return "planner_refusal"
+    if "missing keys" in message:
+        return "missing_required_keys"
+    if "unsupported keys" in message:
+        return "unsupported_keys"
+    if "unsupported chart type" in message:
+        return "unsupported_chart_type"
+    if "unsupported orientation" in message:
+        return "unsupported_chart_orientation"
+    if "language must be de" in message:
+        return "unsupported_language"
+    if "budget" in message:
+        return "planner_budget_exceeded"
+    if "must be" in message or "is required" in message:
+        return "planner_schema_invalid"
+    return "planner_validation_failed"
 
 
 def _validated_executive_bullets(value: Any) -> list[ExecutiveBullet]:
