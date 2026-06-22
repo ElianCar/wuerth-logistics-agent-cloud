@@ -146,6 +146,37 @@ def pptx_text(content: bytes) -> str:
     return "\n".join(pptx_text_values(content))
 
 
+def pptx_slide_texts(content: bytes) -> list[str]:
+    presentation = Presentation(BytesIO(content))
+    slide_texts: list[str] = []
+    for slide in presentation.slides:
+        values: list[str] = []
+        for shape in slide.shapes:
+            if getattr(shape, "has_text_frame", False):
+                values.append(shape.text)
+        slide_texts.append("\n".join(values))
+    return slide_texts
+
+
+def w05_many_category_rows() -> list[tuple[object, ...]]:
+    materials = (
+        ["MAT-01-LONG-LABEL"] * 5
+        + ["MAT-02"] * 4
+        + ["MAT-03"] * 3
+        + ["MAT-04"] * 3
+        + ["MAT-05"] * 2
+        + ["MAT-06"] * 2
+        + ["MAT-07"] * 2
+        + ["MAT-08"] * 2
+        + ["MAT-09"]
+        + ["MAT-10"]
+    )
+    return [
+        (f"45{index:03d}", f"SHIP-{index % 4}", material, 1, "sap", "n")
+        for index, material in enumerate(materials, start=1)
+    ]
+
+
 class PresentationPlannerContractTests(unittest.TestCase):
     def test_derive_presentation_title_shortens_raw_question_to_german_title(self) -> None:
         raw_question = (
@@ -447,6 +478,124 @@ class PresentationExportPlanRenderingTests(unittest.TestCase):
         self.assertIn("nicht unterstuetzt", rendered_text)
 
 
+class PresentationExportRichEvidenceTests(unittest.TestCase):
+    def test_executive_summary_uses_bold_runs_and_keeps_bullet_text_readable(self) -> None:
+        rows = [
+            ("45001", "SHIP-A", "MAT-A", 3, "sap", "a"),
+            ("45001", "SHIP-A", "MAT-A", 2, "sap", "b"),
+            ("45002", "SHIP-A", "MAT-B", 1, "sap", "c"),
+            ("45003", "SHIP-B", "MAT-A", 4, "sap", "d"),
+        ]
+
+        export = build_deterministic_presentation_export(record=w05_record(rows))
+
+        self.assertTrue(export.available, export.warnings)
+        presentation = Presentation(BytesIO(export.content))
+        summary_slide = next(
+            slide for slide in presentation.slides if "Management-Zusammenfassung" in "\n".join(
+                shape.text for shape in slide.shapes if getattr(shape, "has_text_frame", False)
+            )
+        )
+        bold_text: list[str] = []
+        full_text: list[str] = []
+        for shape in summary_slide.shapes:
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            for paragraph in shape.text_frame.paragraphs:
+                for run in paragraph.runs:
+                    full_text.append(run.text)
+                    if run.font.bold:
+                        bold_text.append(run.text)
+
+        joined_text = "".join(full_text)
+        self.assertIn("Auftraege ohne passende Rechnung", joined_text)
+        self.assertTrue(any(text.strip() in {"3", "4", "10", "45001", "MAT-A", "SHIP-A"} for text in bold_text))
+
+    def test_top_n_categorical_record_produces_chart_image_and_sonstige_metadata(self) -> None:
+        record = w05_record(w05_many_category_rows())
+
+        spec = build_slide_deck_spec(record=record)
+        chart_slide = next(slide for slide in spec.slides if slide.slide_type == "chart_evidence")
+
+        self.assertEqual(chart_slide.metadata["chart_type"], "top_n_bar")
+        self.assertEqual(chart_slide.metadata["chart_orientation"], "horizontal")
+        self.assertTrue(any(row[0] == "Sonstige" for row in chart_slide.table_rows))
+
+        export = build_deterministic_presentation_export(record=record)
+        self.assertTrue(export.available, export.warnings)
+        presentation = Presentation(BytesIO(export.content))
+        chart_ppt_slide = next(
+            slide for slide, text in zip(presentation.slides, pptx_slide_texts(export.content))
+            if chart_slide.title in text
+        )
+        self.assertTrue(any(getattr(shape, "shape_type", None) == 13 for shape in chart_ppt_slide.shapes))
+
+    def test_top_n_chart_rendering_keeps_pptx_bytes_deterministic(self) -> None:
+        record = w05_record(w05_many_category_rows())
+
+        first = build_deterministic_presentation_export(record=record)
+        second = build_deterministic_presentation_export(record=record)
+
+        self.assertTrue(first.available, first.warnings)
+        self.assertTrue(second.available, second.warnings)
+        self.assertEqual(first.content, second.content)
+
+    def test_chart_image_failure_falls_back_to_visible_text(self) -> None:
+        with patch("src.agent.presentation_export._chart_image", return_value=None):
+            export = build_deterministic_presentation_export(record=w05_record(w05_many_category_rows()))
+
+        self.assertTrue(export.available, export.warnings)
+        rendered_text = pptx_text(export.content)
+        self.assertIn("Diagramm konnte nicht gerendert werden", rendered_text)
+        self.assertIn("Evidenzwerte werden tabellarisch gezeigt", rendered_text)
+
+    def test_validate_slide_deck_spec_checks_rich_body_runs(self) -> None:
+        valid_spec = SlideDeckSpec(
+            title="Deck",
+            slides=[
+                SlideSpec(
+                    slide_type="cover",
+                    layout_name="agent_01_cover",
+                    title="Cover",
+                    body=["Untertitel"],
+                ),
+                SlideSpec(
+                    slide_type="executive_summary",
+                    layout_name="agent_02_summary",
+                    title="Management-Zusammenfassung",
+                    body=["12 Auftraege betroffen"],
+                    rich_body=[
+                        [
+                            {"text": "12", "bold": True},
+                            {"text": " Auftraege betroffen", "bold": False},
+                        ]
+                    ],
+                ),
+            ],
+        )
+        invalid_spec = SlideDeckSpec(
+            title="Deck",
+            slides=[
+                SlideSpec(
+                    slide_type="cover",
+                    layout_name="agent_01_cover",
+                    title="Cover",
+                    body=["Untertitel"],
+                ),
+                SlideSpec(
+                    slide_type="executive_summary",
+                    layout_name="agent_02_summary",
+                    title="Management-Zusammenfassung",
+                    body=["12 Auftraege betroffen"],
+                    rich_body=[[{"text": "13", "bold": True}]],
+                ),
+            ],
+        )
+
+        self.assertFalse([error for error in validate_slide_deck_spec(valid_spec) if "rich text" in error.lower()])
+        self.assertTrue(any("rich text" in error.lower() for error in validate_slide_deck_spec(invalid_spec)))
+
+
 def generated_pptx_bytes() -> bytes:
     presentation = Presentation()
     slide = presentation.slides.add_slide(presentation.slide_layouts[0])
@@ -585,10 +734,11 @@ class PresentationExportSuccessTests(unittest.TestCase):
                     has_table = True
 
         rendered_text = "\n".join(text_values)
-        self.assertIn("Executive Summary", rendered_text)
-        self.assertIn("Result Snapshot", rendered_text)
-        self.assertIn("Evidence Table", rendered_text)
-        self.assertIn("Zeige Lieferungen nach Region als Praesentation", rendered_text)
+        self.assertIn("Management-Zusammenfassung", rendered_text)
+        self.assertIn("Kennzahlen", rendered_text)
+        self.assertIn("Evidenz", rendered_text)
+        self.assertIn("Lieferungen nach Region", rendered_text)
+        self.assertNotIn("Zeige Lieferungen nach Region als Praesentation", rendered_text)
         self.assertTrue(has_table)
         for stale_fragment in (
             "Click to add",
@@ -610,7 +760,7 @@ class PresentationExportSuccessTests(unittest.TestCase):
         self.assertTrue(export.available)
         self.assertEqual(export.filename, "wuerth_logistics_analysis.pptx")
         metadata_slide = next(slide for slide in spec.slides if slide.layout_name == "agent_08_appendix_metadata")
-        self.assertIn("Generated at: not recorded", metadata_slide.body)
+        self.assertIn("Erstellt am: nicht erfasst", metadata_slide.body)
 
     def test_slide_deck_spec_is_ordered_dynamic_and_excludes_default_closing(self) -> None:
         spec = build_slide_deck_spec(record=valid_record())
@@ -689,23 +839,27 @@ class PresentationExportSuccessTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
-    def test_unbacked_chart_plan_is_skipped_with_warning(self) -> None:
-        result = query_result(["region", "shipment_count"], [("Sued", 90)])
+    def test_unsupported_chart_plan_is_rendered_as_visible_fallback(self) -> None:
+        result = query_result(["region", "shipment_count"], [("Sued", 90), ("Nord", 75)])
         reporting = reporting_result(result)
         reporting["chart_plan"] = {
-            "chart_type": "bar",
-            "title": "Broken chart",
+            "chart_type": "heatmap",
+            "title": "Unsupported chart",
             "render_allowed": True,
-            "x_axis": "missing_region",
+            "x_axis": "region",
             "y_axis": "shipment_count",
         }
 
         spec = build_slide_deck_spec(
-            record=orchestrator_record(query_result=result, reporting_result=reporting, row_count=1)
+            record=orchestrator_record(query_result=result, reporting_result=reporting, row_count=2)
         )
 
-        self.assertFalse(any(slide.slide_type == "chart_evidence" for slide in spec.slides))
-        self.assertTrue(any("chart evidence was skipped" in warning.lower() for warning in spec.warnings))
+        fallback_slides = [
+            slide for slide in spec.slides
+            if slide.slide_type == "caveats_sources" and slide.title == "Darstellungshinweis"
+        ]
+        self.assertTrue(fallback_slides)
+        self.assertTrue(any("nicht unterstuetzt" in " ".join(slide.body) for slide in fallback_slides))
 
 
 class ClaudePresentationExportTests(unittest.TestCase):
