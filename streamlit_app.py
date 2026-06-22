@@ -116,6 +116,18 @@ _PRESENTATION_UNAVAILABLE_REASON_COPY: dict[str, str] = {
     "claude_output_invalid": "Claude returned a file, but it was not a readable PowerPoint deck.",
 }
 
+_PRESENTATION_WARNING_COPY: dict[str, str] = {
+    "presentation_planner_fallback": "PPT-Planung nutzt den deterministischen Fallback.",
+    "planner_fallback": "PPT-Planung nutzt den deterministischen Fallback.",
+    "presentation_table_truncated": "Tabelle wurde fuer die Folie gekuerzt.",
+    "table_rows_truncated": "Tabelle wurde fuer die Folie gekuerzt.",
+    "table_columns_truncated": "Tabelle wurde fuer die Folie gekuerzt.",
+    "presentation_chart_fallback": "Diagramm wurde durch eine lesbare Ersatzdarstellung ersetzt.",
+    "chart_fallback": "Diagramm wurde durch eine lesbare Ersatzdarstellung ersetzt.",
+    "presentation_label_truncated": "Lange Beschriftungen wurden fuer die Folie gekuerzt.",
+    "label_truncated": "Lange Beschriftungen wurden fuer die Folie gekuerzt.",
+}
+
 
 def presentation_export_key(
     record: dict,
@@ -164,6 +176,17 @@ def format_presentation_failure_reason(reason: object) -> str:
     if raw_reason in _PRESENTATION_UNAVAILABLE_REASON_COPY:
         return _PRESENTATION_UNAVAILABLE_REASON_COPY[raw_reason]
     return raw_reason.replace("_", " ").capitalize()
+
+
+def format_presentation_warning(warning: object) -> str:
+    raw_warning = str(warning or "").strip()
+    if not raw_warning:
+        return ""
+    warning_code = raw_warning.split(":", 1)[0].strip()
+    return _PRESENTATION_WARNING_COPY.get(
+        raw_warning,
+        _PRESENTATION_WARNING_COPY.get(warning_code, raw_warning),
+    )
 
 
 _STOP_WORDS = {
@@ -351,7 +374,7 @@ def render_presentation_export_feedback(export: object, container=st) -> None:
             container.caption(f"Slides: {slide_count}")
         with container.expander("PPT warnings", expanded=False):
             for warning in warnings:
-                st.write(warning)
+                st.write(format_presentation_warning(warning))
         return
     container.caption("PPT ready.")
     if slide_count:
