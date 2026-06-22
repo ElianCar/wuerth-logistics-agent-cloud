@@ -797,7 +797,10 @@ class PresentationExportRichEvidenceTests(unittest.TestCase):
         self.assertEqual(first.content, second.content)
 
     def test_chart_image_failure_falls_back_to_visible_text(self) -> None:
-        with patch("src.agent.presentation_export._chart_image", return_value=None):
+        with (
+            patch("src.agent.presentation_export._replace_shape_with_native_chart", return_value=False),
+            patch("src.agent.presentation_export._chart_image", return_value=None),
+        ):
             export = build_deterministic_presentation_export(record=w05_record(w05_many_category_rows()))
 
         self.assertTrue(export.available, export.warnings)

@@ -11,7 +11,9 @@ from typing import Any
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile, ZipInfo
 
+from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
+from pptx.enum.chart import XL_CHART_TYPE
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx import Presentation
 from pptx.util import Inches, Pt
@@ -45,8 +47,10 @@ MAX_TABLE_ROWS_PER_SLIDE = 10
 MAX_TABLE_COLUMNS_PER_SLIDE = 5
 MAX_BODY_ITEMS_PER_SLIDE = 8
 MAX_BODY_TEXT_CHARS_PER_SLIDE = 700
+COVER_SUBTITLE_TEXT_CHARS = 170
 EXPECTED_TEMPLATE_SHA256 = "041DE8AC3214DC1892F127021F223D5B9C9D5571B10D6949D022B5A357190EA5"
 FIXED_PPTX_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+FIXED_PPTX_CORE_TIMESTAMP = "1980-01-01T00:00:00Z"
 
 LAYOUT_COVER = "agent_01_cover"
 LAYOUT_SUMMARY = "agent_02_summary"
@@ -131,6 +135,12 @@ class TemplateAudit:
     ole_entries: list[str] = field(default_factory=list)
     external_relationships: list[str] = field(default_factory=list)
     macro_entries: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _NativeChartPayload:
+    chart_type: Any
+    data: CategoryChartData
 
 
 @dataclass(frozen=True)
@@ -1215,6 +1225,10 @@ def _render_presentation(*, deck_spec: SlideDeckSpec, template_path: Path) -> by
 
 
 def _normalize_pptx_package(content: bytes) -> bytes:
+    return _normalize_zip_package(content, normalize_embedded_workbooks=True)
+
+
+def _normalize_zip_package(content: bytes, *, normalize_embedded_workbooks: bool = False) -> bytes:
     normalized = BytesIO()
     with ZipFile(BytesIO(content), "r") as source, ZipFile(normalized, "w") as target:
         for name in sorted(source.namelist()):
@@ -1223,8 +1237,21 @@ def _normalize_pptx_package(content: bytes) -> bytes:
             info.compress_type = ZIP_DEFLATED
             info.external_attr = original.external_attr
             info.comment = original.comment
-            target.writestr(info, source.read(name))
+            payload = source.read(name)
+            if name == "docProps/core.xml":
+                payload = _normalize_core_properties(payload)
+            if normalize_embedded_workbooks and name.endswith(".xlsx"):
+                payload = _normalize_zip_package(payload)
+            target.writestr(info, payload)
     return normalized.getvalue()
+
+
+def _normalize_core_properties(payload: bytes) -> bytes:
+    timestamp = FIXED_PPTX_CORE_TIMESTAMP.encode("utf-8")
+    for tag in (b"created", b"modified"):
+        pattern = rb"(<dcterms:" + tag + rb"[^>]*>)(.*?)(</dcterms:" + tag + rb">)"
+        payload = re.sub(pattern, lambda match: match.group(1) + timestamp + match.group(3), payload)
+    return payload
 
 
 def _render_slide(slide: Any, slide_spec: SlideSpec, *, slide_number: int, deck_title: str) -> None:
@@ -1279,6 +1306,8 @@ def _render_content_slide(slide: Any, slide_spec: SlideSpec) -> None:
         _set_shape_rich_bullets(content_shape, slide_spec.rich_body, font_size=18)
         return
     if slide_spec.slide_type == "chart_evidence":
+        if _replace_shape_with_native_chart(slide, content_shape, slide_spec, notes=slide_spec.body):
+            return
         chart_image = _chart_image(slide_spec)
         if chart_image is not None:
             _replace_shape_with_picture(slide, content_shape, chart_image, notes=slide_spec.body)
@@ -1543,6 +1572,131 @@ def _replace_shape_with_picture(
     )
 
 
+def _replace_shape_with_native_chart(
+    slide: Any,
+    shape: Any,
+    slide_spec: SlideSpec,
+    *,
+    notes: list[str] | None = None,
+) -> bool:
+    payload = _native_chart_payload(slide_spec)
+    if payload is None:
+        return False
+
+    bounds = (shape.left, shape.top, shape.width, shape.height)
+    note_items = [str(note) for note in notes or [] if str(note).strip()]
+    chart_bounds = _bounds_below_note(bounds, note_items)
+    try:
+        chart_shape = slide.shapes.add_chart(
+            payload.chart_type,
+            chart_bounds[0],
+            chart_bounds[1],
+            chart_bounds[2],
+            chart_bounds[3],
+            payload.data,
+        )
+    except Exception:
+        return False
+
+    _remove_shape(shape)
+    chart_shape.name = "editable_chart"
+    _format_native_chart(chart_shape.chart, slide_spec)
+    if note_items:
+        _add_note_textbox(slide, bounds, name="chart_notes", notes=note_items)
+    return True
+
+
+def _bounds_below_note(bounds: tuple[int, int, int, int], note_items: list[str]) -> tuple[int, int, int, int]:
+    if not note_items:
+        return bounds
+    note_height = Inches(0.48)
+    return (
+        bounds[0],
+        bounds[1] + note_height,
+        bounds[2],
+        max(Inches(0.5), bounds[3] - note_height),
+    )
+
+
+def _add_note_textbox(slide: Any, bounds: tuple[int, int, int, int], *, name: str, notes: list[str]) -> None:
+    note_height = Inches(0.48)
+    note_shape = slide.shapes.add_textbox(bounds[0], bounds[1], bounds[2], note_height)
+    note_shape.name = name
+    _set_shape_bullets(note_shape, [" | ".join(notes)], font_size=9)
+
+
+def _native_chart_payload(slide_spec: SlideSpec) -> _NativeChartPayload | None:
+    if not slide_spec.table_columns or not slide_spec.table_rows:
+        return None
+    chart_type = str(slide_spec.metadata.get("chart_type", "bar") or "bar").lower()
+    native_chart_type = _native_chart_type(slide_spec)
+    if native_chart_type is None:
+        return None
+
+    categories = [_trim_text_without_ellipsis(row[0], 32) for row in slide_spec.table_rows if row]
+    values: list[float] = []
+    for row in slide_spec.table_rows:
+        try:
+            values.append(float(str(row[1]).replace(",", "")))
+        except (IndexError, ValueError):
+            return None
+    if not categories or len(categories) != len(values):
+        return None
+
+    data = CategoryChartData()
+    if chart_type == "top_n_bar" and slide_spec.metadata.get("chart_orientation") == "horizontal":
+        data.categories = list(reversed(categories))
+        series_values = list(reversed(values))
+    else:
+        data.categories = categories
+        series_values = values
+    y_label = _display_column_name(slide_spec.table_columns[1] if len(slide_spec.table_columns) > 1 else "Wert")
+    data.add_series(y_label, series_values)
+    return _NativeChartPayload(chart_type=native_chart_type, data=data)
+
+
+def _native_chart_type(slide_spec: SlideSpec) -> Any | None:
+    chart_type = str(slide_spec.metadata.get("chart_type", "bar") or "bar").lower()
+    if chart_type == "line":
+        return XL_CHART_TYPE.LINE_MARKERS
+    if chart_type == "top_n_bar" and slide_spec.metadata.get("chart_orientation") == "horizontal":
+        return XL_CHART_TYPE.BAR_CLUSTERED
+    if chart_type in {"bar", "top_n_bar"}:
+        return XL_CHART_TYPE.COLUMN_CLUSTERED
+    return None
+
+
+def _format_native_chart(chart: Any, slide_spec: SlideSpec) -> None:
+    try:
+        chart.has_legend = False
+        chart.has_title = True
+        chart.chart_title.text_frame.text = slide_spec.title
+        chart.chart_title.text_frame.paragraphs[0].runs[0].font.size = Pt(12)
+        chart.chart_title.text_frame.paragraphs[0].runs[0].font.bold = True
+    except Exception:
+        pass
+
+    try:
+        series = chart.series[0]
+        if str(slide_spec.metadata.get("chart_type") or "").lower() == "line":
+            series.format.line.color.rgb = RGBColor(210, 0, 0)
+            series.format.line.width = Pt(2.25)
+        else:
+            series.format.fill.solid()
+            series.format.fill.fore_color.rgb = RGBColor(210, 0, 0)
+            series.format.line.color.rgb = RGBColor(210, 0, 0)
+    except Exception:
+        pass
+
+    for axis_name in ("category_axis", "value_axis"):
+        try:
+            axis = getattr(chart, axis_name)
+            axis.tick_labels.font.size = Pt(8)
+            axis.tick_labels.font.color.rgb = RGBColor(0, 0, 0)
+        except Exception:
+            pass
+
+
 def _add_table(
     slide: Any,
     *,
@@ -1727,10 +1881,10 @@ def _summary_body(reporting: dict[str, Any]) -> list[str]:
 def _cover_subtitle(record: dict[str, Any], reporting: dict[str, Any]) -> str:
     interpretation = str(reporting.get("interpretation") or "").strip()
     if interpretation:
-        return _trim_text(interpretation, 160)
+        return _trim_text_without_ellipsis(interpretation, COVER_SUBTITLE_TEXT_CHARS)
     final_answer = str(record.get("final_answer") or "").strip()
     if final_answer:
-        return _trim_text(final_answer, 160)
+        return _trim_text_without_ellipsis(final_answer, COVER_SUBTITLE_TEXT_CHARS)
     return "Validierte Logistik-Auswertung"
 
 
@@ -1936,6 +2090,21 @@ def _trim_text(value: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _trim_text_without_ellipsis(value: str, limit: int) -> str:
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    if len(text) <= limit:
+        return text
+    candidate = text[:limit].rstrip()
+    for marker in (".", ";", ":"):
+        boundary = candidate.rfind(marker)
+        if boundary >= int(limit * 0.55):
+            return candidate[: boundary + 1].strip()
+    space = candidate.rfind(" ")
+    if space >= int(limit * 0.65):
+        candidate = candidate[:space].rstrip()
+    return candidate.rstrip(" ,;:")
 
 
 def _row_value(row: Any, column: str, index: int) -> Any:
