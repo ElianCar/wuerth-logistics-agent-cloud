@@ -110,6 +110,20 @@ class VisualizationSpecTests(unittest.TestCase):
         self.assertEqual(spec["y_axis"], "total_revenue")
         self.assertEqual(spec["category_order"], ["2024-02", "2024-01"])
 
+    def test_german_month_alias_returns_line_chart_when_requested(self) -> None:
+        spec = build_spec(
+            query_result(
+                ["monat", "anzahl_auftraege"],
+                [("2024-01", 8), ("2024-02", 12)],
+            ),
+            user_question="Zeige die Anzahl der Auftraege pro Monat als Trenddiagramm",
+        )
+
+        self.assertTrue(spec["render_allowed"])
+        self.assertEqual(spec["chart_type"], "line")
+        self.assertEqual(spec["x_axis"], "monat")
+        self.assertEqual(spec["y_axis"], "anzahl_auftraege")
+
     def test_no_explicit_chart_request_returns_no_renderable_chart(self) -> None:
         spec = build_spec(
             query_result(["region", "total_revenue"], [("EUROPE", 10)]),

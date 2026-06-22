@@ -148,6 +148,24 @@ To start directly in Würth local mode:
 DATA_SCENARIO=wuerth_local docker compose up --build
 ```
 
+## PowerPoint Export
+
+The normal PPT path uses the Wuerth template and a local deterministic renderer. In Docker, PPT creation also uses a bounded Sonnet JSON planning step by default:
+
+```text
+PRESENTATION_EXPORT_MODE=deterministic
+PRESENTATION_PLANNING_MODE=llm
+PRESENTATION_PLANNING_MODEL=claude-sonnet-4-6
+PRESENTATION_PLANNING_MAX_TOKENS=2048
+PRESENTATION_PLANNING_TIMEOUT_SECONDS=30
+```
+
+The Sonnet planner only decides the German presentation plan: title, executive bullets, chart choice, table pages, and caveats. The PPTX file is still rendered locally with editable PowerPoint charts where possible. Set `PRESENTATION_PLANNING_MODE=deterministic` to avoid the extra API call.
+
+Planner debug records are appended to `logs/presentation_planner_debug.jsonl` by default, or to `$LOG_DIR/presentation_planner_debug.jsonl` when `LOG_DIR` is set. Each record contains the Sonnet planning prompt and response text, so treat it as analysis data and do not commit it.
+
+`PRESENTATION_EXPORT_MODE=claude` is a separate experimental path that asks Claude's PowerPoint Skill to create the file. It is intentionally not the default because it can be much more expensive and less predictable.
+
 ## Manual Ingestion
 
 When PostgreSQL is running locally, the Würth import can be run manually:

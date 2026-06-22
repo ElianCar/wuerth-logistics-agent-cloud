@@ -35,6 +35,11 @@ from src.agent.memory_lifecycle import (
     load_approved_template_records,
 )
 from src.agent.memory_validation import validate_proposed_template
+from src.agent.presentation_export import (
+    PPTX_MIME_TYPE,
+    build_presentation_export,
+    can_export_presentation,
+)
 from src.config.scenarios import (
     SCENARIOS,
     get_active_scenario,
@@ -109,6 +114,99 @@ def _make_chat(name: str = "") -> dict:
 
 def active_history() -> list[dict]:
     return st.session_state.chats[st.session_state.active_chat_id]["history"]
+
+
+_PRESENTATION_UNAVAILABLE_REASON_COPY: dict[str, str] = {
+    "record_missing": "No analysis record was found.",
+    "blocked_request": "This request was blocked for safety.",
+    "clarification_needed": "This run needs clarification before export.",
+    "sql_execution_failed": "SQL execution did not finish successfully.",
+    "sql_validation_failed": "SQL validation did not pass.",
+    "missing_query_result": "No query result is available.",
+    "missing_query_columns": "The query result has no columns.",
+    "missing_query_rows": "The query result has no rows.",
+    "zero_row_count": "The query returned zero rows.",
+    "presentation_mode_invalid": "The configured PPT export mode is unsupported.",
+    "anthropic_api_key_missing": "ANTHROPIC_API_KEY is missing for Claude PPT generation.",
+    "anthropic_dependency_missing": "The Anthropic dependency is missing in the app environment.",
+    "claude_upload_failed": "Claude could not receive the template or analysis payload.",
+    "claude_generation_failed": "Claude PPT generation failed.",
+    "claude_generation_incomplete": "Claude PPT generation did not finish before the retry limit.",
+    "claude_output_missing": "Claude did not return a PowerPoint file.",
+    "claude_output_invalid": "Claude returned a file, but it was not a readable PowerPoint deck.",
+}
+
+_PRESENTATION_WARNING_COPY: dict[str, str] = {
+    "presentation_planner_fallback": "PPT-Planung nutzt den deterministischen Fallback.",
+    "planner_fallback": "PPT-Planung nutzt den deterministischen Fallback.",
+    "presentation_table_truncated": "Tabelle wurde fuer die Folie gekuerzt.",
+    "table_rows_truncated": "Tabelle wurde fuer die Folie gekuerzt.",
+    "table_columns_truncated": "Tabelle wurde fuer die Folie gekuerzt.",
+    "presentation_chart_fallback": "Diagramm wurde durch eine lesbare Ersatzdarstellung ersetzt.",
+    "chart_fallback": "Diagramm wurde durch eine lesbare Ersatzdarstellung ersetzt.",
+    "presentation_label_truncated": "Lange Beschriftungen wurden fuer die Folie gekuerzt.",
+    "label_truncated": "Lange Beschriftungen wurden fuer die Folie gekuerzt.",
+}
+
+
+def presentation_export_key(
+    record: dict,
+    index: int,
+    *,
+    active_chat_id: str | None = None,
+) -> str:
+    chat_id = active_chat_id or st.session_state.get("active_chat_id", "chat")
+    record_id = record.get("run_id") or index
+    return f"ppt_export_{chat_id}_{record_id}"
+
+
+def presentation_download_key_from_export_key(export_key: str) -> str:
+    suffix = str(export_key).removeprefix("ppt_export_")
+    return f"download_ppt_{suffix}"
+
+
+def presentation_exports_state(session_state: dict | None = None) -> dict:
+    state = session_state if session_state is not None else st.session_state
+    exports = state.setdefault("presentation_exports", {})
+    if not isinstance(exports, dict):
+        exports = {}
+        state["presentation_exports"] = exports
+    return exports
+
+
+def clear_presentation_exports_for_chat(chat_id: str, session_state: dict | None = None) -> None:
+    exports = presentation_exports_state(session_state)
+    prefix = f"ppt_export_{chat_id}_"
+    for key in list(exports):
+        if str(key).startswith(prefix):
+            del exports[key]
+
+
+def format_presentation_unavailable_reason(reason: object) -> str:
+    return _PRESENTATION_UNAVAILABLE_REASON_COPY.get(
+        str(reason or ""),
+        "The backend exporter marked this run as unavailable.",
+    )
+
+
+def format_presentation_failure_reason(reason: object) -> str:
+    raw_reason = str(reason or "unknown_reason").strip()
+    if not raw_reason:
+        return "Unknown reason"
+    if raw_reason in _PRESENTATION_UNAVAILABLE_REASON_COPY:
+        return _PRESENTATION_UNAVAILABLE_REASON_COPY[raw_reason]
+    return raw_reason.replace("_", " ").capitalize()
+
+
+def format_presentation_warning(warning: object) -> str:
+    raw_warning = str(warning or "").strip()
+    if not raw_warning:
+        return ""
+    warning_code = raw_warning.split(":", 1)[0].strip()
+    return _PRESENTATION_WARNING_COPY.get(
+        raw_warning,
+        _PRESENTATION_WARNING_COPY.get(warning_code, raw_warning),
+    )
 
 
 _STOP_WORDS = {
@@ -300,6 +398,108 @@ def render_reporting_audit(record: dict) -> None:
         st.json(audit, expanded=False)
 
 
+def _presentation_export_warnings(export: object) -> list[str]:
+    warnings = getattr(export, "warnings", []) or []
+    return [str(warning) for warning in warnings if str(warning)]
+
+
+def render_presentation_export_feedback(export: object, container=st) -> None:
+    warnings = _presentation_export_warnings(export)
+    slide_count = int(getattr(export, "slide_count", 0) or 0)
+    if warnings:
+        container.warning("PPT created with warnings.")
+        if slide_count:
+            container.caption(f"Slides: {slide_count}")
+        with container.expander("PPT warnings", expanded=False):
+            for warning in warnings:
+                st.write(format_presentation_warning(warning))
+        return
+    container.caption("PPT ready.")
+    if slide_count:
+        container.caption(f"Slides: {slide_count}")
+
+
+def render_presentation_export_failure(export: object, container=st) -> None:
+    reason = format_presentation_failure_reason(getattr(export, "unavailable_reason", ""))
+    container.error(
+        f"PPT export failed: {reason}. Fix the template or rerun a valid analysis, then create the deck again."
+    )
+    warnings = _presentation_export_warnings(export)
+    if warnings:
+        with container.expander("PPT warnings", expanded=False):
+            for warning in warnings:
+                st.write(warning)
+
+
+def render_presentation_export_controls(record: dict, index: int, container=st) -> None:
+    eligibility = can_export_presentation(record)
+    export_key = presentation_export_key(record, index)
+    download_key = presentation_download_key_from_export_key(export_key)
+    exports = presentation_exports_state()
+    export = exports.get(export_key)
+    control_slot = container.empty()
+    feedback_slot = container.container()
+
+    if getattr(export, "available", False):
+        control_slot.download_button(
+            "Download PPT",
+            data=export.content,
+            file_name=export.filename,
+            mime=export.mime_type or PPTX_MIME_TYPE,
+            key=download_key,
+            type="primary",
+            use_container_width=True,
+        )
+        render_presentation_export_feedback(export, feedback_slot)
+        return
+
+    reason = format_presentation_unavailable_reason(getattr(eligibility, "reason", ""))
+    if not getattr(eligibility, "can_export", False):
+        control_slot.button(
+            "Create PPT",
+            key=f"create_{export_key}",
+            disabled=True,
+            use_container_width=True,
+        )
+        feedback_slot.caption(f"PPT unavailable: {reason}")
+        return
+
+    clicked = control_slot.button(
+        "Create PPT",
+        key=f"create_{export_key}",
+        type="primary",
+        use_container_width=True,
+    )
+    if clicked:
+        with st.spinner("Creating PPT..."):
+            export = build_presentation_export(record=record, include_closing=False)
+        exports[export_key] = export
+
+    if getattr(export, "available", False):
+        control_slot.download_button(
+            "Download PPT",
+            data=export.content,
+            file_name=export.filename,
+            mime=export.mime_type or PPTX_MIME_TYPE,
+            key=download_key,
+            type="primary",
+            use_container_width=True,
+        )
+        render_presentation_export_feedback(export, feedback_slot)
+    elif export is not None:
+        render_presentation_export_failure(export, feedback_slot)
+
+
+def render_presentation_unavailable_compact(record: dict) -> None:
+    eligibility = can_export_presentation(record)
+    if getattr(eligibility, "can_export", False):
+        return
+    reason = format_presentation_unavailable_reason(getattr(eligibility, "reason", ""))
+    st.caption("PPT unavailable")
+    st.caption("Run a successful validated analysis with result rows, then create the deck.")
+    st.caption(f"PPT unavailable: {reason}")
+
+
 def initialize_state() -> None:
     if "data_scenario" in st.session_state:
         set_active_scenario_id(st.session_state.data_scenario)
@@ -317,6 +517,7 @@ def initialize_state() -> None:
     st.session_state.setdefault("last_errored_question_ids", [])
     st.session_state.setdefault("last_golden_result_summary", {})
     st.session_state.setdefault("last_golden_results", [])
+    presentation_exports_state()
     initialize_memory_files()
 
 
@@ -421,6 +622,7 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
                 st.warning(f"„{chat['name'] or 'Neuer Chat'}\" löschen?")
                 c1, c2 = st.columns(2)
                 if c1.button("Ja, löschen", key=f"confirm_del_{chat_id}", type="primary", use_container_width=True):
+                    clear_presentation_exports_for_chat(chat_id)
                     del st.session_state.chats[chat_id]
                     if st.session_state.active_chat_id == chat_id:
                         st.session_state.active_chat_id = next(iter(st.session_state.chats))
@@ -470,6 +672,7 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
             st.session_state.last_errored_question_ids = []
             st.session_state.last_golden_result_summary = {}
             st.session_state.last_golden_results = []
+            st.session_state.presentation_exports = {}
         set_active_scenario_id(selected_scenario_id)
         initialize_memory_files()
         scenario = get_active_scenario()
@@ -1576,7 +1779,7 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
             st.dataframe(df, use_container_width=True)
             render_chart_from_spec(record, df)
 
-            col_csv, col_xlsx = st.columns(2)
+            col_csv, col_xlsx, col_ppt = st.columns(3)
             csv_data = df.to_csv(index=False).encode("utf-8")
             col_csv.download_button(
                 "Als CSV exportieren",
@@ -1596,6 +1799,9 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
                 key=f"export_xlsx_{index}",
                 use_container_width=True,
             )
+            render_presentation_export_controls(record, index, col_ppt)
+        else:
+            render_presentation_unavailable_compact(record)
 
         st.subheader("SQL-Anweisung")
         st.code(record.get("final_sql") or record.get("generated_sql", "") or "(kein SQL erzeugt)", language="sql")
