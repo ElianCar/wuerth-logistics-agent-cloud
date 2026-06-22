@@ -533,22 +533,22 @@ def fallback_slide(reason: str) -> SlideSpec:
 | A4 | `fit_text()` should not be primary overflow control. | Overflow And Truncation Strategy | If font availability is stable in deployment, fit_text could be useful as a secondary guard. |
 | A5 | No new JSON-schema dependency is needed for Phase 3. | Files Likely To Change | If schema validation grows complex, a future checkpoint may approve `jsonschema` or Pydantic. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Should zero-row results become exportable limitation decks?**
+1. **RESOLVED: Should zero-row results become exportable limitation decks?**
    - What we know: Current eligibility rejects missing rows and zero row count. [VERIFIED: src/agent/presentation_export.py]
-   - What's unclear: TEST-04 asks for empty result behavior, which can be satisfied by testing the unavailable path or by changing product behavior. [VERIFIED: .planning/REQUIREMENTS.md]
-   - Recommendation: Keep zero-row export unavailable for Phase 3 unless the planner explicitly wants a limitation deck. [ASSUMED]
+   - Decision: Keep zero-row export unavailable for Phase 3 and cover empty-result behavior through the existing unavailable path plus tests. [RESOLVED: 03-PLAN]
+   - Rationale: Phase 3 improves readable exports from successful result data; changing zero-row product behavior would expand export eligibility beyond the current validated contract. [VERIFIED: src/agent/presentation_export.py]
 
-2. **Should direct Claude PPTX mode be removed, hidden, or left untouched?**
+2. **RESOLVED: Should direct Claude PPTX mode be removed, hidden, or left untouched?**
    - What we know: Existing code and `.env.example` include direct Claude PPTX mode. [VERIFIED: src/agent/presentation_export.py] [VERIFIED: .env.example]
-   - What's unclear: User-approved scope rejects recommending direct LLM-generated PPTX, but does not explicitly ask to remove legacy code. [VERIFIED: 03-CONTEXT.md]
-   - Recommendation: Do not expand it; add separate `PRESENTATION_PLANNING_MODE` if optional JSON planning is implemented. [VERIFIED: 03-CONTEXT.md]
+   - Decision: Do not expand direct Claude PPTX mode in Phase 3. Leave legacy code untouched unless needed for safe separation, and keep `PRESENTATION_EXPORT_MODE=deterministic` as the documented default. [RESOLVED: 03-PLAN]
+   - Rationale: The user-approved strategy rejects direct LLM-generated PPTX after the failed expensive attempt. Optional model use may only produce validated planning JSON. [VERIFIED: 03-CONTEXT.md]
 
-3. **Should optional LLM planning ship in Phase 3 or remain a deterministic-only extension point?**
+3. **RESOLVED: Should optional LLM planning ship in Phase 3 or remain a deterministic-only extension point?**
    - What we know: Optional LLM JSON planning is allowed, not required. [VERIFIED: 03-CONTEXT.md]
-   - What's unclear: The user prioritizes management-quality output and cost control; deterministic W05 rules may be enough for this slice. [VERIFIED: 03-CONTEXT.md]
-   - Recommendation: Plan deterministic implementation first, then add fake-tested optional LLM planning only if time remains. [ASSUMED]
+   - Decision: Ship deterministic planning first. If an optional JSON planner hook is implemented, it must be disabled by default, fake-tested only, locally validated, and must fall back deterministically on any failure. [RESOLVED: 03-PLAN]
+   - Rationale: The immediate quality problem is solvable with deterministic profiling, German copy rules, top-N evidence, and renderer fixes; live LLM planning would add cost and test fragility. [VERIFIED: 03-CONTEXT.md]
 
 ## Environment Availability
 
