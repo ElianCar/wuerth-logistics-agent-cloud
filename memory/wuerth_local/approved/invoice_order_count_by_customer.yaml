@@ -1,0 +1,49 @@
+id: invoice_order_count_by_customer
+scenario: wuerth_local
+status: approved
+is_active: true
+title: Invoice order count by customer
+intent: invoice_order_count_by_customer
+trigger_phrases:
+  - Aufträge pro Kunde
+  - Rechnungsaufträge je Kunde
+  - Invoice orders by customer
+  - Order count by invoice customer
+searchable_summary: Count distinct invoice order numbers grouped by verified invoice customer field.
+searchable_terms:
+  - invoice
+  - order_count
+  - order
+  - customer
+  - rechnung
+  - auftrag
+  - kunde
+synonyms:
+  aufträge: order
+  auftraege: order
+  rechnungen: invoice
+  kunde: customer
+  order count: order_count
+required_tables:
+  - wuerth.invoices
+required_columns:
+  - order_number
+  - customer
+business_rules:
+  - Use wuerth.invoices for invoice-side order and customer analysis.
+  - Use COUNT(DISTINCT order_number) for invoice order count.
+  - Do not treat order_number as unique at row level.
+  - Do not infer revenue from material_price.
+sql_pattern: SELECT customer, COUNT(DISTINCT order_number) AS invoice_order_count FROM wuerth.invoices GROUP BY customer ORDER BY invoice_order_count DESC LIMIT 50
+do_not_use_when:
+  - The user asks for revenue, invoice amount, gross profit, freight, packing costs, or shipment metrics.
+  - The user asks for shipment customer fields such as shiptoparty or soldtoparty.
+validation_checks:
+  - SQL must be read-only SELECT.
+  - SQL must use only wuerth.invoices for invoice-only counts.
+  - SQL must not use material_price as money.
+source_question: Aufträge pro Kunde
+source_sql: ""
+approved_by: manual_seed_from_verified_wuerth_assets
+approved_at: "2026-06-05T00:00:00"
+version: 1

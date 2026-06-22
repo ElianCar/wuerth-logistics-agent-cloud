@@ -1,0 +1,279 @@
+schema_version: 1
+scenario: wuerth_local
+generated_at: '2026-06-10T17:22:03Z'
+template_count: 9
+templates:
+- id: delivered_quantity_by_customer
+  path: memory/wuerth_local/approved/delivered_quantity_by_customer.yaml
+  status: approved
+  is_active: true
+  scenario: wuerth_local
+  intent: delivered_quantity_by_customer
+  title: Delivered quantity by customer
+  searchable_text: delivered_quantity_by_customer wuerth_local Delivered quantity
+    by customer delivered_quantity_by_customer Sum actual quantity delivered grouped
+    by verified shipment customer field shiptoparty. Gelieferte Menge pro Kunde Liefermenge
+    je Kunde Delivered quantity by customer Quantity delivered by ship to party delivered_quantity
+    quantity shipment customer shiptoparty liefermenge kunde wuerth.shipments actual_quantity_delivered_in_sales_units
+    shiptoparty delivered quantity delivered_quantity gelieferte menge delivered_quantity
+    kunde customer liefermenge delivered_quantity shiptoparty customer
+  tables:
+  - wuerth.shipments
+  columns:
+  - actual_quantity_delivered_in_sales_units
+  - shiptoparty
+  tags:
+  - delivered_quantity
+  - quantity
+  - shipment
+  - customer
+  - shiptoparty
+  - liefermenge
+  - kunde
+  checksum: sha256:e215d06f15c829f72c5417fe2197e7857f92abc623ed555e16e9224c695ea42f
+  version: 1
+- id: delivered_quantity_by_delivery_type
+  path: memory/wuerth_local/approved/delivered_quantity_by_delivery_type.yaml
+  status: approved
+  is_active: true
+  scenario: wuerth_local
+  intent: delivered_quantity_by_delivery_type
+  title: Delivered quantity by delivery type
+  searchable_text: delivered_quantity_by_delivery_type wuerth_local Delivered quantity
+    by delivery type delivered_quantity_by_delivery_type Sum actual quantity delivered
+    grouped by verified shipment delivery_type. Gelieferte Menge nach Lieferart Liefermenge
+    pro Lieferart Delivered quantity by delivery type Quantity delivered by delivery
+    type delivered_quantity quantity delivery_type shipment liefermenge lieferart
+    wuerth.shipments actual_quantity_delivered_in_sales_units delivery_type delivery
+    type delivery_type gelieferte menge delivered_quantity lieferart delivery_type
+    liefermenge delivered_quantity
+  tables:
+  - wuerth.shipments
+  columns:
+  - actual_quantity_delivered_in_sales_units
+  - delivery_type
+  tags:
+  - delivered_quantity
+  - quantity
+  - delivery_type
+  - shipment
+  - liefermenge
+  - lieferart
+  checksum: sha256:ca391a027789b25ee6055c53a9f623b2c9737e2abab062541ebd90f13e5d9a1a
+  version: 1
+- id: freight_cost_by_customer
+  path: memory/wuerth_local/approved/freight_cost_by_customer.yaml
+  status: approved
+  is_active: true
+  scenario: wuerth_local
+  intent: freight_cost_by_customer
+  title: Freight cost by customer
+  searchable_text: freight_cost_by_customer wuerth_local Freight cost by customer
+    freight_cost_by_customer Sum verified shipment freight_costs grouped by shiptoparty
+    customer. Frachtkosten pro Kunde Fracht je Kunde Freight cost by customer Freight
+    costs by ship to party freight freight_costs customer shiptoparty fracht frachtkosten
+    kunde wuerth.shipments freight_costs shiptoparty fracht freight frachtkosten freight
+    freight cost freight freight costs freight kunde customer shiptoparty customer
+  tables:
+  - wuerth.shipments
+  columns:
+  - freight_costs
+  - shiptoparty
+  tags:
+  - freight
+  - freight_costs
+  - customer
+  - shiptoparty
+  - fracht
+  - frachtkosten
+  - kunde
+  checksum: sha256:8f23aa2b03b175338872e3d19a1bcc0317c8bee8af083a29a26fa7ab91bde8b9
+  version: 1
+- id: invoice_order_count_by_customer
+  path: memory/wuerth_local/approved/invoice_order_count_by_customer.yaml
+  status: approved
+  is_active: true
+  scenario: wuerth_local
+  intent: invoice_order_count_by_customer
+  title: Invoice order count by customer
+  searchable_text: invoice_order_count_by_customer wuerth_local Invoice order count
+    by customer invoice_order_count_by_customer Count distinct invoice order numbers
+    grouped by verified invoice customer field. Aufträge pro Kunde Rechnungsaufträge
+    je Kunde Invoice orders by customer Order count by invoice customer invoice order_count
+    order customer rechnung auftrag kunde wuerth.invoices order_number customer auftraege
+    order aufträge order kunde customer order count order_count rechnungen invoice
+  tables:
+  - wuerth.invoices
+  columns:
+  - order_number
+  - customer
+  tags:
+  - invoice
+  - order_count
+  - order
+  - customer
+  - rechnung
+  - auftrag
+  - kunde
+  checksum: sha256:b8452542a5a62cdc5f2410ac6977f0f3347900171380876172f6f205664f2fa6
+  version: 1
+- id: invoice_order_count_by_market_segment
+  path: memory/wuerth_local/approved/invoice_order_count_by_market_segment.yaml
+  status: approved
+  is_active: true
+  scenario: wuerth_local
+  intent: invoice_order_count_by_market_segment
+  title: Invoice order count by market segment
+  searchable_text: invoice_order_count_by_market_segment wuerth_local Invoice order
+    count by market segment invoice_order_count_by_market_segment Count distinct invoice
+    order numbers grouped by verified invoice market_segment. Aufträge nach Marktsegment
+    Rechnungsaufträge pro Marktsegment Invoice orders by market segment Order count
+    by market segment invoice order_count order market_segment marktsegment wuerth.invoices
+    order_number market_segment auftraege order aufträge order market segment market_segment
+    marktsegment market_segment rechnungen invoice
+  tables:
+  - wuerth.invoices
+  columns:
+  - order_number
+  - market_segment
+  tags:
+  - invoice
+  - order_count
+  - order
+  - market_segment
+  - marktsegment
+  checksum: sha256:e0b8d69105466b2da19d129059b470f862ffa3a0b703a81250b94807447bf62c
+  version: 1
+- id: invoice_records_without_matching_shipments
+  path: memory/wuerth_local/approved/invoice_records_without_matching_shipments.yaml
+  status: approved
+  is_active: true
+  scenario: wuerth_local
+  intent: unmatched_invoices_to_shipments
+  title: Invoice records without matching shipments
+  searchable_text: invoice_records_without_matching_shipments wuerth_local Invoice
+    records without matching shipments unmatched_invoices_to_shipments Find invoice-side
+    order/customer/material candidate keys without matching pre-aggregated shipment
+    keys. Rechnungen ohne passende Lieferungen Aufträge mit Rechnung aber ohne Lieferung
+    Invoice records without matching shipment records Invoices without shipments invoice
+    shipment unmatched order customer material rechnung lieferung invoice_without_shipment
+    wuerth.invoices wuerth.shipments order_number customer material_price shiptoparty
+    customer_material invoice records without matching shipment records invoice_without_shipment
+    invoices without shipments invoice_without_shipment lieferungen shipment material
+    number material ohne unmatched ohne passende unmatched rechnungen invoice without
+    matching unmatched
+  tables:
+  - wuerth.invoices
+  - wuerth.shipments
+  columns:
+  - order_number
+  - customer
+  - material_price
+  - shiptoparty
+  - customer_material
+  tags:
+  - invoice
+  - shipment
+  - unmatched
+  - order
+  - customer
+  - material
+  - rechnung
+  - lieferung
+  - invoice_without_shipment
+  checksum: sha256:52f0f237b9e3a35bbb5f8ee43f344011860c4b5124f4c2ebf94dc4ede4363e00
+  version: 1
+- id: shipment_delivery_count_by_customer
+  path: memory/wuerth_local/approved/shipment_delivery_count_by_customer.yaml
+  status: approved
+  is_active: true
+  scenario: wuerth_local
+  intent: shipment_count_by_customer
+  title: Shipment delivery count by customer
+  searchable_text: shipment_delivery_count_by_customer wuerth_local Shipment delivery
+    count by customer shipment_count_by_customer Count distinct shipment delivery
+    numbers grouped by verified shipment customer field shiptoparty. Lieferungen pro
+    Kunde Anzahl Lieferungen je Kunde Shipments by customer Delivery count by ship
+    to party shipment delivery_count customer shiptoparty lieferungen kunde wuerth.shipments
+    delivery_number shiptoparty kunde customer lieferanzahl shipment lieferungen shipment
+    ship to party customer shiptoparty customer
+  tables:
+  - wuerth.shipments
+  columns:
+  - delivery_number
+  - shiptoparty
+  tags:
+  - shipment
+  - delivery_count
+  - customer
+  - shiptoparty
+  - lieferungen
+  - kunde
+  checksum: sha256:8c9511bd7ca6554ffee0dece029fdebf32b3b6da9d95e01295480bce752d5dcd
+  version: 1
+- id: shipment_delivery_count_by_delivery_type
+  path: memory/wuerth_local/approved/shipment_delivery_count_by_delivery_type.yaml
+  status: approved
+  is_active: true
+  scenario: wuerth_local
+  intent: shipment_count_by_delivery_type
+  title: Shipment delivery count by delivery type
+  searchable_text: shipment_delivery_count_by_delivery_type wuerth_local Shipment
+    delivery count by delivery type shipment_count_by_delivery_type Count distinct
+    shipment delivery numbers grouped by verified shipment delivery_type. Lieferungen
+    nach Lieferart Anzahl Lieferungen pro Lieferart Shipments by delivery type Delivery
+    count by delivery type shipment delivery_count delivery_type lieferungen lieferart
+    wuerth.shipments delivery_number delivery_type delivery count shipment delivery
+    type delivery_type lieferart delivery_type lieferungen shipment
+  tables:
+  - wuerth.shipments
+  columns:
+  - delivery_number
+  - delivery_type
+  tags:
+  - shipment
+  - delivery_count
+  - delivery_type
+  - lieferungen
+  - lieferart
+  checksum: sha256:08901f470fa3992e4775b408bbaa5cb52837f8c8588f6f7407e5d2ba1522f12a
+  version: 1
+- id: shipment_records_without_matching_invoices
+  path: memory/wuerth_local/approved/shipment_records_without_matching_invoices.yaml
+  status: approved
+  is_active: true
+  scenario: wuerth_local
+  intent: unmatched_shipments_to_invoices
+  title: Shipment records without matching invoices
+  searchable_text: shipment_records_without_matching_invoices wuerth_local Shipment
+    records without matching invoices unmatched_shipments_to_invoices Find shipment-side
+    order/customer/material candidate keys without matching pre-aggregated invoice
+    keys. Lieferungen ohne passende Rechnungen Aufträge mit Lieferung aber ohne Rechnung
+    Shipment records without matching invoice records Shipments without invoices shipment
+    invoice unmatched order customer material lieferung rechnung shipment_without_invoice
+    wuerth.shipments wuerth.invoices order_number shiptoparty customer_material customer
+    material_price lieferungen shipment material number material ohne unmatched ohne
+    passende unmatched rechnungen invoice shipment records without matching invoice
+    records shipment_without_invoice shipments without invoices shipment_without_invoice
+    without matching unmatched
+  tables:
+  - wuerth.shipments
+  - wuerth.invoices
+  columns:
+  - order_number
+  - shiptoparty
+  - customer_material
+  - customer
+  - material_price
+  tags:
+  - shipment
+  - invoice
+  - unmatched
+  - order
+  - customer
+  - material
+  - lieferung
+  - rechnung
+  - shipment_without_invoice
+  checksum: sha256:bf291cbfaf620a5c4e6644c2dcccc285e0c51fe889ca21178da61920615d069e
+  version: 1
