@@ -26,6 +26,7 @@ from src.agent.presentation_export import (
     build_deterministic_presentation_export,
     build_presentation_export,
     build_slide_deck_spec,
+    can_export_presentation,
     validate_slide_deck_spec,
     validate_template,
 )
@@ -36,6 +37,7 @@ from src.agent.presentation_planner import (
     PlanningAudit,
     PresentationPlan,
     TextSpan,
+    build_presentation_plan,
     derive_presentation_title,
     format_management_number,
 )
@@ -234,6 +236,127 @@ class PresentationPlannerContractTests(unittest.TestCase):
         )
 
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+
+def w05_result(rows: list[tuple[object, ...]], *, row_count: int | None = None) -> dict[str, object]:
+    return query_result(
+        ["order_number", "shiptoparty", "customer_material", "shipment_rows", "source_system", "extra_note"],
+        rows,
+    ) | {"row_count": row_count if row_count is not None else len(rows)}
+
+
+def w05_record(rows: list[tuple[object, ...]], *, row_count: int | None = None) -> dict[str, object]:
+    result = w05_result(rows, row_count=row_count)
+    reporting = reporting_result(result, chart_render_allowed=False)
+    reporting["chart_plan"] = {"chart_type": "none", "render_allowed": False, "reason": "table only"}
+    return orchestrator_record(
+        user_question="Which order numbers have shipment records but no matching invoice records?",
+        query_result=result,
+        row_count=result["row_count"],
+        reporting_result=reporting,
+        source_tables=["wuerth.shipments", "wuerth.invoices"],
+    )
+
+
+class PresentationPlannerEvidenceTests(unittest.TestCase):
+    def test_table_pages_preserve_sql_order_and_visible_truncation_notes(self) -> None:
+        rows = [
+            (f"4500{index}", f"SHIP-{index % 3}", f"MAT-{index % 4}", index, "sap", f"note-{index}")
+            for index in range(1, 13)
+        ]
+
+        plan = build_presentation_plan(record=w05_record(rows, row_count=50))
+
+        first_page = plan.table_pages[0]
+        self.assertEqual(first_page.row_range_label, "Zeilen 1-10 von 50")
+        self.assertEqual(first_page.rows[0]["order_number"], rows[0][0])
+        self.assertEqual(first_page.rows[-1]["order_number"], rows[9][0])
+        self.assertEqual(len(first_page.columns), 5)
+        self.assertIn("extra_note", first_page.hidden_columns)
+        self.assertIn("Weitere Spalten ausgeblendet", " ".join(first_page.notes))
+        self.assertTrue(plan.audit.row_truncated)
+        self.assertTrue(plan.audit.column_truncated)
+
+    def test_w05_profile_builds_management_bullets_from_order_material_and_shipto(self) -> None:
+        rows = [
+            ("45001", "SHIP-A", "MAT-A", 3, "sap", "a"),
+            ("45001", "SHIP-A", "MAT-A", 2, "sap", "b"),
+            ("45002", "SHIP-A", "MAT-B", 1, "sap", "c"),
+            ("45003", "SHIP-B", "MAT-A", 4, "sap", "d"),
+        ]
+
+        plan = build_presentation_plan(record=w05_record(rows))
+        bullet_text = "\n".join(bullet.text for bullet in plan.executive_bullets)
+
+        self.assertIn("3 Auftraege", bullet_text)
+        self.assertIn("4 Evidenzzeilen", bullet_text)
+        self.assertIn("10 Sendungszeilen", bullet_text)
+        self.assertIn("45001", bullet_text)
+        self.assertIn("MAT-A", bullet_text)
+        self.assertIn("SHIP-A", bullet_text)
+
+    def test_top_n_categorical_chart_aggregates_excess_categories_as_sonstige(self) -> None:
+        materials = (
+            ["MAT-01" * 7] * 5
+            + ["MAT-02"] * 4
+            + ["MAT-03"] * 3
+            + ["MAT-04"] * 3
+            + ["MAT-05"] * 2
+            + ["MAT-06"] * 2
+            + ["MAT-07"] * 2
+            + ["MAT-08"] * 2
+            + ["MAT-09"]
+            + ["MAT-10"]
+        )
+        rows = [
+            (f"45{index:03d}", f"SHIP-{index % 4}", material, 1, "sap", "n")
+            for index, material in enumerate(materials, start=1)
+        ]
+
+        plan = build_presentation_plan(record=w05_record(rows))
+        chart = next(chart for chart in plan.charts if chart.chart_type == "top_n_bar")
+        labels = [row["label"] for row in chart.rows]
+        values = [row["value"] for row in chart.rows]
+
+        self.assertEqual(chart.orientation, "horizontal")
+        self.assertEqual(labels.count("Sonstige"), 1)
+        self.assertLessEqual(max(len(label) for label in labels), 32)
+        self.assertEqual(values, sorted(values, reverse=True))
+        self.assertIn("top_n_bar", plan.audit.selected_chart_types)
+
+    def test_unsupported_chart_shape_returns_german_fallback_and_table_plan(self) -> None:
+        result = query_result(["region", "shipment_count", "cost"], [("Sued", 90, 12), ("Nord", 80, 8)])
+        reporting = reporting_result(result)
+        reporting["chart_plan"] = {
+            "chart_type": "heatmap",
+            "render_allowed": True,
+            "x_axis": "region",
+            "y_axis": "shipment_count",
+            "reason": "User requested heatmap.",
+        }
+
+        plan = build_presentation_plan(
+            record=orchestrator_record(query_result=result, row_count=2, reporting_result=reporting)
+        )
+
+        fallback = next(chart for chart in plan.charts if chart.chart_type == "none")
+        self.assertIn("nicht unterstuetzt", fallback.fallback_reason)
+        self.assertIn("Tabelle", fallback.fallback_reason)
+        self.assertTrue(plan.table_pages)
+        self.assertIn(fallback.fallback_reason, plan.audit.fallback_reasons)
+
+    def test_empty_result_planning_is_deterministic_while_export_eligibility_stays_separate(self) -> None:
+        result = {"columns": ["region", "shipment_count"], "rows": [], "row_count": 0}
+        record = orchestrator_record(query_result=result, row_count=0)
+
+        plan = build_presentation_plan(record=record)
+        eligibility = can_export_presentation(record)
+
+        self.assertEqual(plan.audit.planning_mode, "deterministic")
+        self.assertFalse(plan.table_pages)
+        self.assertTrue(plan.audit.fallback_reasons)
+        self.assertFalse(eligibility.can_export)
+        self.assertIn("row", eligibility.reason)
 
 
 def generated_pptx_bytes() -> bytes:
