@@ -100,7 +100,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-None yet.
+1. [Improve PPT subtitle and editable charts](todos/pending/2026-06-22-improve-ppt-subtitle-and-editable-charts.md)
 
 ### Blockers/Concerns
 
