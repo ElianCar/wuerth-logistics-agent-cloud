@@ -16,7 +16,11 @@ from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx import Presentation
 from pptx.util import Inches, Pt
 
-from src.agent.presentation_planner import build_presentation_plan
+from src.agent.presentation_planner import (
+    PlannerInvocation,
+    PresentationPlanningConfig,
+    build_presentation_plan,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -199,6 +203,8 @@ def build_presentation_export(
     include_closing: bool = False,
     template_path: Path | str = DEFAULT_TEMPLATE_PATH,
     anthropic_client: Any | None = None,
+    planning_config: PresentationPlanningConfig | None = None,
+    planner_invocation: PlannerInvocation | None = None,
 ) -> PresentationExport:
     """Build PPTX bytes from an already validated agent result.
 
@@ -212,6 +218,8 @@ def build_presentation_export(
             record=record,
             include_closing=include_closing,
             template_path=template_path,
+            planning_config=planning_config,
+            planner_invocation=planner_invocation,
         )
     if mode in {"claude", "anthropic", "opus"}:
         return build_claude_presentation_export(
@@ -231,6 +239,8 @@ def build_deterministic_presentation_export(
     record: dict[str, Any],
     include_closing: bool = False,
     template_path: Path | str = DEFAULT_TEMPLATE_PATH,
+    planning_config: PresentationPlanningConfig | None = None,
+    planner_invocation: PlannerInvocation | None = None,
 ) -> PresentationExport:
     """Build deterministic PPTX bytes with the local python-pptx renderer."""
 
@@ -239,7 +249,12 @@ def build_deterministic_presentation_export(
         return _unavailable_export(eligibility.reason)
 
     try:
-        deck_spec = build_slide_deck_spec(record=record, include_closing=include_closing)
+        deck_spec = build_slide_deck_spec(
+            record=record,
+            include_closing=include_closing,
+            planning_config=planning_config,
+            planner_invocation=planner_invocation,
+        )
     except PresentationExportError as error:
         return _unavailable_export(str(error))
 
@@ -388,6 +403,8 @@ def build_slide_deck_spec(
     *,
     record: dict[str, Any],
     include_closing: bool = False,
+    planning_config: PresentationPlanningConfig | None = None,
+    planner_invocation: PlannerInvocation | None = None,
 ) -> SlideDeckSpec:
     """Build an ordered, dynamic slide spec from a successful record."""
 
@@ -397,7 +414,11 @@ def build_slide_deck_spec(
 
     reporting = _dict_or_empty(record.get("reporting_result"))
     source_tables = _string_list(record.get("source_tables"))
-    plan = build_presentation_plan(record=record)
+    plan = build_presentation_plan(
+        record=record,
+        config=planning_config,
+        planner_invocation=planner_invocation,
+    )
     title = plan.title
     footer_source = title
     warnings: list[str] = [*plan.warnings, *plan.audit.warnings]
@@ -587,6 +608,9 @@ def build_slide_deck_spec(
             "source_tables": ",".join(source_tables),
             "planning_mode": plan.audit.planning_mode,
             "selected_chart_types": ",".join(plan.audit.selected_chart_types),
+            "planning_fallback_reasons": " | ".join(plan.audit.fallback_reasons),
+            "planner_fallback_reasons": " | ".join(plan.audit.fallback_reasons),
+            "planner_warning_codes": ",".join(_planner_warning_codes([*plan.warnings, *plan.audit.warnings])),
         },
     )
 
@@ -1918,6 +1942,15 @@ def _safe_path(path: Path) -> str:
         return str(path.resolve().relative_to(PROJECT_ROOT))
     except ValueError:
         return str(path)
+
+
+def _planner_warning_codes(warnings: list[str]) -> list[str]:
+    codes: list[str] = []
+    for warning in warnings:
+        code = str(warning).split(":", 1)[0].strip()
+        if code:
+            codes.append(code)
+    return _unique(codes)
 
 
 def _unique(values: list[str]) -> list[str]:
