@@ -29,6 +29,16 @@ from src.agent.presentation_export import (
     validate_slide_deck_spec,
     validate_template,
 )
+from src.agent.presentation_planner import (
+    EvidenceChartPlan,
+    EvidenceTablePage,
+    ExecutiveBullet,
+    PlanningAudit,
+    PresentationPlan,
+    TextSpan,
+    derive_presentation_title,
+    format_management_number,
+)
 
 
 def query_result(columns: list[str], rows: list[tuple[object, ...]]) -> dict[str, object]:
@@ -118,6 +128,112 @@ def orchestrator_record(**overrides: object) -> dict[str, object]:
 
 def valid_record() -> dict[str, object]:
     return orchestrator_record()
+
+
+class PresentationPlannerContractTests(unittest.TestCase):
+    def test_derive_presentation_title_shortens_raw_question_to_german_title(self) -> None:
+        raw_question = (
+            "Which order numbers have shipment records but no matching invoice records, "
+            "including ship-to party and customer material groups for the management deck?"
+        )
+        title = derive_presentation_title(orchestrator_record(user_question=raw_question))
+
+        self.assertLessEqual(len(title), 52)
+        self.assertNotEqual(title, raw_question)
+        self.assertNotIn(raw_question, title)
+        self.assertEqual(title, "Sendungen ohne passende Rechnung")
+
+    def test_derive_presentation_title_uses_generic_fallback(self) -> None:
+        self.assertEqual(derive_presentation_title({}), "Logistik-Auswertung")
+
+    def test_format_management_number_uses_german_management_format(self) -> None:
+        cases = [
+            (12345, False, "12.345"),
+            (12345.67, False, "12.345,67"),
+            (1_250_000, False, "1,3 Mio."),
+            (1_000_000, False, "1 Mio."),
+            (2_500_000_000, False, "2,5 Mrd."),
+            (0.1234, True, "12,3%"),
+            (12, True, "12%"),
+        ]
+
+        for value, percentage, expected in cases:
+            with self.subTest(value=value, percentage=percentage):
+                self.assertEqual(format_management_number(value, percentage=percentage), expected)
+
+    def test_planner_dataclasses_convert_to_json_serializable_dicts(self) -> None:
+        bullet = ExecutiveBullet(
+            spans=[
+                TextSpan("12.345", bold=True),
+                TextSpan(" Sendungen ohne passende Rechnung"),
+            ]
+        )
+        chart = EvidenceChartPlan(
+            chart_type="top_n_bar",
+            title="Top Materialgruppen",
+            rows=[{"label": "MAT-1", "value": 3}],
+            orientation="horizontal",
+            fallback_reason="",
+        )
+        table_page = EvidenceTablePage(
+            page_number=1,
+            columns=["order_number"],
+            rows=[{"order_number": "1001"}],
+            row_range_label="Zeilen 1-1 von 1",
+            notes=["Zeilen 1-1 von 1"],
+        )
+        audit = PlanningAudit(
+            planning_mode="deterministic",
+            selected_chart_types=["top_n_bar"],
+            row_truncated=False,
+            column_truncated=False,
+            fallback_reasons=[],
+        )
+        plan = PresentationPlan(
+            title="Sendungen ohne passende Rechnung",
+            executive_bullets=[bullet],
+            charts=[chart],
+            table_pages=[table_page],
+            audit=audit,
+        )
+
+        payload = plan.to_dict()
+
+        json.dumps(payload)
+        self.assertEqual(payload["executive_bullets"][0]["text"], "12.345 Sendungen ohne passende Rechnung")
+        self.assertEqual(payload["charts"][0]["chart_type"], "top_n_bar")
+        self.assertEqual(payload["audit"]["planning_mode"], "deterministic")
+
+    def test_planner_import_does_not_load_ui_pptx_database_or_model_clients(self) -> None:
+        script = textwrap.dedent(
+            """
+            import sys
+
+            import src.agent.presentation_planner  # noqa: F401
+
+            forbidden = [
+                "streamlit",
+                "streamlit_app",
+                "pptx",
+                "anthropic",
+                "langchain",
+                "src.agent.db",
+                "src.backends.factory",
+            ]
+            unexpected = [name for name in forbidden if name in sys.modules]
+            if unexpected:
+                raise SystemExit("unexpected imports: " + ", ".join(unexpected))
+            """
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
 
 def generated_pptx_bytes() -> bytes:
