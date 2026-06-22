@@ -16,6 +16,8 @@ from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx import Presentation
 from pptx.util import Inches, Pt
 
+from src.agent.presentation_planner import build_presentation_plan
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TEMPLATE_PATH = PROJECT_ROOT / "assets" / "templates" / "PPT_Vorlage_Wuerth.pptx"
@@ -76,7 +78,7 @@ BODY_REQUIRED_SLIDE_TYPES = {
     "closing",
 }
 TABLE_REQUIRED_SLIDE_TYPES = {"table_evidence"}
-SUPPORTED_CHART_TYPES = {"bar", "line"}
+SUPPORTED_CHART_TYPES = {"bar", "line", "top_n_bar"}
 DEFAULT_FOOTER_SOURCE = "Wuerth Logistics Analysis"
 MAX_EVIDENCE_ROWS = 10
 MAX_EVIDENCE_COLUMNS = 5
@@ -92,6 +94,7 @@ class SlideSpec:
     table_rows: list[list[str]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     metadata: dict[str, str] = field(default_factory=dict)
+    rich_body: list[list[dict[str, Any]]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -393,11 +396,11 @@ def build_slide_deck_spec(
         raise PresentationExportError(eligibility.reason)
 
     reporting = _dict_or_empty(record.get("reporting_result"))
-    query = _dict_or_empty(record.get("query_result"))
     source_tables = _string_list(record.get("source_tables"))
-    title = _deck_title(record)
+    plan = build_presentation_plan(record=record)
+    title = plan.title
     footer_source = title
-    warnings: list[str] = []
+    warnings: list[str] = [*plan.warnings, *plan.audit.warnings]
 
     slides: list[SlideSpec] = [
         SlideSpec(
@@ -416,19 +419,23 @@ def build_slide_deck_spec(
         )
     ]
 
-    summary_body = _summary_body(reporting)
+    summary_body = [bullet.text for bullet in plan.executive_bullets if bullet.text]
     if summary_body:
         slides.append(
             SlideSpec(
                 slide_type="executive_summary",
                 layout_name=LAYOUT_SUMMARY,
-                title="Executive Summary",
+                title="Management-Zusammenfassung",
                 body=summary_body,
                 metadata={
-                    "section_label": "KEY FINDING",
+                    "section_label": "KERNAUSSAGE",
                     "footer_source": footer_source,
                     "footer_date": _display_date(record),
                 },
+                rich_body=[
+                    [{"text": span.text, "bold": span.bold} for span in bullet.spans]
+                    for bullet in plan.executive_bullets
+                ],
             )
         )
 
@@ -438,75 +445,98 @@ def build_slide_deck_spec(
             SlideSpec(
                 slide_type="kpi_overview",
                 layout_name=LAYOUT_KPI,
-                title="Result Snapshot",
+                title="Kennzahlen",
                 body=_kpi_body(kpi_cards),
                 metadata={
                     **_kpi_card_metadata(kpi_cards),
-                    "section_label": "VISIBLE RESULT",
+                    "section_label": "ERGEBNISBILD",
                     "footer_source": footer_source,
                     "footer_date": _display_date(record),
                 },
             )
         )
 
-    chart_plan = _dict_or_empty(reporting.get("chart_plan") or record.get("chart_spec"))
-    if chart_plan.get("render_allowed"):
-        chart_columns = _chart_table_columns(chart_plan)
-        chart_rows = _chart_table_rows(query, chart_plan)
-        chart_type = str(chart_plan.get("chart_type") or "").lower()
-        if chart_type not in SUPPORTED_CHART_TYPES or len(chart_columns) != 2 or not chart_rows:
-            warnings.append("Chart evidence was skipped because the chart payload is not backed by result data.")
-        else:
+    for chart in plan.charts:
+        if chart.render_allowed:
+            chart_rows = [
+                [str(row.get("label", "")), str(row.get("value", ""))]
+                for row in chart.rows
+                if str(row.get("label", "")).strip()
+            ]
+            if not chart_rows:
+                warnings.append("Diagramm wurde ausgelassen, weil keine geplanten Werte vorhanden sind.")
+                continue
+            body = _unique([*chart.notes, "Diagramm aus validierten Ergebnisdaten."])
             slides.append(
                 SlideSpec(
                     slide_type="chart_evidence",
                     layout_name=LAYOUT_CHART,
-                    title=str(chart_plan.get("title") or "Chart Evidence"),
-                    body=_chart_body(chart_plan, reporting),
-                    table_columns=chart_columns,
+                    title=chart.title or "Evidenz",
+                    body=body,
+                    table_columns=[chart.x_label or "Kategorie", chart.y_label or "Wert"],
                     table_rows=chart_rows,
                     metadata={
-                        "chart_type": chart_type,
-                        "section_label": "VISUAL EVIDENCE",
+                        "chart_type": chart.chart_type,
+                        "chart_orientation": chart.orientation,
+                        "section_label": "VISUELLE EVIDENZ",
+                        "footer_source": footer_source,
+                        "footer_date": _display_date(record),
+                    },
+                )
+            )
+            continue
+
+        fallback_reason = chart.fallback_reason or "Diagramm wurde nicht gerendert. Die Evidenz wird als Tabelle gezeigt."
+        slides.append(
+            SlideSpec(
+                slide_type="caveats_sources",
+                layout_name=LAYOUT_CAVEATS,
+                title="Darstellungshinweis",
+                body=[
+                    fallback_reason,
+                    "Die Evidenz wird als geordnete Tabelle gezeigt.",
+                ],
+                metadata={
+                    "section_label": "HINWEIS",
+                    "footer_source": footer_source,
+                    "footer_date": _display_date(record),
+                },
+            )
+        )
+
+    for page in plan.table_pages:
+        table_rows = [
+            [str(row.get(column, "")) for column in page.columns]
+            for row in page.rows
+        ]
+        if page.columns and table_rows:
+            slides.append(
+                SlideSpec(
+                    slide_type="table_evidence",
+                    layout_name=LAYOUT_TABLE,
+                    title="Evidenz",
+                    body=page.notes or [page.row_range_label],
+                    table_columns=page.columns,
+                    table_rows=table_rows,
+                    metadata={
+                        "section_label": f"TABELLE {page.page_number}",
                         "footer_source": footer_source,
                         "footer_date": _display_date(record),
                     },
                 )
             )
 
-    table_columns, table_rows, table_warnings = _table_content(query)
-    warnings.extend(table_warnings)
-    if table_columns and table_rows:
-        evidence_rows = table_rows[:MAX_EVIDENCE_ROWS]
-        slides.append(
-            SlideSpec(
-                slide_type="table_evidence",
-                layout_name=LAYOUT_TABLE,
-                title="Evidence Table",
-                body=[
-                    "Compact sample from the validated SQL result.",
-                    f"Showing {len(evidence_rows)} of {_effective_row_count(record, query, list(query.get('rows', []) or []))} returned rows.",
-                ],
-                table_columns=table_columns,
-                table_rows=evidence_rows,
-                metadata={
-                    "section_label": "VALIDATED SQL SAMPLE",
-                    "footer_source": footer_source,
-                    "footer_date": _display_date(record),
-                },
-            )
-        )
-
     caveat_body = _caveats_body(reporting, source_tables)
+    caveat_body = _unique([*plan.caveats, *caveat_body])
     if caveat_body:
         slides.append(
             SlideSpec(
                 slide_type="caveats_sources",
                 layout_name=LAYOUT_CAVEATS,
-                title="Caveats And Sources",
+                title="Datenbasis und Grenzen",
                 body=caveat_body,
                 metadata={
-                    "section_label": "DATA BOUNDARY",
+                    "section_label": "GRENZEN",
                     "footer_source": footer_source,
                     "footer_date": _display_date(record),
                 },
@@ -519,11 +549,11 @@ def build_slide_deck_spec(
             SlideSpec(
                 slide_type="appendix_metadata",
                 layout_name=LAYOUT_METADATA,
-                title="Appendix Metadata",
+                title="Technischer Anhang",
                 body=metadata_body,
                 metadata={
                     "final_sql": str(record.get("final_sql") or ""),
-                    "section_label": "TECHNICAL DETAILS",
+                    "section_label": "TECHNISCHE DETAILS",
                     "footer_source": footer_source,
                     "footer_date": _display_date(record),
                 },
@@ -535,8 +565,8 @@ def build_slide_deck_spec(
             SlideSpec(
                 slide_type="closing",
                 layout_name=LAYOUT_CLOSING,
-                title="Closing",
-                body=["Generated from a validated logistics analysis result."],
+                title="Abschluss",
+                body=["Erstellt aus einer erfolgreichen und validierten Logistik-Auswertung."],
                 metadata={
                     "footer_source": footer_source,
                     "footer_date": _display_date(record),
@@ -552,6 +582,8 @@ def build_slide_deck_spec(
             "run_id": str(record.get("run_id", "")),
             "final_sql": str(record.get("final_sql") or ""),
             "source_tables": ",".join(source_tables),
+            "planning_mode": plan.audit.planning_mode,
+            "selected_chart_types": ",".join(plan.audit.selected_chart_types),
         },
     )
 
@@ -563,7 +595,7 @@ def validate_slide_deck_spec(
 ) -> list[str]:
     errors: list[str] = []
     allowed_layouts = set(manifest.required_layouts) | set(manifest.optional_layouts)
-    repeatable_layouts = {LAYOUT_CHART, LAYOUT_TABLE}
+    repeatable_layouts = {LAYOUT_CHART, LAYOUT_TABLE, LAYOUT_CAVEATS}
 
     if not deck_spec.slides:
         errors.append("Slide deck spec must contain at least one slide.")
@@ -1202,7 +1234,13 @@ def _render_content_slide(slide: Any, slide_spec: SlideSpec) -> None:
             _replace_shape_with_picture(slide, content_shape, chart_image)
             return
     if slide_spec.table_rows:
-        _replace_shape_with_table(slide, content_shape, slide_spec.table_columns, slide_spec.table_rows)
+        _replace_shape_with_table(
+            slide,
+            content_shape,
+            slide_spec.table_columns,
+            slide_spec.table_rows,
+            notes=slide_spec.body,
+        )
         return
     _set_shape_bullets(content_shape, slide_spec.body, font_size=18)
 
@@ -1374,10 +1412,26 @@ def _set_shape_bullets(shape: Any, items: list[str], *, font_size: int) -> None:
             run.font.size = Pt(font_size)
 
 
-def _replace_shape_with_table(slide: Any, shape: Any, columns: list[str], rows: list[list[str]]) -> None:
+def _replace_shape_with_table(
+    slide: Any,
+    shape: Any,
+    columns: list[str],
+    rows: list[list[str]],
+    *,
+    notes: list[str] | None = None,
+) -> None:
     bounds = (shape.left, shape.top, shape.width, shape.height)
     _remove_shape(shape)
-    _add_table(slide, bounds=bounds, columns=columns[:MAX_EVIDENCE_COLUMNS], rows=rows[:MAX_EVIDENCE_ROWS])
+    note_items = [str(note) for note in notes or [] if str(note).strip()]
+    if note_items:
+        note_height = Inches(0.48)
+        note_shape = slide.shapes.add_textbox(bounds[0], bounds[1], bounds[2], note_height)
+        note_shape.name = "table_notes"
+        _set_shape_bullets(note_shape, [" | ".join(note_items)], font_size=9)
+        table_bounds = (bounds[0], bounds[1] + note_height, bounds[2], max(Inches(0.5), bounds[3] - note_height))
+    else:
+        table_bounds = bounds
+    _add_table(slide, bounds=table_bounds, columns=columns[:MAX_EVIDENCE_COLUMNS], rows=rows[:MAX_EVIDENCE_ROWS])
 
 
 def _replace_shape_with_picture(slide: Any, shape: Any, image: BytesIO) -> None:
@@ -1562,8 +1616,7 @@ def _cover_subtitle(record: dict[str, Any], reporting: dict[str, Any]) -> str:
     final_answer = str(record.get("final_answer") or "").strip()
     if final_answer:
         return _trim_text(final_answer, 160)
-    question = str(record.get("user_question") or "").strip()
-    return _trim_text(question, 160) if question else "Validated logistics analysis"
+    return "Validierte Logistik-Auswertung"
 
 
 def _display_date(record: dict[str, Any]) -> str:
@@ -1661,7 +1714,7 @@ def _table_content(query: dict[str, Any]) -> tuple[list[str], list[list[str]], l
 def _caveats_body(reporting: dict[str, Any], source_tables: list[str]) -> list[str]:
     body = [str(caveat) for caveat in reporting.get("caveats", []) or [] if str(caveat).strip()]
     if source_tables:
-        body.append(f"Source tables: {_source_text(source_tables)}")
+        body.append(f"Quelltabellen: {_source_text(source_tables)}")
     body.extend(str(note) for note in reporting.get("display_notes", []) or [] if str(note).strip())
     return [_trim_text(item, 220) for item in body[:MAX_BODY_ITEMS_PER_SLIDE]]
 
@@ -1669,12 +1722,12 @@ def _caveats_body(reporting: dict[str, Any], source_tables: list[str]) -> list[s
 def _metadata_body(record: dict[str, Any]) -> list[str]:
     source_tables = _string_list(record.get("source_tables"))
     body = [
-        f"Run ID: {_text_or_default(record.get('run_id'), 'not recorded')}",
-        f"Execution success: {bool(record.get('execution_success'))}",
-        f"SQL validation: {bool(record.get('validation_success') or record.get('sql_valid'))}",
-        f"Rows returned: {int(record.get('row_count', 0) or 0)}",
-        f"Source tables: {_source_text(source_tables)}",
-        f"Generated at: {_text_or_default(record.get('generated_at'), 'not recorded')}",
+        f"Run ID: {_text_or_default(record.get('run_id'), 'nicht erfasst')}",
+        f"Ausfuehrung erfolgreich: {bool(record.get('execution_success'))}",
+        f"SQL-Validierung: {bool(record.get('validation_success') or record.get('sql_valid'))}",
+        f"Zeilen im Ergebnis: {int(record.get('row_count', 0) or 0)}",
+        f"Quelltabellen: {_source_text(source_tables)}",
+        f"Erstellt am: {_text_or_default(record.get('generated_at'), 'nicht erfasst')}",
     ]
     candidates = record.get("template_candidates")
     if isinstance(candidates, list) and candidates:
@@ -1684,7 +1737,7 @@ def _metadata_body(record: dict[str, Any]) -> list[str]:
             if isinstance(candidate, dict)
         ]
         if ids:
-            body.append(f"Memory template IDs: {', '.join(ids)}")
+            body.append(f"Memory-Template-IDs: {', '.join(ids)}")
     return body[:MAX_BODY_ITEMS_PER_SLIDE]
 
 
@@ -1732,7 +1785,7 @@ def _filename_for(record: dict[str, Any]) -> str:
 
 
 def _source_text(source_tables: list[str]) -> str:
-    return ", ".join(source_tables) if source_tables else "not recorded"
+    return ", ".join(source_tables) if source_tables else "nicht erfasst"
 
 
 def _display_column_name(column: str) -> str:
