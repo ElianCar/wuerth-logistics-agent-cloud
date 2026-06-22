@@ -159,6 +159,17 @@ def pptx_slide_texts(content: bytes) -> list[str]:
     return slide_texts
 
 
+def pptx_shapes_for_slide_containing(content: bytes, text: str) -> list[object]:
+    presentation = Presentation(BytesIO(content))
+    for slide in presentation.slides:
+        slide_text = "\n".join(
+            shape.text for shape in slide.shapes if getattr(shape, "has_text_frame", False)
+        )
+        if text in slide_text:
+            return list(slide.shapes)
+    raise AssertionError(f"No slide contains {text!r}")
+
+
 def w05_many_category_rows() -> list[tuple[object, ...]]:
     materials = (
         ["MAT-01-LONG-LABEL"] * 5
@@ -682,6 +693,30 @@ class PresentationExportPlanRenderingTests(unittest.TestCase):
         self.assertIn("Sendungen ohne passende Rechnung", first_slide_text)
         self.assertNotIn(raw_question, first_slide_text)
 
+    def test_cover_subtitle_is_capped_without_ellipsis(self) -> None:
+        rows = [("45001", "SHIP-A", "MAT-A", 3, "sap", "a")]
+        reporting = reporting_result(query_result(["order_number"], [("45001",)]))
+        reporting["interpretation"] = (
+            "In den angezeigten Ergebnissen liegt der hoechste sichtbare Wert bei 2001029850 "
+            "mit 9.527.910.531; der niedrigste sichtbare Wert liegt bei 2000734658 mit 2.02 "
+            "und die restliche Beschreibung waere auf der Titelfolie zu lang."
+        )
+
+        export = build_deterministic_presentation_export(
+            record=w05_record(rows) | {"reporting_result": reporting}
+        )
+
+        self.assertTrue(export.available, export.warnings)
+        presentation = Presentation(BytesIO(export.content))
+        subtitles = [
+            shape.text
+            for shape in presentation.slides[0].shapes
+            if getattr(shape, "has_text_frame", False) and "hoechste sichtbare Wert" in shape.text
+        ]
+        self.assertTrue(subtitles)
+        self.assertLessEqual(len(subtitles[0]), 170)
+        self.assertNotIn("...", subtitles[0])
+
     def test_unsupported_chart_fallback_remains_exportable_and_visible(self) -> None:
         result = query_result(["region", "shipment_count", "cost"], [("Sued", 90, 12), ("Nord", 80, 8)])
         reporting = reporting_result(result)
@@ -736,7 +771,7 @@ class PresentationExportRichEvidenceTests(unittest.TestCase):
         self.assertIn("Auftraege ohne passende Rechnung", joined_text)
         self.assertTrue(any(text.strip() in {"3", "4", "10", "45001", "MAT-A", "SHIP-A"} for text in bold_text))
 
-    def test_top_n_categorical_record_produces_chart_image_and_sonstige_metadata(self) -> None:
+    def test_top_n_categorical_record_produces_editable_chart_and_sonstige_metadata(self) -> None:
         record = w05_record(w05_many_category_rows())
 
         spec = build_slide_deck_spec(record=record)
@@ -748,12 +783,8 @@ class PresentationExportRichEvidenceTests(unittest.TestCase):
 
         export = build_deterministic_presentation_export(record=record)
         self.assertTrue(export.available, export.warnings)
-        presentation = Presentation(BytesIO(export.content))
-        chart_ppt_slide = next(
-            slide for slide, text in zip(presentation.slides, pptx_slide_texts(export.content))
-            if chart_slide.title in text
-        )
-        self.assertTrue(any(getattr(shape, "shape_type", None) == 13 for shape in chart_ppt_slide.shapes))
+        chart_shapes = pptx_shapes_for_slide_containing(export.content, chart_slide.title)
+        self.assertTrue(any(getattr(shape, "has_chart", False) for shape in chart_shapes))
 
     def test_top_n_chart_rendering_keeps_pptx_bytes_deterministic(self) -> None:
         record = w05_record(w05_many_category_rows())
