@@ -132,6 +132,20 @@ def valid_record() -> dict[str, object]:
     return orchestrator_record()
 
 
+def pptx_text_values(content: bytes) -> list[str]:
+    presentation = Presentation(BytesIO(content))
+    text_values: list[str] = []
+    for slide in presentation.slides:
+        for shape in slide.shapes:
+            if getattr(shape, "has_text_frame", False):
+                text_values.append(shape.text)
+    return text_values
+
+
+def pptx_text(content: bytes) -> str:
+    return "\n".join(pptx_text_values(content))
+
+
 class PresentationPlannerContractTests(unittest.TestCase):
     def test_derive_presentation_title_shortens_raw_question_to_german_title(self) -> None:
         raw_question = (
@@ -357,6 +371,80 @@ class PresentationPlannerEvidenceTests(unittest.TestCase):
         self.assertTrue(plan.audit.fallback_reasons)
         self.assertFalse(eligibility.can_export)
         self.assertIn("row", eligibility.reason)
+
+
+class PresentationExportPlanRenderingTests(unittest.TestCase):
+    def test_build_slide_deck_spec_calls_planner_after_eligibility_passes(self) -> None:
+        with patch(
+            "src.agent.presentation_export.build_presentation_plan",
+            wraps=build_presentation_plan,
+        ) as planner:
+            spec = build_slide_deck_spec(record=valid_record())
+
+        planner.assert_called_once()
+        self.assertEqual(spec.title, "Lieferungen nach Region")
+        self.assertEqual(spec.metadata["planning_mode"], "deterministic")
+
+    def test_build_slide_deck_spec_rejects_ineligible_record_before_planning(self) -> None:
+        with patch("src.agent.presentation_export.build_presentation_plan") as planner:
+            with self.assertRaisesRegex(Exception, "execution"):
+                build_slide_deck_spec(record=orchestrator_record(execution_success=False))
+
+        planner.assert_not_called()
+
+    def test_reopened_pptx_uses_german_labels_and_visible_table_notes(self) -> None:
+        rows = [
+            (f"4500{index}", f"SHIP-{index % 3}", f"MAT-{index % 4}", index, "sap", f"note-{index}")
+            for index in range(1, 13)
+        ]
+
+        export = build_deterministic_presentation_export(record=w05_record(rows, row_count=50))
+
+        self.assertTrue(export.available, export.warnings)
+        rendered_text = pptx_text(export.content)
+        self.assertIn("Management-Zusammenfassung", rendered_text)
+        self.assertIn("Kennzahlen", rendered_text)
+        self.assertIn("Evidenz", rendered_text)
+        self.assertIn("Datenbasis und Grenzen", rendered_text)
+        self.assertIn("Technischer Anhang", rendered_text)
+        self.assertIn("Zeilen 1-10 von 50", rendered_text)
+        self.assertIn("Weitere Spalten ausgeblendet", rendered_text)
+
+    def test_cover_uses_short_planned_title_instead_of_long_raw_question(self) -> None:
+        raw_question = (
+            "Which order numbers have shipment records but no matching invoice records, "
+            "including ship-to party and customer material groups for the management deck?"
+        )
+        rows = [("45001", "SHIP-A", "MAT-A", 3, "sap", "a")]
+
+        export = build_deterministic_presentation_export(
+            record=w05_record(rows) | {"user_question": raw_question}
+        )
+
+        self.assertTrue(export.available, export.warnings)
+        first_slide_text = "\n".join(pptx_text_values(export.content)[:4])
+        self.assertIn("Sendungen ohne passende Rechnung", first_slide_text)
+        self.assertNotIn(raw_question, first_slide_text)
+
+    def test_unsupported_chart_fallback_remains_exportable_and_visible(self) -> None:
+        result = query_result(["region", "shipment_count", "cost"], [("Sued", 90, 12), ("Nord", 80, 8)])
+        reporting = reporting_result(result)
+        reporting["chart_plan"] = {
+            "chart_type": "heatmap",
+            "render_allowed": True,
+            "x_axis": "region",
+            "y_axis": "shipment_count",
+            "reason": "User requested heatmap.",
+        }
+
+        export = build_deterministic_presentation_export(
+            record=orchestrator_record(query_result=result, row_count=2, reporting_result=reporting)
+        )
+
+        self.assertTrue(export.available, export.warnings)
+        rendered_text = pptx_text(export.content)
+        self.assertIn("Darstellungshinweis", rendered_text)
+        self.assertIn("nicht unterstuetzt", rendered_text)
 
 
 def generated_pptx_bytes() -> bytes:
