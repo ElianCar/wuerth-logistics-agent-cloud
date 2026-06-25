@@ -391,15 +391,19 @@ def build_scenario_sql_rules() -> str:
 {allowed_tables}
 - Use explicit joins.
 - Use aliases i for invoices and s for shipments when joining the two tables.
-- Use TRY_CAST for freight_costs and packing_costs before numeric aggregation.
-- Use order_date as the default invoice date column for date filtering (Auftragsdatum). There is NO calendar_day column — never use it.
-- There is no date column in the shipments table. Do not filter shipments by date.
-- Produkt / Artikel / Produktnummer / Material maps to invoices.material_price (invoice side) and shipments.customer_material (shipment side). There is NO column called "product" — never use it.
+- freight_costs and packing_costs (shipments) are text columns: use SUM(TRY_CAST(... AS DOUBLE)).
+- Revenue / Umsatz = SUM(turnover_inv) from invoices (reported in statistics_currency, EUR). Do not use material_price for revenue.
+- Use calendar_day as the default invoice date column for date filtering; use calendar_yearmonth (YYYYMM) for monthly grouping.
+- Use shipment_date as the date column for shipment-side date filtering.
+- Produkt / Artikel / Produktnummer / Material maps to invoices.product (invoice side) and shipments.customer_material (shipment side). Do NOT use material_price as the product identifier; it is a multi-part text field, not a price.
+- Freight cost belongs to shipments.freight_costs; invoices.freight_cost_inv is unpopulated and must not be used.
+- Packing cost = SUM(TRY_CAST(packing_costs AS DOUBLE)) from shipments.
+- Do not use price_key_quantity or sorting_system (uninterpreted columns).
 - Lieferpositionen / Lieferungen / delivery positions = COUNT(DISTINCT delivery_number) from shipments.
 - Do not use TPC-H tables.
 - Do not use PostgreSQL-specific syntax.
 - Do not use information_schema for business questions.
-- For combined invoice and shipment questions involving sums or counts from both tables, pre aggregate invoices first, pre aggregate shipments first, then join the aggregates on order_number and customer = soldtoparty.
+- For combined invoice and shipment questions involving sums or counts from both tables, pre aggregate invoices first, pre aggregate shipments first, then join the aggregates on order_number, customer = shiptoparty, and product = customer_material.
 - Do not sum raw joined invoice and shipment rows directly.
 - For direct delivery count, use COUNT(DISTINCT CASE WHEN flag_direct_delivery = 'X' THEN delivery_number END).
 - For direct delivery share, use COUNT(DISTINCT CASE WHEN flag_direct_delivery = 'X' THEN delivery_number END) * 1.0 / COUNT(DISTINCT delivery_number).

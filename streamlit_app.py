@@ -57,6 +57,8 @@ from src.llm.model_adapter import (
     anthropic_api_key_is_placeholder,
     gemini_api_key_is_placeholder,
     get_provider,
+    get_token_usage,
+    reset_token_usage,
 )
 
 
@@ -431,6 +433,13 @@ def render_presentation_export_failure(export: object, container=st) -> None:
                 st.write(warning)
 
 
+def _render_ppt_token_caption(export_key: str, slot) -> None:
+    usage = st.session_state.get("ppt_token_usage", {}).get(export_key)
+    line = _format_token_usage(usage)
+    if line:
+        slot.caption(f"PPT-Generierung — {line}")
+
+
 def render_presentation_export_controls(record: dict, index: int, container=st) -> None:
     eligibility = can_export_presentation(record)
     export_key = presentation_export_key(record, index)
@@ -451,6 +460,7 @@ def render_presentation_export_controls(record: dict, index: int, container=st) 
             use_container_width=True,
         )
         render_presentation_export_feedback(export, feedback_slot)
+        _render_ppt_token_caption(export_key, feedback_slot)
         return
 
     reason = format_presentation_unavailable_reason(getattr(eligibility, "reason", ""))
@@ -471,9 +481,11 @@ def render_presentation_export_controls(record: dict, index: int, container=st) 
         use_container_width=True,
     )
     if clicked:
+        reset_token_usage()
         with st.spinner("Creating PPT..."):
             export = build_presentation_export(record=record, include_closing=False)
         exports[export_key] = export
+        st.session_state.setdefault("ppt_token_usage", {})[export_key] = get_token_usage()
 
     if getattr(export, "available", False):
         control_slot.download_button(
@@ -486,6 +498,7 @@ def render_presentation_export_controls(record: dict, index: int, container=st) 
             use_container_width=True,
         )
         render_presentation_export_feedback(export, feedback_slot)
+        _render_ppt_token_caption(export_key, feedback_slot)
     elif export is not None:
         render_presentation_export_failure(export, feedback_slot)
 

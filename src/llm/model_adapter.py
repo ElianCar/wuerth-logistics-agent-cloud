@@ -30,6 +30,23 @@ def get_token_usage() -> dict[str, int]:
     return dict(current)
 
 
+def record_token_usage(input_tokens: int, output_tokens: int) -> None:
+    """Add exact token counts to the active request counter (no-op if none active).
+
+    For code paths that bypass invoke_model (e.g. the Anthropic SDK used by the
+    PowerPoint export). Counts only real API values; pass 0 when none are available.
+    """
+    current = _token_usage.get()
+    if current is None:
+        return
+    input_tokens = int(input_tokens or 0)
+    output_tokens = int(output_tokens or 0)
+    current["input_tokens"] += input_tokens
+    current["output_tokens"] += output_tokens
+    current["total_tokens"] += input_tokens + output_tokens
+    current["calls"] += 1
+
+
 DEFAULT_GEMINI_PRIMARY_MODEL = "gemini-3.1-flash-lite-preview"
 DEFAULT_GEMINI_BACKUP_MODEL = "gemini-2.5-flash"
 DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
