@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from src.agent.router import build_router_graph, classify_intent
 from src.agent.router_template_retriever import find_similar_templates_for_router
+from src.config.scenarios import reset_active_scenario_id, set_active_scenario_id
 
 
 ROUTER_EXCERPT = {
@@ -46,8 +47,10 @@ class RouterTests(unittest.TestCase):
     def setUp(self) -> None:
         self._original_memory_enabled = os.environ.get("MEMORY_RETRIEVAL_ENABLED")
         os.environ.pop("MEMORY_RETRIEVAL_ENABLED", None)
+        set_active_scenario_id("demo")
 
     def tearDown(self) -> None:
+        reset_active_scenario_id()
         if self._original_memory_enabled is None:
             os.environ.pop("MEMORY_RETRIEVAL_ENABLED", None)
         else:

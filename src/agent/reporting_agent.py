@@ -286,6 +286,23 @@ def _interpretation(
         value = _format_value(df.iloc[0, 0])
         return f"Der zurückgegebene Einzelwert beträgt {value}. Ein Vergleich oder Trend ist daraus nicht ableitbar."
 
+    time_column = _time_column(df)
+    if metric and metric in df.columns and time_column:
+        numeric = pd.to_numeric(df[metric], errors="coerce")
+        visible = df.loc[numeric.notna(), [time_column, metric]].copy()
+        if len(visible.index) >= 2:
+            visible_numeric = pd.to_numeric(visible[metric], errors="coerce")
+            first_value = visible_numeric.iloc[0]
+            last_value = visible_numeric.iloc[-1]
+            first_period = str(visible[time_column].iloc[0])
+            last_period = str(visible[time_column].iloc[-1])
+            direction = "steigt" if last_value > first_value else "sinkt" if last_value < first_value else "bleibt stabil"
+            return (
+                f"Der sichtbare Verlauf {direction} von {first_period} ({_format_value(first_value)}) "
+                f"bis {last_period} ({_format_value(last_value)}). "
+                "Ursachen werden daraus nicht abgeleitet."
+            )
+
     if metric and metric in df.columns and grouping and grouping in df.columns:
         numeric = pd.to_numeric(df[metric], errors="coerce")
         visible = df.loc[numeric.notna(), [grouping, metric]].copy()
@@ -379,7 +396,7 @@ def _clean_sql_fragment(value: str) -> str:
 def _time_column(df: pd.DataFrame) -> str:
     for column in df.columns:
         name = str(column).lower()
-        if any(token in name for token in ("date", "day", "week", "month", "year", "time")):
+        if any(token in name for token in ("date", "datum", "day", "tag", "week", "woche", "month", "monat", "year", "jahr", "time", "zeit")):
             return str(column)
     return ""
 

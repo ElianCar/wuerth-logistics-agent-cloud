@@ -54,6 +54,20 @@ class ReportingAgentTests(unittest.TestCase):
         self.assertIn("Total Revenue", report["summary"])
         self.assertIn("N Name", report["summary"])
 
+    def test_time_series_summary_uses_trend_wording_before_category_extremes(self) -> None:
+        report = build_report(
+            query_result(["monat", "anzahl_auftraege"], [("2024-01", 8), ("2024-02", 12)]),
+            user_question="Zeige die Anzahl der Auftraege pro Monat als Trenddiagramm",
+            sql="SELECT monat, anzahl_auftraege FROM result ORDER BY monat",
+        )
+
+        self.assertEqual(report["chart_plan"]["chart_type"], "line")
+        self.assertIn("sichtbare Verlauf", report["interpretation"])
+        self.assertIn("2024-01", report["interpretation"])
+        self.assertIn("2024-02", report["interpretation"])
+        self.assertNotIn("höchste sichtbare Wert", report["interpretation"])
+        self.assertNotIn("hÃ¶chste sichtbare Wert", report["interpretation"])
+
     def test_summary_does_not_invent_units(self) -> None:
         report = build_report(query_result(["n_name", "total_revenue"], [("ARGENTINA", 10)]))
 
