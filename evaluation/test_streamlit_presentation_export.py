@@ -186,7 +186,9 @@ def _load_streamlit_app() -> types.ModuleType:
         "src.agent.memory_lifecycle",
         MemoryLifecycleError=RuntimeError,
         approve_candidate_to_vsm=lambda *args, **kwargs: {},
+        deactivate_approved_template=lambda *args, **kwargs: {},
         load_approved_template_records=lambda *args, **kwargs: [],
+        reactivate_approved_template=lambda *args, **kwargs: {},
     )
     fake_scenarios = _module(
         "src.config.scenarios",
