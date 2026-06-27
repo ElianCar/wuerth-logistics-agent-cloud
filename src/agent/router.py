@@ -121,6 +121,7 @@ CONTEXT:
 - needs_sql: false only when question matches no_sql_signals or is a data_overview, true otherwise
 - needs_clarification: true only when too vague to act on (e.g. "how is it going?"). Default false. If the question is a follow-up whose missing reference (entity, sales area, metric, grouping) is clearly resolvable from the CONVERSATION HISTORY, resolve it and set needs_clarification=false. Only ask when the history does not resolve the reference.
 - answering a pending clarification: if the most recent CONVERSATION HISTORY entry is a "RÜCKFRAGE DES SYSTEMS" (a clarification the system asked) and the current question answers it (e.g. supplies the missing time period, grouping, or entity — even as a bare value like "2025" or "01.07.2025 - 31.12.2025"), merge the earlier question with this answer, classify by the merged question, and set needs_clarification=false and needs_sql=true. Only keep needs_clarification=true if the answer still leaves the merged question ambiguous.
+- retry clarification: if a "RÜCKFRAGE-KONTEXT FÜR ERNEUTE AUSFÜHRUNG" block is present, use "ANTWORT DES NUTZERS AUF DIE RÜCKFRAGE" to clarify "URSPRÜNGLICHE NUTZERFRAGE". This answer is not a standalone new question. If the answer resolves the previous ambiguity, do not ask the same clarification again.
 - blocked_or_unsafe: true when blocked patterns appear
 - complexity_tier:
     "easy" → single table, simple aggregation (COUNT/SUM/AVG), no JOIN, no time comparison

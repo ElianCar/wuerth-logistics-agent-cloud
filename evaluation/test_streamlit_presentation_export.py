@@ -57,6 +57,24 @@ class _FakeSlot:
         return _NoopContext()
 
 
+class _FakeStatus:
+    def __init__(self) -> None:
+        self.writes: list[str] = []
+        self.updates: list[dict[str, object]] = []
+
+    def __enter__(self) -> "_FakeStatus":
+        return self
+
+    def __exit__(self, *_args: object) -> bool:
+        return False
+
+    def write(self, text: str) -> None:
+        self.writes.append(text)
+
+    def update(self, **kwargs: object) -> None:
+        self.updates.append(kwargs)
+
+
 class _FakePresentationContainer:
     def __init__(self, *, clicked: bool = False) -> None:
         self.clicked = clicked
@@ -396,6 +414,113 @@ class StreamlitPresentationExportHelperTests(unittest.TestCase):
         }
 
         self.assertFalse(forbidden & imported, forbidden & imported)
+
+
+class StreamlitRetryContextTests(unittest.TestCase):
+    def _record(self) -> dict[str, object]:
+        return {
+            "run_id": "run-parent",
+            "user_question": "bitte gib mir Customer mit orders und region und liniertem und Umsatz",
+            "final_answer": "Was bedeutet 'liniertem' in Ihrer Anfrage?",
+            "result_status": "clarification_needed",
+            "sql_error": "needs clarification",
+            "intent": "aggregation",
+            "needs_sql": False,
+            "needs_clarification": True,
+            "blocked_or_unsafe": False,
+            "complexity_tier": "medium",
+            "generated_sql": "",
+            "fallback_used": False,
+        }
+
+    def _install_retry_runtime(self, app: types.ModuleType, record: dict[str, object]) -> _FakeStatus:
+        status = _FakeStatus()
+        app.st.session_state.update(
+            {
+                "active_chat_id": "chat-a",
+                "chats": {"chat-a": {"name": "Chat A", "history": [record]}},
+            }
+        )
+        app.st.status = lambda *_args, **_kwargs: status
+        app.st.rerun = lambda: None
+        app.st.warning = lambda *_args, **_kwargs: None
+        return status
+
+    def test_retry_context_builder_includes_parent_comment_scenario_and_profile(self) -> None:
+        app = _load_streamlit_app()
+        profile = app.get_demo_profile("business_analyst")
+
+        retry_context = app.build_retry_context(
+            self._record(),
+            3,
+            "Mit liniertem meine ich lineitem.",
+            profile,
+        )
+
+        self.assertEqual(
+            retry_context["original_question"],
+            "bitte gib mir Customer mit orders und region und liniertem und Umsatz",
+        )
+        self.assertEqual(
+            retry_context["previous_assistant_answer"],
+            "Was bedeutet 'liniertem' in Ihrer Anfrage?",
+        )
+        self.assertEqual(retry_context["user_comment"], "Mit liniertem meine ich lineitem.")
+        self.assertEqual(retry_context["scenario"], "demo")
+        self.assertEqual(retry_context["role_profile"], "business_analyst")
+        self.assertEqual(retry_context["permission_role"], "contributor")
+
+    def test_retry_with_comment_preserves_behavior_and_passes_retry_context(self) -> None:
+        app = _load_streamlit_app()
+        record = self._record()
+        self._install_retry_runtime(app, record)
+        profile = app.get_demo_profile("business_analyst")
+        returned_record = {"run_id": "run-retry", "final_answer": "ok"}
+
+        with patch.object(app, "run_orchestrator", return_value=returned_record) as run_orchestrator:
+            app.retry_with_comment(
+                record,
+                0,
+                "Mit liniertem meine ich lineitem.",
+                app.SQLAgentConfig(),
+                profile,
+            )
+
+        kwargs = run_orchestrator.call_args.kwargs
+        self.assertEqual(run_orchestrator.call_args.args[0], record["user_question"])
+        self.assertEqual(kwargs["user_correction"], "Mit liniertem meine ich lineitem.")
+        self.assertEqual(kwargs["retry_context"]["user_comment"], "Mit liniertem meine ich lineitem.")
+        self.assertEqual(kwargs["retry_context"]["original_question"], record["user_question"])
+        updated_record = app.st.session_state.chats["chat-a"]["history"][0]
+        self.assertTrue(updated_record["retry_context_used"])
+        self.assertEqual(updated_record["retry_mode"], "comment_retry")
+        self.assertEqual(updated_record["retry_parent_assistant_answer"], record["final_answer"])
+
+    def test_fallback_retry_preserves_force_fallback_and_passes_retry_context_when_comment_exists(self) -> None:
+        app = _load_streamlit_app()
+        record = self._record()
+        self._install_retry_runtime(app, record)
+        profile = app.get_demo_profile("admin_developer")
+        returned_record = {"run_id": "run-fallback", "final_answer": "ok"}
+
+        with patch.object(app, "run_orchestrator", return_value=returned_record) as run_orchestrator:
+            app.rerun_with_fallback(
+                record,
+                0,
+                app.SQLAgentConfig(),
+                "Mit liniertem meine ich lineitem.",
+                profile,
+            )
+
+        kwargs = run_orchestrator.call_args.kwargs
+        self.assertEqual(run_orchestrator.call_args.args[0], record["user_question"])
+        self.assertTrue(kwargs["force_fallback"])
+        self.assertEqual(kwargs["user_correction"], "Mit liniertem meine ich lineitem.")
+        self.assertEqual(kwargs["retry_context"]["user_comment"], "Mit liniertem meine ich lineitem.")
+        self.assertEqual(kwargs["retry_context"]["permission_role"], "admin")
+        updated_record = app.st.session_state.chats["chat-a"]["history"][0]
+        self.assertTrue(updated_record["retry_context_used"])
+        self.assertEqual(updated_record["retry_mode"], "fallback_retry")
 
 
 class StreamlitPresentationExportWarningTests(unittest.TestCase):
