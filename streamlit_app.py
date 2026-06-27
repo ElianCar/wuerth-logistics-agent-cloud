@@ -852,12 +852,71 @@ def write_feedback(record: dict, rating: str, comment: str) -> str:
     )
 
 
-def retry_with_comment(record: dict, index: int, comment: str, config: SQLAgentConfig) -> None:
+def build_retry_context(
+    record: dict,
+    index: int,
+    comment: str,
+    profile: UserProfile | None = None,
+) -> dict:
+    router_context = record.get("router_context", {})
+    if not isinstance(router_context, dict):
+        router_context = {}
+    previous_error = record.get("error_message") or record.get("sql_error") or ""
+    context = {
+        "original_question": record.get("user_question") or record.get("question") or "",
+        "previous_assistant_answer": record.get("final_answer") or record.get("answer") or "",
+        "previous_status": record.get("result_status") or "",
+        "previous_router_decision": {
+            "intent": record.get("intent") or router_context.get("intent", ""),
+            "needs_sql": record.get("needs_sql", router_context.get("needs_sql", "")),
+            "needs_clarification": record.get(
+                "needs_clarification",
+                router_context.get("needs_clarification", ""),
+            ),
+            "blocked_or_unsafe": record.get(
+                "blocked_or_unsafe",
+                router_context.get("blocked_or_unsafe", ""),
+            ),
+            "complexity_tier": record.get("complexity_tier") or router_context.get("complexity_tier", ""),
+        },
+        "previous_error": previous_error,
+        "user_comment": comment.strip(),
+        "retry_parent_index": index,
+        "scenario": get_active_scenario_id(),
+    }
+    if profile is not None:
+        context.update(
+            {
+                "role_profile": profile.profile_id,
+                "permission_role": profile.permission_role.value,
+                "response_profile": profile.response_profile.value,
+            }
+        )
+    return context
+
+
+def apply_retry_metadata(record: dict, retry_context: dict, retry_mode: str) -> None:
+    record["retry_context"] = retry_context
+    record["retry_context_used"] = True
+    record["retry_mode"] = retry_mode
+    record["retry_parent_question"] = retry_context.get("original_question", "")
+    record["retry_parent_assistant_answer"] = retry_context.get("previous_assistant_answer", "")
+    record["retry_user_comment"] = retry_context.get("user_comment", "")
+
+
+def retry_with_comment(
+    record: dict,
+    index: int,
+    comment: str,
+    config: SQLAgentConfig,
+    profile: UserProfile | None = None,
+) -> None:
     if not comment.strip():
         st.warning("Bitte zuerst eine kurze Korrektur eingeben.")
         return
 
     _steps_log: list[dict] = []
+    retry_context = build_retry_context(record, index, comment, profile)
     write_feedback(record, "neutral", f"retry_with_comment: {comment}")
     with st.status("Wiederhole den Lauf mit deiner Korrektur...", expanded=True) as _retry_status:
         def _retry_on_step(node: str, duration: float, metadata: dict) -> None:
@@ -882,10 +941,12 @@ def retry_with_comment(record: dict, index: int, comment: str, config: SQLAgentC
             previous_sql_error=record.get("sql_error", ""),
             previous_final_answer=record.get("final_answer", ""),
             user_correction=comment.strip(),
+            retry_context=retry_context,
             step_callback=_retry_on_step,
         )
         _retry_status.update(label="Fertig ✓", state="complete", expanded=False)
     corrected_record["agent_step_log"] = _steps_log
+    apply_retry_metadata(corrected_record, retry_context, "comment_retry")
     active_history()[index] = corrected_record
     st.rerun()
 
@@ -895,8 +956,10 @@ def rerun_with_fallback(
     index: int,
     config: SQLAgentConfig,
     comment: str = "",
+    profile: UserProfile | None = None,
 ) -> None:
     _steps_log: list[dict] = []
+    retry_context = build_retry_context(record, index, comment, profile) if comment.strip() else {}
     write_feedback(record, "neutral", f"fallback_requested: {comment}")
     with st.status("Wiederhole den Lauf mit dem Fallback-Modell...", expanded=True) as _fb_status:
         def _fb_on_step(node: str, duration: float, metadata: dict) -> None:
@@ -914,10 +977,13 @@ def rerun_with_fallback(
             previous_sql_error=record.get("sql_error", ""),
             previous_final_answer=record.get("final_answer", ""),
             user_correction=comment.strip(),
+            retry_context=retry_context or None,
             step_callback=_fb_on_step,
         )
         _fb_status.update(label="Fertig ✓", state="complete", expanded=False)
     fallback_record["agent_step_log"] = _steps_log
+    if retry_context:
+        apply_retry_metadata(fallback_record, retry_context, "fallback_retry")
     active_history()[index] = fallback_record
     st.rerun()
 
@@ -2051,10 +2117,10 @@ def render_record(record: dict, index: int, config: SQLAgentConfig, profile: Use
                 st.warning("Rückmeldung gespeichert.")
         with col3:
             if st.button("Mit Kommentar wiederholen", key=f"feedback_retry_{index}"):
-                retry_with_comment(record, index, comment, config)
+                retry_with_comment(record, index, comment, config, profile)
         with col4:
             if st.button("Fallback-Modell verwenden", key=f"feedback_fallback_{index}"):
-                rerun_with_fallback(record, index, config, comment)
+                rerun_with_fallback(record, index, config, comment, profile)
 
         render_candidate_creation(record, index, profile)
 

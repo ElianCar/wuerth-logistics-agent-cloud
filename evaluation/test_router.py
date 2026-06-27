@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from src.agent.router import build_router_graph, classify_intent
+from src.agent.router import build_router_graph, build_router_prompt, classify_intent
 from src.agent.router_template_retriever import find_similar_templates_for_router
 from src.config.scenarios import reset_active_scenario_id, set_active_scenario_id
 
@@ -159,6 +159,72 @@ class RouterTests(unittest.TestCase):
         retrieve_memory.assert_called_once()
         self.assertEqual(retrieve_memory.call_args.kwargs["scenario"], "wuerth_local")
         self.assertEqual(result["memory_retrieval"]["scenario"], "wuerth_local")
+
+    def test_router_prompt_contains_narrow_retry_clarification_rule(self) -> None:
+        prompt = build_router_prompt(
+            "bitte gib mir Customer mit orders und region und liniertem und Umsatz und erklärung",
+            "DOMAIN: TPC-H business data",
+            chat_context=(
+                "RÜCKFRAGE-KONTEXT FÜR ERNEUTE AUSFÜHRUNG:\n"
+                "URSPRÜNGLICHE NUTZERFRAGE:\n"
+                "bitte gib mir Customer mit orders und region und liniertem und Umsatz und erklärung\n\n"
+                "RÜCKFRAGE DES SYSTEMS:\n"
+                "Was bedeutet 'liniertem' in Ihrer Anfrage?\n\n"
+                "ANTWORT DES NUTZERS AUF DIE RÜCKFRAGE:\n"
+                "lieferant"
+            ),
+        )
+
+        self.assertIn("RÜCKFRAGE-KONTEXT FÜR ERNEUTE AUSFÜHRUNG", prompt)
+        self.assertIn("ANTWORT DES NUTZERS AUF DIE RÜCKFRAGE", prompt)
+        self.assertIn("use \"ANTWORT DES NUTZERS AUF DIE RÜCKFRAGE\"", prompt)
+        self.assertIn("do not ask the same clarification again", prompt)
+
+    def test_retry_clarification_context_can_recover_to_sql_route(self) -> None:
+        captured_prompts: list[str] = []
+
+        def fake_invoke_model(prompt: str, **_kwargs: object) -> SimpleNamespace:
+            captured_prompts.append(prompt)
+            self.assertIn("RÜCKFRAGE-KONTEXT FÜR ERNEUTE AUSFÜHRUNG", prompt)
+            self.assertIn("RÜCKFRAGE DES SYSTEMS", prompt)
+            self.assertIn("ANTWORT DES NUTZERS AUF DIE RÜCKFRAGE:\nlieferant", prompt)
+            return SimpleNamespace(
+                response_text=fake_router_payload(
+                    needs_sql=True,
+                    needs_clarification=False,
+                    complexity_tier="hard",
+                    complexity_reason="retry clarification resolved supplier ambiguity",
+                    clarification_question="",
+                )
+            )
+
+        with patch("src.agent.router.load_router_excerpt", return_value=ROUTER_EXCERPT), patch(
+            "src.agent.router.invoke_model",
+            side_effect=fake_invoke_model,
+        ):
+            result = classify_intent(
+                {
+                    "user_question": (
+                        "bitte gib mir Customer mit orders und region und liniertem "
+                        "und Umsatz und erklärung"
+                    ),
+                    "active_scenario": "demo",
+                    "chat_context": (
+                        "RÜCKFRAGE-KONTEXT FÜR ERNEUTE AUSFÜHRUNG:\n"
+                        "URSPRÜNGLICHE NUTZERFRAGE:\n"
+                        "bitte gib mir Customer mit orders und region und liniertem und Umsatz und erklärung\n\n"
+                        "RÜCKFRAGE DES SYSTEMS:\n"
+                        "Was bedeutet 'liniertem' in Ihrer Anfrage?\n\n"
+                        "ANTWORT DES NUTZERS AUF DIE RÜCKFRAGE:\n"
+                        "lieferant"
+                    ),
+                }
+            )
+
+        self.assertTrue(captured_prompts)
+        self.assertTrue(result["needs_sql"])
+        self.assertFalse(result["needs_clarification"])
+        self.assertEqual(result["clarification_question"], "")
 
 
 if __name__ == "__main__":
