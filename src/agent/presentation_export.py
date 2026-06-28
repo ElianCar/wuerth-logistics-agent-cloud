@@ -20,6 +20,7 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 
 from src.agent.logging_utils import current_timestamp, get_log_dir
+from src.llm.model_adapter import record_token_usage
 from src.agent.presentation_planner import (
     PlannerInvocation,
     PresentationPlanningConfig,
@@ -1028,12 +1029,29 @@ def _run_claude_pptx_generation(
     )
 
 
+def _record_anthropic_usage(response: Any) -> None:
+    """Feed exact Anthropic API token usage into the active request counter.
+
+    Reads only real values from response.usage; records nothing on any failure
+    (never approximates).
+    """
+    try:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        input_tokens = getattr(usage, "input_tokens", 0) or 0
+        output_tokens = getattr(usage, "output_tokens", 0) or 0
+        record_token_usage(int(input_tokens), int(output_tokens))
+    except Exception:
+        pass
+
+
 def _create_claude_message(client: Any, *, messages: list[dict[str, Any]], container: dict[str, Any]) -> Any:
     model = os.getenv("ANTHROPIC_PRESENTATION_MODEL", DEFAULT_PRESENTATION_MODEL).strip() or DEFAULT_PRESENTATION_MODEL
     max_tokens = _presentation_env_int("ANTHROPIC_PRESENTATION_MAX_TOKENS", DEFAULT_PRESENTATION_MAX_TOKENS)
     timeout = _presentation_env_int("ANTHROPIC_PRESENTATION_TIMEOUT_SECONDS", DEFAULT_PRESENTATION_TIMEOUT_SECONDS)
     try:
-        return client.beta.messages.create(
+        response = client.beta.messages.create(
             model=model,
             max_tokens=max_tokens,
             betas=list(ANTHROPIC_SKILLS_BETAS),
@@ -1042,6 +1060,8 @@ def _create_claude_message(client: Any, *, messages: list[dict[str, Any]], conta
             tools=[ANTHROPIC_CODE_EXECUTION_TOOL],
             timeout=timeout,
         )
+        _record_anthropic_usage(response)
+        return response
     except Exception as error:
         raise ClaudePresentationExportError(
             "claude_generation_failed",
@@ -1056,13 +1076,15 @@ def _create_presentation_planner_message(
     config: PresentationPlanningConfig,
 ) -> Any:
     try:
-        return client.messages.create(
+        response = client.messages.create(
             model=config.model,
             max_tokens=config.max_tokens,
             temperature=0,
             messages=[{"role": "user", "content": prompt}],
             timeout=config.timeout_seconds,
         )
+        _record_anthropic_usage(response)
+        return response
     except Exception as error:
         raise PresentationPlannerInvocationError(
             f"planner_request_failed:{type(error).__name__}"

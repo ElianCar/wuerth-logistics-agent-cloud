@@ -32,6 +32,7 @@ def build_reporting_result(
     validation_success: bool = False,
     language: str = "de",
     chart_plan: dict[str, Any] | None = None,
+    semantic_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build deterministic post-SQL reporting output.
 
@@ -42,6 +43,7 @@ def build_reporting_result(
     router_state = router_state or {}
     query_result = query_result or {}
     source_tables = source_tables or []
+    semantic_metadata = semantic_metadata or {}
     df = result_dataframe.copy(deep=True) if result_dataframe is not None else _dataframe_from_query_result(query_result)
     effective_row_count = int(row_count if row_count is not None else len(df.index))
 
@@ -56,6 +58,7 @@ def build_reporting_result(
             row_count=effective_row_count,
             final_sql=sql,
             source_tables=source_tables,
+            semantic_metadata=semantic_metadata,
         )
 
     metadata = _derive_metadata(df, sql, chart_plan)
@@ -112,7 +115,19 @@ def _derive_metadata(df: pd.DataFrame, sql: str, chart_plan: dict[str, Any]) -> 
 
     chart_metric = chart_plan.get("y_axis") if chart_plan.get("render_allowed") else None
     chart_grouping = chart_plan.get("x_axis") if chart_plan.get("render_allowed") else None
-    if chart_metric and str(chart_metric) not in metric_columns:
+    # A measure_bar is dimensionless (its x_axis == y_axis == a measure), so it must
+    # not be promoted to a grouping column. Doing so would make metric == grouping and
+    # later select duplicate columns (df[[grouping, metric]]), crashing pd.to_numeric.
+    if str(chart_plan.get("chart_type") or "") == "measure_bar" or chart_grouping == chart_metric:
+        chart_grouping = None
+    # The chart plan is the authoritative classification (it consults the semantic layer):
+    # its x_axis is a dimension, not a metric, even when the value-based heuristic above
+    # mistook a numeric business code (e.g. plant="9191") for a measure.
+    if chart_grouping and str(chart_grouping) in metric_columns:
+        metric_columns.remove(str(chart_grouping))
+    if chart_metric:
+        if str(chart_metric) in metric_columns:
+            metric_columns.remove(str(chart_metric))
         metric_columns.insert(0, str(chart_metric))
     if chart_grouping and str(chart_grouping) not in grouping_columns:
         grouping_columns.insert(0, str(chart_grouping))
@@ -287,7 +302,7 @@ def _interpretation(
         return f"Der zurückgegebene Einzelwert beträgt {value}. Ein Vergleich oder Trend ist daraus nicht ableitbar."
 
     time_column = _time_column(df)
-    if metric and metric in df.columns and time_column:
+    if metric and metric in df.columns and time_column and time_column != metric:
         numeric = pd.to_numeric(df[metric], errors="coerce")
         visible = df.loc[numeric.notna(), [time_column, metric]].copy()
         if len(visible.index) >= 2:
@@ -303,7 +318,7 @@ def _interpretation(
                 "Ursachen werden daraus nicht abgeleitet."
             )
 
-    if metric and metric in df.columns and grouping and grouping in df.columns:
+    if metric and metric in df.columns and grouping and grouping in df.columns and grouping != metric:
         numeric = pd.to_numeric(df[metric], errors="coerce")
         visible = df.loc[numeric.notna(), [grouping, metric]].copy()
         if visible.empty:
@@ -365,9 +380,27 @@ def _metric_columns(df: pd.DataFrame) -> list[str]:
     metrics = []
     for column in df.columns:
         values = [value for value in df[column].tolist() if value is not None]
-        if values and not _is_identifier_column(str(column)) and all(_is_numeric_like(value) for value in values):
+        if (
+            values
+            and not _is_identifier_column(str(column))
+            and all(_is_numeric_like(value) for value in values)
+            and not _looks_like_time_dimension_values(values)
+        ):
             metrics.append(str(column))
     return metrics
+
+
+def _looks_like_time_dimension_values(values: list[Any]) -> bool:
+    """True when all values are compact date codes like YYYYMM (202507) or 4-digit years."""
+    def _is_compact_date(v: Any) -> bool:
+        s = str(v).strip()
+        if re.fullmatch(r"\d{6}", s):
+            year, month = int(s[:4]), int(s[4:])
+            return 1900 <= year <= 2200 and 1 <= month <= 12
+        if re.fullmatch(r"\d{4}", s):
+            return 1900 <= int(s) <= 2200
+        return False
+    return bool(values) and all(_is_compact_date(v) for v in values)
 
 
 def _grouping_columns(df: pd.DataFrame, metric_columns: list[str]) -> list[str]:
