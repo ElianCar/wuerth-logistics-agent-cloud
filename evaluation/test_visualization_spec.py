@@ -96,7 +96,7 @@ class VisualizationSpecTests(unittest.TestCase):
         self.assertEqual(spec["y_type"], "quantitative")
         self.assertTrue(spec["value_axis_starts_at_zero"])
 
-    def test_date_plus_numeric_measure_returns_line_chart_when_requested(self) -> None:
+    def test_date_plus_numeric_measure_returns_area_chart_when_requested(self) -> None:
         spec = build_spec(
             query_result(
                 ["month", "total_revenue"],
@@ -105,12 +105,12 @@ class VisualizationSpecTests(unittest.TestCase):
         )
 
         self.assertTrue(spec["render_allowed"])
-        self.assertEqual(spec["chart_type"], "line")
+        self.assertEqual(spec["chart_type"], "area")
         self.assertEqual(spec["x_axis"], "month")
         self.assertEqual(spec["y_axis"], "total_revenue")
         self.assertEqual(spec["category_order"], ["2024-02", "2024-01"])
 
-    def test_german_month_alias_returns_line_chart_when_requested(self) -> None:
+    def test_german_month_alias_returns_area_chart_when_requested(self) -> None:
         spec = build_spec(
             query_result(
                 ["monat", "anzahl_auftraege"],
@@ -120,20 +120,253 @@ class VisualizationSpecTests(unittest.TestCase):
         )
 
         self.assertTrue(spec["render_allowed"])
-        self.assertEqual(spec["chart_type"], "line")
+        self.assertEqual(spec["chart_type"], "area")
         self.assertEqual(spec["x_axis"], "monat")
         self.assertEqual(spec["y_axis"], "anzahl_auftraege")
 
-    def test_no_explicit_chart_request_returns_no_renderable_chart(self) -> None:
+    def test_yyyymm_integer_column_is_treated_as_time_dimension(self) -> None:
+        # calendar_yearmonth stores compact integers like 202507 (July 2025)
         spec = build_spec(
-            query_result(["region", "total_revenue"], [("EUROPE", 10)]),
-            router_context={"output_mode": "table"},
+            query_result(
+                ["calendar_yearmonth", "revenue"],
+                [(202507, 12345.67), (202508, 9876.54)],
+            ),
+            user_question="Zeige mir den Umsatz im Zeitverlauf",
+        )
+
+        self.assertTrue(spec["render_allowed"])
+        self.assertEqual(spec["chart_type"], "area")
+        self.assertEqual(spec["x_axis"], "calendar_yearmonth")
+        self.assertEqual(spec["y_axis"], "revenue")
+
+    def test_yyyymm_single_row_is_treated_as_time_dimension(self) -> None:
+        # 1-row result from a narrow date range should still render as area chart
+        spec = build_spec(
+            query_result(
+                ["calendar_yearmonth", "revenue"],
+                [(202507, 12345.67)],
+            ),
+            user_question="Umsatz im Zeitverlauf",
+        )
+
+        self.assertTrue(spec["render_allowed"])
+        self.assertEqual(spec["chart_type"], "area")
+
+    def test_token_match_picks_share_column_when_anteil_in_question(self) -> None:
+        # 2 numeric measures: count + share percentage
+        # question contains "Anteil" → token "anteil" matches "anteil_prozent", not "anzahl_auftraege"
+        spec = build_spec(
+            query_result(
+                ["kategorie", "anzahl_auftraege", "anteil_prozent"],
+                [("Mehrere VZ", 5, 5.0), ("Nur 1 VZ", 95, 95.0)],
+            ),
+            user_question="Aufträge in mehreren VZ inklusive Anteil an allen Aufträgen in einem Diagramm",
+        )
+
+        self.assertTrue(spec["render_allowed"])
+        self.assertEqual(spec["y_axis"], "anteil_prozent")
+        self.assertTrue(spec["warnings"])
+
+    def test_semantic_type_marks_numeric_code_column_as_dimension(self) -> None:
+        # plant values look numeric ("9191") but the semantic layer says they are an
+        # organizational dimension, so the result must be a bar (not a measure-only chart).
+        spec = build_visualization_spec(
+            user_question="Umsatz je Vertriebszentrum",
+            router_context=requested_context(),
+            query_result=query_result(["plant", "revenue"], [("9191", 100), ("9192", 80)]),
+            execution_success=True,
+            validation_success=True,
+            row_count=2,
+            final_sql="SELECT ...",
+            source_tables=["wuerth.shipments"],
+            semantic_metadata={"columns": {"plant": {"semantic_type": "organizational_code"}}},
+        )
+
+        self.assertTrue(spec["render_allowed"])
+        self.assertEqual(spec["chart_type"], "bar")
+        self.assertEqual(spec["x_axis"], "plant")
+        self.assertEqual(spec["y_axis"], "revenue")
+
+    def test_aliased_dimension_name_is_categorical_without_semantic_metadata(self) -> None:
+        # SQL aliases the plant column to "vertriebszentrum", so semantic lookup misses.
+        # The German dimension-name heuristic must still treat numeric codes as a dimension.
+        spec = build_spec(
+            query_result(["vertriebszentrum", "umsatz"], [("9191", 100), ("9192", 80)]),
+            user_question="Umsatz je Vertriebszentrum",
+        )
+
+        self.assertTrue(spec["render_allowed"])
+        self.assertEqual(spec["chart_type"], "bar")
+        self.assertEqual(spec["x_axis"], "vertriebszentrum")
+
+    def test_wide_row_level_result_with_two_measures_falls_back_to_scatter(self) -> None:
+        # "Umsatz und Lieferkosten je Lieferposition" returns a wide row-level table with
+        # identifiers, a constant filter column (plant) and an incidental date. With the
+        # semantic layer (as the app always passes it), none of the clean structures fit,
+        # but two measures → scatter beats returning no chart.
+        rows = [
+            (1000 + i, 5000 + i, f"M{i}", f"C{i % 9}", f"2025-07-{(i % 28) + 1:02d}", "9981", float(100 + i), float(10 + i))
+            for i in range(20)
+        ]
+        spec = build_visualization_spec(
+            user_question="Zeige für jede Lieferposition aus Lager 9981 den Umsatz und die Lieferkosten",
+            router_context=requested_context(),
+            query_result=query_result(
+                ["delivery_number", "order_number", "customer_material", "shiptoparty",
+                 "shipment_date", "plant", "umsatz", "lieferkosten"],
+                rows,
+            ),
+            execution_success=True,
+            validation_success=True,
+            row_count=20,
+            final_sql="SELECT ...",
+            source_tables=["wuerth.shipments"],
+            semantic_metadata={
+                "columns": {
+                    "delivery_number": {"semantic_type": "delivery_identifier"},
+                    "order_number": {"semantic_type": "identifier"},
+                    "customer_material": {"semantic_type": "product_identifier"},
+                    "shiptoparty": {"semantic_type": "customer_identifier"},
+                    "shipment_date": {"semantic_type": "date"},
+                    "plant": {"semantic_type": "organizational_code"},
+                }
+            },
+        )
+
+        self.assertTrue(spec["render_allowed"])
+        self.assertEqual(spec["chart_type"], "scatter")
+        self.assertEqual(spec["x_axis"], "umsatz")
+        self.assertEqual(spec["y_axis"], "lieferkosten")
+
+    def test_constant_filter_column_is_ignored_for_chart_structure(self) -> None:
+        # plant is constant (all '9191' after WHERE plant='9191'); it must not be treated
+        # as a dimension. month + revenue then form a clean time series.
+        spec = build_spec(
+            query_result(
+                ["plant", "monat", "revenue"],
+                [("9191", "2024-01", 10), ("9191", "2024-02", 12), ("9191", "2024-03", 9)],
+            ),
+            user_question="Umsatzentwicklung von Vertriebszentrum 9191 pro Monat",
+        )
+
+        self.assertTrue(spec["render_allowed"])
+        self.assertEqual(spec["chart_type"], "area")
+        self.assertEqual(spec["x_axis"], "monat")
+
+    def test_rank_helper_columns_are_excluded_so_faceted_bar_is_detected(self) -> None:
+        # "Top 3 ... je Vertriebszentrum" produces RANK() helper columns. These ordinal
+        # helpers must not count as measures, otherwise faceted_bar (2 dims + 2 measures)
+        # is missed because the result appears to have 4 measures.
+        # multiple Vertriebszentren (plant is not constant) — as in a real "je VZ" result
+        rows = [(f"919{i % 4}", f"P{i % 5}", 1000.0 - i, 50 - i, (i % 3) + 1, (i % 3) + 1) for i in range(12)]
+        spec = build_spec(
+            query_result(
+                ["plant", "product", "revenue", "lieferpositionen", "revenue_rank", "lieferpositionen_rank"],
+                rows,
+            ),
+            user_question="Top 3 Produkte je Vertriebszentrum nach Umsatz und Lieferpositionen inklusive Diagramm",
+        )
+
+        self.assertTrue(spec["render_allowed"])
+        self.assertEqual(spec["chart_type"], "faceted_bar")
+        self.assertIn("revenue", {spec["y_axis"], spec["second_metric"]})
+        self.assertIn("lieferpositionen", {spec["y_axis"], spec["second_metric"]})
+
+    def test_two_semantic_dimensions_plus_measure_returns_grouped_bar(self) -> None:
+        spec = build_visualization_spec(
+            user_question="Top Produkte je Vertriebszentrum",
+            router_context=requested_context(),
+            query_result=query_result(
+                ["product", "plant", "revenue"],
+                [("40010815", "9191", 100), ("40010816", "9192", 80), ("40010817", "9191", 60)],
+            ),
+            execution_success=True,
+            validation_success=True,
+            row_count=3,
+            final_sql="SELECT ...",
+            source_tables=["wuerth.shipments"],
+            semantic_metadata={
+                "columns": {
+                    "product": {"semantic_type": "product_identifier"},
+                    "plant": {"semantic_type": "organizational_code"},
+                }
+            },
+        )
+
+        self.assertTrue(spec["render_allowed"])
+        self.assertEqual(spec["chart_type"], "grouped_bar")
+
+    def test_pie_keyword_wins_over_default_bar(self) -> None:
+        # vertriebszentrum (dimension) + measures + explicit "Kreisdiagramm" → pie, not bar.
+        spec = build_spec(
+            query_result(
+                ["vertriebszentrum", "revenue", "umsatzanteil_prozent"],
+                [("9191", 100, 33.3), ("9192", 120, 40.0), ("9193", 80, 26.7)],
+            ),
+            user_question="Umsatzanteil je Vertriebszentrum als Kreisdiagramm",
+        )
+
+        self.assertTrue(spec["render_allowed"])
+        self.assertEqual(spec["chart_type"], "pie")
+
+    def test_semantic_identifier_is_not_used_as_axis(self) -> None:
+        # order_number is an identifier per the semantic layer → not a chart dimension.
+        spec = build_visualization_spec(
+            user_question="Zeige Aufträge",
+            router_context=requested_context(),
+            query_result=query_result(["order_number", "revenue"], [("100", 10), ("101", 8)]),
+            execution_success=True,
+            validation_success=True,
+            row_count=2,
+            final_sql="SELECT ...",
+            source_tables=["wuerth.invoices"],
+            semantic_metadata={"columns": {"order_number": {"semantic_type": "identifier"}}},
         )
 
         self.assertFalse(spec["render_allowed"])
-        self.assertIn("no explicit chart request", str(spec["reason"]).lower())
+        self.assertEqual(spec["chart_type"], "none")
 
-    def test_multiple_numeric_measures_are_rejected_when_ambiguous(self) -> None:
+    def test_dimensionless_single_row_multi_measure_returns_measure_bar(self) -> None:
+        # 1 row, two numeric measures, no category/time → fallback bar (one bar per measure)
+        spec = build_spec(
+            query_result(
+                ["anzahl_auftraege", "anteil_prozent"],
+                [(5, 5.0)],
+            ),
+            user_question="Aufträge in mehreren VZ inklusive Anteil in einem Diagramm",
+        )
+
+        self.assertTrue(spec["render_allowed"])
+        self.assertEqual(spec["chart_type"], "measure_bar")
+        self.assertEqual(spec["measure_columns"], ["anzahl_auftraege", "anteil_prozent"])
+
+    def test_dimensionless_multi_row_single_measure_returns_measure_bar(self) -> None:
+        # Several rows, single numeric measure, no category/time dimension.
+        # Shape avoids the 1x1 scalar guard, so it still produces a chart.
+        spec = build_spec(
+            query_result(
+                ["anzahl_auftraege"],
+                [(5,), (8,), (3,)],
+            ),
+            user_question="Anzahl Aufträge",
+        )
+
+        self.assertTrue(spec["render_allowed"])
+        self.assertEqual(spec["chart_type"], "measure_bar")
+        self.assertEqual(spec["measure_columns"], ["anzahl_auftraege"])
+
+    def test_auto_render_without_explicit_chart_request(self) -> None:
+        spec = build_spec(
+            query_result(["region", "total_revenue"], [("EUROPE", 10), ("ASIA", 8)]),
+            router_context={},
+        )
+
+        self.assertTrue(spec["render_allowed"])
+        self.assertEqual(spec["chart_type"], "bar")
+
+    def test_ambiguous_multiple_measures_render_first_measure_with_warning(self) -> None:
+        # Philosophy "rather one chart too many": an ambiguous multi-measure result
+        # no longer aborts. It renders the first measure and attaches a warning.
         spec = build_spec(
             query_result(
                 ["region", "total_revenue", "freight_costs"],
@@ -142,8 +375,10 @@ class VisualizationSpecTests(unittest.TestCase):
             user_question="show metrics by region",
         )
 
-        self.assertFalse(spec["render_allowed"])
-        self.assertIn("multiple numeric measures", str(spec["reason"]).lower())
+        self.assertTrue(spec["render_allowed"])
+        self.assertEqual(spec["chart_type"], "bar")
+        self.assertEqual(spec["y_axis"], "total_revenue")
+        self.assertTrue(spec["warnings"])
 
     def test_multiple_numeric_measures_select_requested_measure_with_warning(self) -> None:
         spec = build_spec(

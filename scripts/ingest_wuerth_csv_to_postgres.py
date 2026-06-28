@@ -22,11 +22,21 @@ DEFAULT_EXPORT_DIRS = (
 NULL_MARKERS = {"", "null", "none", "nan", "na", "n/a"}
 
 FORCED_COLUMN_TYPES = {
+    # invoices
     "order_date": "DATE",
     "order_entry_date": "DATE",
+    "calendar_day": "TIMESTAMP",
+    "turnover_inv": "NUMERIC",
+    "freight_cost_inv": "NUMERIC",
+    "invoice_quantity_in_sales_unit_inv": "BIGINT",
+    # shipments
     "number_delivery_items": "BIGINT",
     "actual_quantity_delivered_in_sales_units": "NUMERIC",
     "freight_costs": "NUMERIC",
+    "packing_costs": "NUMERIC",
+    "shipment_date": "TIMESTAMP",
+    "number_of_packages_per_delivery": "BIGINT",
+    "number_of_pick_trays_of_shipment": "BIGINT",
 }
 
 REVENUE_COLUMN_CANDIDATES = {
@@ -230,7 +240,7 @@ def create_indexes(cursor: psycopg.Cursor, schema_name: str) -> None:
     cursor.execute(
         sql.SQL(
             "CREATE INDEX IF NOT EXISTS invoices_join_idx "
-            "ON {}.{} (order_number, customer, material_price)"
+            "ON {}.{} (order_number, customer, product)"
         ).format(sql.Identifier(schema_name), sql.Identifier("invoices"))
     )
     cursor.execute(

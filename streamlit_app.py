@@ -1,5 +1,6 @@
 import io
 import uuid
+from pathlib import Path
 
 import altair as alt
 import pandas as pd
@@ -66,6 +67,18 @@ PAGE_CHAT = "Chat"
 PAGE_GOLDEN = "Golden-Testmodus"
 PAGE_MEMORY = "Memory-Prüfung"
 PAGE_TEMPLATES = "Freigegebene Templates"
+
+# --- Würth corporate identity (colors from the PPT template theme) ---
+WUERTH_RED = "#CC0000"
+WUERTH_TEXT = "#4B4B4B"
+WUERTH_BLUE = "#0093DD"
+_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+WUERTH_LOGO_PATH = _ASSETS_DIR / "wuerth_logo.png"
+WUERTH_SHIELD_PATH = _ASSETS_DIR / "wuerth_shield.png"
+# Combined TUM + Würth logo for the top-left brand slot (provided by the user).
+TUM_WUERTH_LOGO_PATH = _ASSETS_DIR / "tum_wuerth_logo.png"
+# Categorical palette for multi-series charts; Würth red first, then theme accents.
+WUERTH_PALETTE = ["#CC0000", "#4B4B4B", "#0093DD", "#FDC300", "#008448", "#90112C", "#8B8B8D"]
 
 GOLDEN_RUNTIME_LABELS: dict[GoldenRuntimeMode, str] = {
     "orchestrator": "Real chat path: Orchestrator",
@@ -305,10 +318,17 @@ def render_chart_from_spec(record: dict, df: pd.DataFrame) -> None:
     if not isinstance(chart_spec, dict) or not chart_spec.get("render_allowed"):
         return
 
+    # Chart-only daily refinement: when a monthly time series collapsed to a single
+    # point, the orchestrator attaches a finer (daily) result used for the chart only.
+    chart_qr = record.get("reporting_result", {}).get("chart_query_result") if isinstance(record.get("reporting_result"), dict) else None
+    if isinstance(chart_qr, dict) and chart_qr.get("rows") and chart_qr.get("columns"):
+        df = pd.DataFrame(chart_qr.get("rows", []), columns=chart_qr.get("columns", []))
+
     chart_type = str(chart_spec.get("chart_type", "none"))
     x_axis = chart_spec.get("x_axis")
     y_axis = chart_spec.get("y_axis")
-    if chart_type not in {"bar", "line"} or not x_axis or not y_axis:
+    renderable_types = {"bar", "line", "area", "scatter", "pie", "grouped_bar", "stacked_bar", "faceted_bar", "measure_bar"}
+    if chart_type not in renderable_types or not x_axis or not y_axis:
         return
     if x_axis not in df.columns or y_axis not in df.columns:
         st.warning("Die Visualisierung konnte nicht gerendert werden, weil Spalten im Ergebnis fehlen.")
@@ -319,6 +339,173 @@ def render_chart_from_spec(record: dict, df: pd.DataFrame) -> None:
     unit = str(chart_spec.get("unit") or "")
     display_y_label = f"{y_label} ({unit})" if unit else y_label
     display_row_limit = int(chart_spec.get("display_row_limit") or len(df))
+
+    st.subheader("Visualisierung")
+    title = str(chart_spec.get("title") or "")
+    if title:
+        st.caption(title)
+    note = str(chart_spec.get("note") or "")
+    if note:
+        st.caption(note)
+
+    # --- Scatter: 2 numeric axes, no category mapping needed ---
+    if chart_type == "scatter":
+        scatter_df = df[[x_axis, y_axis]].head(display_row_limit).copy()
+        scatter_df["_chart_x"] = pd.to_numeric(scatter_df[x_axis], errors="coerce")
+        scatter_df["_chart_y"] = pd.to_numeric(scatter_df[y_axis], errors="coerce")
+        scatter_df = scatter_df.dropna(subset=["_chart_x", "_chart_y"])
+        if scatter_df.empty:
+            return
+        chart = alt.Chart(scatter_df).mark_circle(size=80, color=WUERTH_RED).encode(
+            x=alt.X("_chart_x:Q", title=x_label),
+            y=alt.Y("_chart_y:Q", title=display_y_label),
+            tooltip=[
+                alt.Tooltip("_chart_x:Q", title=x_label),
+                alt.Tooltip("_chart_y:Q", title=display_y_label),
+            ],
+        )
+        st.altair_chart(chart, use_container_width=True)
+        return
+
+    # --- Grouped / Stacked Bar: uses series_column for color grouping ---
+    if chart_type in ("grouped_bar", "stacked_bar"):
+        series_column = chart_spec.get("series_column")
+        if not series_column or series_column not in df.columns:
+            return
+        cols_needed = [x_axis, y_axis, series_column]
+        gb_df = df[cols_needed].head(display_row_limit).copy()
+        gb_df["_chart_category"] = gb_df[x_axis].astype(str)
+        gb_df["_chart_value"] = pd.to_numeric(gb_df[y_axis], errors="coerce")
+        gb_df["_chart_series"] = gb_df[series_column].astype(str)
+        gb_df = gb_df.dropna(subset=["_chart_value"])
+        if gb_df.empty:
+            return
+        category_order = [str(v) for v in chart_spec.get("category_order", [])]
+        if not category_order:
+            category_order = list(dict.fromkeys(gb_df["_chart_category"].tolist()))
+        series_label = str(series_column).replace("_", " ").title()
+        stack = True if chart_type == "stacked_bar" else None
+        chart = alt.Chart(gb_df).mark_bar().encode(
+            x=alt.X("_chart_category:N", sort=category_order, title=x_label),
+            y=alt.Y("_chart_value:Q", stack=stack, scale=alt.Scale(zero=True), title=display_y_label),
+            color=alt.Color("_chart_series:N", title=series_label, scale=alt.Scale(range=WUERTH_PALETTE)),
+            tooltip=[
+                alt.Tooltip("_chart_category:N", title=x_label),
+                alt.Tooltip("_chart_series:N", title=series_label),
+                alt.Tooltip("_chart_value:Q", title=display_y_label),
+            ],
+        )
+        st.altair_chart(chart, use_container_width=True)
+        return
+
+    # --- Faceted Bar: per facet_column, grouped bars with optional second metric ---
+    if chart_type == "faceted_bar":
+        facet_column = chart_spec.get("facet_column")
+        second_metric = chart_spec.get("second_metric")
+        if not facet_column or facet_column not in df.columns:
+            return
+        cols_needed = [x_axis, y_axis, facet_column]
+        if second_metric and second_metric in df.columns:
+            cols_needed.append(second_metric)
+        fb_df = df[cols_needed].head(display_row_limit).copy()
+
+        if second_metric and second_metric in df.columns:
+            # Reshape to long format via pd.melt so both measures appear as color groups
+            id_cols = [x_axis, facet_column]
+            fb_long = fb_df.melt(id_vars=id_cols, value_vars=[y_axis, second_metric],
+                                  var_name="_measure_name", value_name="_measure_value")
+            fb_long["_chart_category"] = fb_long[x_axis].astype(str)
+            fb_long["_chart_facet"] = fb_long[facet_column].astype(str)
+            fb_long["_chart_value"] = pd.to_numeric(fb_long["_measure_value"], errors="coerce")
+            fb_long = fb_long.dropna(subset=["_chart_value"])
+            if fb_long.empty:
+                return
+            category_order = [str(v) for v in chart_spec.get("category_order", [])]
+            if not category_order:
+                category_order = list(dict.fromkeys(fb_long["_chart_category"].tolist()))
+            base = alt.Chart(fb_long).mark_bar().encode(
+                x=alt.X("_chart_category:N", sort=category_order, title=x_label),
+                y=alt.Y("_chart_value:Q", scale=alt.Scale(zero=True), title=display_y_label),
+                color=alt.Color("_measure_name:N", title="Kennzahl", scale=alt.Scale(range=WUERTH_PALETTE)),
+                tooltip=[
+                    alt.Tooltip("_chart_facet:N", title=str(facet_column).replace("_", " ").title()),
+                    alt.Tooltip("_chart_category:N", title=x_label),
+                    alt.Tooltip("_measure_name:N", title="Kennzahl"),
+                    alt.Tooltip("_chart_value:Q", title=display_y_label),
+                ],
+            )
+            chart = base.facet(facet=alt.Facet("_chart_facet:N", title=str(facet_column).replace("_", " ").title()), columns=3)
+        else:
+            fb_df["_chart_category"] = fb_df[x_axis].astype(str)
+            fb_df["_chart_facet"] = fb_df[facet_column].astype(str)
+            fb_df["_chart_value"] = pd.to_numeric(fb_df[y_axis], errors="coerce")
+            fb_df = fb_df.dropna(subset=["_chart_value"])
+            if fb_df.empty:
+                return
+            category_order = [str(v) for v in chart_spec.get("category_order", [])]
+            if not category_order:
+                category_order = list(dict.fromkeys(fb_df["_chart_category"].tolist()))
+            base = alt.Chart(fb_df).mark_bar().encode(
+                x=alt.X("_chart_category:N", sort=category_order, title=x_label),
+                y=alt.Y("_chart_value:Q", scale=alt.Scale(zero=True), title=display_y_label),
+                color=alt.Color("_chart_category:N", legend=None, scale=alt.Scale(range=WUERTH_PALETTE)),
+                tooltip=[
+                    alt.Tooltip("_chart_facet:N", title=str(facet_column).replace("_", " ").title()),
+                    alt.Tooltip("_chart_category:N", title=x_label),
+                    alt.Tooltip("_chart_value:Q", title=display_y_label),
+                ],
+            )
+            chart = base.facet(facet=alt.Facet("_chart_facet:N", title=str(facet_column).replace("_", " ").title()), columns=3)
+        st.altair_chart(chart, use_container_width=True)
+        return
+
+    # --- Measure bar: dimensionless result, each measure column becomes a bar ---
+    if chart_type == "measure_bar":
+        measure_columns = [c for c in chart_spec.get("measure_columns", []) if c in df.columns]
+        if not measure_columns:
+            return
+        mb_df = df[measure_columns].head(display_row_limit).copy()
+        label_map = {c: str(c).replace("_", " ").title() for c in measure_columns}
+        if len(mb_df) <= 1:
+            long_df = mb_df.melt(var_name="_measure", value_name="_chart_value")
+            long_df["_chart_category"] = long_df["_measure"].map(label_map)
+            long_df["_chart_value"] = pd.to_numeric(long_df["_chart_value"], errors="coerce")
+            long_df = long_df.dropna(subset=["_chart_value"])
+            if long_df.empty:
+                return
+            chart = alt.Chart(long_df).mark_bar().encode(
+                x=alt.X("_chart_category:N", sort=list(label_map.values()), title="Kennzahl"),
+                y=alt.Y("_chart_value:Q", scale=alt.Scale(zero=True), title="Wert"),
+                color=alt.Color("_chart_category:N", legend=None, scale=alt.Scale(range=WUERTH_PALETTE)),
+                tooltip=[
+                    alt.Tooltip("_chart_category:N", title="Kennzahl"),
+                    alt.Tooltip("_chart_value:Q", title="Wert"),
+                ],
+            )
+        else:
+            mb_df["_row"] = range(1, len(mb_df) + 1)
+            long_df = mb_df.melt(id_vars="_row", var_name="_measure", value_name="_chart_value")
+            long_df["_measure_label"] = long_df["_measure"].map(label_map)
+            long_df["_chart_category"] = long_df["_row"].astype(str)
+            long_df["_chart_value"] = pd.to_numeric(long_df["_chart_value"], errors="coerce")
+            long_df = long_df.dropna(subset=["_chart_value"])
+            if long_df.empty:
+                return
+            chart = alt.Chart(long_df).mark_bar().encode(
+                x=alt.X("_chart_category:N", title="Zeile"),
+                xOffset=alt.XOffset("_measure_label:N"),
+                y=alt.Y("_chart_value:Q", scale=alt.Scale(zero=True), title="Wert"),
+                color=alt.Color("_measure_label:N", title="Kennzahl", scale=alt.Scale(range=WUERTH_PALETTE)),
+                tooltip=[
+                    alt.Tooltip("_chart_category:N", title="Zeile"),
+                    alt.Tooltip("_measure_label:N", title="Kennzahl"),
+                    alt.Tooltip("_chart_value:Q", title="Wert"),
+                ],
+            )
+        st.altair_chart(chart, use_container_width=True)
+        return
+
+    # --- Standard single-axis charts (bar, area, line, pie) ---
     chart_df = df[[x_axis, y_axis]].head(display_row_limit).copy()
     chart_df["_chart_category"] = chart_df[x_axis].astype(str)
     chart_df["_chart_value"] = pd.to_numeric(chart_df[y_axis], errors="coerce")
@@ -331,35 +518,40 @@ def render_chart_from_spec(record: dict, df: pd.DataFrame) -> None:
     if not category_order:
         category_order = list(dict.fromkeys(chart_df["_chart_category"].tolist()))
 
-    st.subheader("Visualisierung")
-    title = str(chart_spec.get("title") or "")
-    if title:
-        st.caption(title)
-    note = str(chart_spec.get("note") or "")
-    if note:
-        st.caption(note)
-
     tooltip = [
         alt.Tooltip("_chart_category:N", title=x_label),
         alt.Tooltip("_chart_value:Q", title=display_y_label),
     ]
     base_chart = alt.Chart(chart_df)
-    if chart_type == "bar":
+
+    if chart_type == "pie":
+        chart = base_chart.mark_arc(innerRadius=50 if chart_spec.get("donut") else 0).encode(
+            theta=alt.Theta("_chart_value:Q"),
+            color=alt.Color("_chart_category:N", sort=category_order, title=x_label, scale=alt.Scale(range=WUERTH_PALETTE)),
+            tooltip=tooltip,
+        )
+        st.altair_chart(chart, use_container_width=True)
+    elif chart_type == "bar":
         if str(chart_spec.get("orientation") or "vertical") == "horizontal":
-            chart = base_chart.mark_bar().encode(
+            chart = base_chart.mark_bar(color=WUERTH_RED).encode(
                 y=alt.Y("_chart_category:N", sort=category_order, title=x_label),
                 x=alt.X("_chart_value:Q", scale=alt.Scale(zero=True), title=display_y_label),
                 tooltip=tooltip,
             )
         else:
-            chart = base_chart.mark_bar().encode(
+            chart = base_chart.mark_bar(color=WUERTH_RED).encode(
                 x=alt.X("_chart_category:N", sort=category_order, title=x_label),
                 y=alt.Y("_chart_value:Q", scale=alt.Scale(zero=True), title=display_y_label),
                 tooltip=tooltip,
             )
         st.altair_chart(chart, use_container_width=True)
-    elif chart_type == "line":
-        chart = base_chart.mark_line(point=True).encode(
+    elif chart_type in ("area", "line"):
+        mark = (
+            base_chart.mark_area(point=True, color=WUERTH_RED)
+            if chart_type == "area"
+            else base_chart.mark_line(point=True, color=WUERTH_RED)
+        )
+        chart = mark.encode(
             x=alt.X("_chart_category:N", sort=category_order, title=x_label),
             y=alt.Y("_chart_value:Q", title=display_y_label),
             order=alt.Order("_row_order:Q"),
@@ -580,16 +772,109 @@ def build_streamlit_llm_config() -> SQLAgentConfig:
     return env_config
 
 
+def _img_data_uri(path: Path) -> str:
+    """Return a base64 data URI for a local PNG (empty string if missing)."""
+    import base64
+
+    if not path.exists():
+        return ""
+    return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+
+
 def apply_app_styles() -> None:
+    logo_uri = _img_data_uri(WUERTH_LOGO_PATH)
     st.markdown(
-        """
+        f"""
         <style>
         p code,
-        li code {
+        li code {{
             white-space: nowrap;
             word-break: keep-all;
             overflow-wrap: normal;
-        }
+        }}
+
+        /* --- Würth branding --- */
+        /* Remove the chat pictograms (avatars) next to question and model/answer. */
+        [data-testid^="stChatMessageAvatar"],
+        [data-testid^="chatAvatarIcon-"] {{
+            display: none !important;
+        }}
+        /* Headings and titles in Würth anthracite, with a red accent for the main title. */
+        h1, h2, h3 {{
+            color: {WUERTH_TEXT};
+        }}
+        /* Active tab underline / labels in Würth red. */
+        .stTabs [aria-selected="true"] {{
+            color: {WUERTH_RED} !important;
+        }}
+        .stTabs [data-baseweb="tab-highlight"] {{
+            background-color: {WUERTH_RED} !important;
+        }}
+        /* Links in Würth red. */
+        a, a:visited {{
+            color: {WUERTH_RED};
+        }}
+        /* Metric values (e.g. "Modell", "Status") in Würth red. */
+        [data-testid="stMetricValue"] {{
+            color: {WUERTH_RED};
+        }}
+        /* Expander headers (Ablaufschritte, SQL-Anweisung) get a subtle red accent. */
+        [data-testid="stExpander"] summary:hover {{
+            color: {WUERTH_RED};
+        }}
+        /* Primary buttons in Würth red. */
+        .stButton > button[kind="primary"],
+        .stDownloadButton > button[kind="primary"] {{
+            background-color: {WUERTH_RED};
+            border-color: {WUERTH_RED};
+            color: #FFFFFF;
+        }}
+
+        /* --- Würth-branded chat input bar (bottom) --- */
+        /* No red bar: keep the default background, just make room on the left for the
+           Würth logo card shown next to the input. */
+        /* Reserve space on the left of the input bar for the Würth logo card. */
+        [data-testid="stBottomBlockContainer"] {{
+            padding-left: 150px;
+        }}
+        /* The actual input box: white with a neutral light border (only the send
+           button is red). */
+        [data-testid="stChatInput"] {{
+            position: relative;
+            overflow: visible;
+            border: 1px solid #D0D0D0;
+            border-radius: 12px;
+            background-color: #FFFFFF;
+        }}
+        /* Würth logo card, anchored to and vertically centred on the input bar itself
+           so it sits exactly at the same height as the chat input. */
+        [data-testid="stChatInput"]::before {{
+            content: "";
+            position: absolute;
+            left: -134px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 116px;
+            height: 46px;
+            background: #FFFFFF url("{logo_uri}") no-repeat center;
+            background-size: 96px auto;
+            border: 1px solid #D9D9D9;
+            border-radius: 8px;
+        }}
+        [data-testid="stChatInput"] textarea {{
+            color: {WUERTH_TEXT};
+        }}
+        /* Solid red send button with a white arrow. */
+        [data-testid="stChatInputSubmitButton"] {{
+            background-color: {WUERTH_RED};
+            border-radius: 8px;
+        }}
+        [data-testid="stChatInputSubmitButton"] svg {{
+            fill: #FFFFFF;
+        }}
+        [data-testid="stChatInputSubmitButton"]:hover {{
+            background-color: #A30000;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -1803,7 +2088,10 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
                 use_container_width=True,
             )
             xlsx_buffer = io.BytesIO()
-            df.to_excel(xlsx_buffer, index=False)
+            xlsx_df = df.copy()
+            for col in xlsx_df.select_dtypes(include=["datetimetz"]).columns:
+                xlsx_df[col] = xlsx_df[col].dt.tz_localize(None)
+            xlsx_df.to_excel(xlsx_buffer, index=False)
             col_xlsx.download_button(
                 "Als Excel exportieren",
                 data=xlsx_buffer.getvalue(),
@@ -1816,8 +2104,8 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
         else:
             render_presentation_unavailable_compact(record)
 
-        st.subheader("SQL-Anweisung")
-        st.code(record.get("final_sql") or record.get("generated_sql", "") or "(kein SQL erzeugt)", language="sql")
+        with st.expander("SQL-Anweisung", expanded=False):
+            st.code(record.get("final_sql") or record.get("generated_sql", "") or "(kein SQL erzeugt)", language="sql")
 
         source_tables = record.get("source_tables", [])
         st.subheader("Quelltabellen")
@@ -1861,7 +2149,23 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Agentic AI Datenassistent", layout="wide")
+    # Top-left brand slot: prefer the combined TUM + Würth logo, fall back to Würth.
+    _corner_logo = (
+        str(TUM_WUERTH_LOGO_PATH) if TUM_WUERTH_LOGO_PATH.exists()
+        else str(WUERTH_LOGO_PATH) if WUERTH_LOGO_PATH.exists()
+        else None
+    )
+    _page_icon = str(WUERTH_SHIELD_PATH) if WUERTH_SHIELD_PATH.exists() else "📊"
+    st.set_page_config(
+        page_title="Würth Datenassistent",
+        page_icon=_page_icon,
+        layout="wide",
+    )
+    if _corner_logo:
+        try:  # st.logo requires Streamlit >= 1.35; degrade gracefully otherwise.
+            st.logo(_corner_logo)
+        except Exception:
+            pass
     apply_app_styles()
     initialize_state()
     page, config = render_sidebar()
@@ -1878,7 +2182,17 @@ def main() -> None:
         render_approved_templates_view()
         return
 
-    st.title("Agentic AI Datenassistent")
+    _shield_uri = _img_data_uri(WUERTH_SHIELD_PATH)
+    if _shield_uri:
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:18px;margin:0 0 4px 0;">'
+            f'<img src="{_shield_uri}" alt="Würth" style="height:64px;width:auto;"/>'
+            f'<h1 style="margin:0;color:{WUERTH_TEXT};font-weight:700;">Würth Datenassistent</h1>'
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.title("Würth Datenassistent")
     scenario = get_active_scenario()
     st.caption(
         f"LangGraph-SQL-Workflow für {scenario.label} mit konfigurierbaren Primary- und Fallback-Modellen."

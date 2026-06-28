@@ -547,6 +547,79 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(rows[0]["template_candidate_ids"], "")
         self.assertEqual(rows[0]["template_candidate_scores"], "")
 
+    def test_single_month_time_series_is_refined_to_daily_for_chart_only(self) -> None:
+        semantic = {
+            "columns": {
+                "calendar_yearmonth": {"semantic_type": "date_period"},
+                "calendar_day": {"semantic_type": "date"},
+            }
+        }
+        chart_plan = {
+            "render_allowed": True,
+            "chart_type": "area",
+            "x_axis": "calendar_yearmonth",
+            "y_axis": "revenue",
+            "note": "",
+        }
+        result = {
+            "row_count": 1,
+            "source_tables": ["t"],
+            "final_sql": (
+                "SELECT i.calendar_yearmonth, SUM(i.turnover_inv) AS revenue FROM t "
+                "WHERE i.calendar_day >= '2025-12-01' AND i.calendar_day <= '2025-12-31' "
+                "GROUP BY i.calendar_yearmonth"
+            ),
+        }
+        daily = {
+            "columns": ["calendar_day", "revenue"],
+            "rows": [("2025-12-01", 100.0), ("2025-12-05", 250.0), ("2025-12-20", 400.0)],
+            "row_count": 3,
+            "executed_sql": "",
+        }
+        with patch("src.agent.orchestrator.execute_read_only_sql", return_value=daily):
+            out = orchestrator._maybe_upgrade_chart_to_daily(
+                {"chart_plan": dict(chart_plan)},
+                result=result,
+                semantic_metadata=semantic,
+                user_question="Umsatz im Zeitverlauf",
+                router_context={"output_mode": "chart_plus_table"},
+            )
+
+        self.assertEqual(out["chart_plan"]["chart_type"], "area")
+        self.assertEqual(out["chart_plan"]["x_axis"], "calendar_day")
+        self.assertEqual(out["chart_query_result"]["row_count"], 3)
+        self.assertIn("Tagesverlauf", out["chart_plan"]["note"])
+
+    def test_multi_month_time_series_is_not_refined(self) -> None:
+        semantic = {
+            "columns": {
+                "calendar_yearmonth": {"semantic_type": "date_period"},
+                "calendar_day": {"semantic_type": "date"},
+            }
+        }
+        reporting_result = {
+            "chart_plan": {
+                "render_allowed": True,
+                "chart_type": "area",
+                "x_axis": "calendar_yearmonth",
+                "y_axis": "revenue",
+                "note": "",
+            }
+        }
+        result = {"row_count": 5, "source_tables": ["t"], "final_sql": "SELECT calendar_yearmonth ..."}
+        with patch("src.agent.orchestrator.execute_read_only_sql") as db_mock:
+            out = orchestrator._maybe_upgrade_chart_to_daily(
+                reporting_result,
+                result=result,
+                semantic_metadata=semantic,
+                user_question="Umsatz pro Monat",
+                router_context={"output_mode": "chart_plus_table"},
+            )
+
+        db_mock.assert_not_called()
+        self.assertEqual(out["chart_plan"]["x_axis"], "calendar_yearmonth")
+        self.assertNotIn("chart_query_result", out)
+
 
 if __name__ == "__main__":
     unittest.main()

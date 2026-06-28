@@ -368,17 +368,26 @@ def build_scenario_sql_rules() -> str:
 - Generate PostgreSQL SQL only.
 - Use only these local Würth PostgreSQL tables:
 {allowed_tables}
-- Use explicit joins.
-- Use aliases i for invoices and s for shipments when joining the two tables.
-- Do not use TPC-H demo tables.
-- Do not use Databricks catalog names or Databricks-only syntax such as TRY_CAST.
-- Freight cost is available in wuerth.shipments.freight_costs and can be summed directly.
-- Revenue/turnover columns are not present in the current local invoice CSV. If the user asks for revenue, turnover, Umsatz, or invoice value, return a single literal limitation query in this shape: SELECT 'The requested revenue metric is unsupported because no revenue or turnover column is present in the local Würth invoice CSV.' AS limitation
-- Packing cost columns are not present in the current local shipment CSV. If the user asks for packing cost, return a single literal limitation query in this shape: SELECT 'The requested packing cost metric is unsupported because no packing cost column is present in the local Würth shipment CSV.' AS limitation
-- The project join keys are order_number, customer equals shiptoparty, and material_price equals customer_material. The material mapping is based on current CSV column names and needs business confirmation.
-- Invoices and shipments do not match perfectly one to one because invoicing and shipping can occur at different times.
-- For combined invoice and shipment questions, pre aggregate invoices first, pre aggregate shipments first, then join the aggregates on order_number, customer = shiptoparty, and material_price = customer_material where the material key is relevant.
-- Do not sum raw joined invoice and shipment rows directly.
+- Use explicit joins with aliases i for invoices and s for shipments.
+- Do not use TPC-H demo tables, Databricks catalog names, or TRY_CAST; numeric columns are already typed in PostgreSQL.
+- Revenue / Umsatz = SUM(i.turnover_inv) from wuerth.invoices (EUR). No cast needed.
+- Freight cost = SUM(s.freight_costs); packing cost = SUM(s.packing_costs). Both are NUMERIC — sum directly. Invoice-side freight_cost_inv is unpopulated; never use it.
+- Use calendar_day for invoice-side date filtering (end date inclusive: calendar_day <= 'YYYY-MM-DD') and calendar_yearmonth (YYYYMM) for monthly grouping.
+- Use shipment_date for shipment-side date filtering (end date inclusive: shipment_date <= 'YYYY-MM-DD').
+- Produkt / Artikel / Produktnummer / Material = invoices.product and shipments.customer_material. material_price is a second product number field (Produktnummer/Artikelnummer) — different column from product; do not aggregate it.
+- Vertriebszentrum / Lager (distribution center) = shipments.plant. Versandstelle = shipments.shipping_point (one organizational level BELOW plant); use shipping_point only when the user explicitly asks for Versandstelle.
+- sales_area (invoices) is NOT the Vertriebszentrum; do not use it for Vertriebszentrum grouping.
+- All delivery/shipment information comes exclusively from shipments — do not use invoices for delivery-related filtering.
+- Lieferpositionen = COUNT(*) on shipments rows (each row = one Lieferposition). Anzahl Lieferungen (distinct deliveries) = COUNT(DISTINCT s.delivery_number).
+- Do not use price_key_quantity, sorting_system, market_segment, or order_item (uninterpreted/irrelevant columns).
+- CROSS-TABLE LINKAGE — the method depends on what is measured:
+  - Pure shipment measures (Lieferpositionen, Lieferungen, freight/packing cost, delivered quantity) by plant/shipping_point/delivery_type: query shipments directly with GROUP BY that dimension. Do NOT join invoices.
+  - Pure invoice measures with no shipment dimension (revenue by product, revenue by month): query invoices directly. Do NOT join shipments.
+  - Invoice measure (revenue/Umsatz, ordered quantity) filtered or grouped by a SHIPMENT dimension (plant, shipping_point, delivery_type): link via order_number only. Do NOT join on product = customer_material — the two columns have different string formats and the equality matches almost nothing (revenue would collapse to 0).
+- For revenue filtered by a single plant value: SELECT SUM(i.turnover_inv) FROM wuerth.invoices i WHERE <date filter> AND i.order_number IN (SELECT order_number FROM wuerth.shipments WHERE plant = '<value>').
+- For revenue grouped by plant: SELECT s.plant, SUM(i.turnover_inv) AS revenue FROM wuerth.invoices i JOIN (SELECT DISTINCT order_number, plant FROM wuerth.shipments) s ON i.order_number = s.order_number GROUP BY s.plant.
+- Multi-plant caveat: an order can ship from several plants, so its full invoice revenue is attributed to each involved plant; the sum across plants can exceed total revenue. This is acceptable; do not attempt to split it.
+- The full 3-key join (order_number, customer = shiptoparty, product = customer_material) is only for row-level matching questions and under-matches badly; do not use it to link invoice measures to a shipment dimension.
 - Use LEFT JOIN or anti join patterns when the user asks for unmatched invoice or shipment records.
 """
 
@@ -389,25 +398,31 @@ def build_scenario_sql_rules() -> str:
 - Use fully qualified table names.
 - Use only these Würth tables:
 {allowed_tables}
-- Use explicit joins.
-- Use aliases i for invoices and s for shipments when joining the two tables.
-- freight_costs and packing_costs (shipments) are text columns: use SUM(TRY_CAST(... AS DOUBLE)).
-- Revenue / Umsatz = SUM(turnover_inv) from invoices (reported in statistics_currency, EUR). Do not use material_price for revenue.
-- Use calendar_day as the default invoice date column for date filtering; use calendar_yearmonth (YYYYMM) for monthly grouping.
-- Use shipment_date as the date column for shipment-side date filtering.
-- Produkt / Artikel / Produktnummer / Material maps to invoices.product (invoice side) and shipments.customer_material (shipment side). Do NOT use material_price as the product identifier; it is a multi-part text field, not a price.
-- Freight cost belongs to shipments.freight_costs; invoices.freight_cost_inv is unpopulated and must not be used.
-- Packing cost = SUM(TRY_CAST(packing_costs AS DOUBLE)) from shipments.
-- Do not use price_key_quantity or sorting_system (uninterpreted columns).
-- Lieferpositionen / Lieferungen / delivery positions = COUNT(DISTINCT delivery_number) from shipments.
-- Do not use TPC-H tables.
-- Do not use PostgreSQL-specific syntax.
+- Use explicit joins with aliases i for invoices and s for shipments.
+- freight_costs and packing_costs (shipments) are text columns: use SUM(TRY_CAST(freight_costs AS DOUBLE)) and SUM(TRY_CAST(packing_costs AS DOUBLE)).
+- Revenue / Umsatz = SUM(i.turnover_inv) from invoices (EUR). Invoice-side freight_cost_inv is unpopulated; never use it.
+- Use calendar_day for invoice-side date filtering (end date inclusive: calendar_day <= 'YYYY-MM-DD') and calendar_yearmonth (YYYYMM) for monthly grouping.
+- Use shipment_date for shipment-side date filtering (end date inclusive: shipment_date <= 'YYYY-MM-DD').
+- Produkt / Artikel / Produktnummer / Material = invoices.product and shipments.customer_material. material_price is a second product number field (Produktnummer/Artikelnummer) — different column from product; do not aggregate it.
+- Vertriebszentrum / Lager (distribution center) = shipments.plant. Versandstelle = shipments.shipping_point (one organizational level BELOW plant); use shipping_point only when the user explicitly asks for Versandstelle.
+- sales_area (invoices) is NOT the Vertriebszentrum; do not use it for Vertriebszentrum grouping.
+- All delivery/shipment information comes exclusively from shipments — do not use invoices for delivery-related filtering.
+- Lieferpositionen = COUNT(*) on shipments rows (each row = one Lieferposition). Anzahl Lieferungen (distinct deliveries) = COUNT(DISTINCT s.delivery_number).
+- Do not use price_key_quantity, sorting_system, market_segment, or order_item (uninterpreted/irrelevant columns).
+- Do not use TPC-H tables or PostgreSQL-specific syntax.
 - Do not use information_schema for business questions.
-- For combined invoice and shipment questions involving sums or counts from both tables, pre aggregate invoices first, pre aggregate shipments first, then join the aggregates on order_number, customer = shiptoparty, and product = customer_material.
-- Do not sum raw joined invoice and shipment rows directly.
-- For direct delivery count, use COUNT(DISTINCT CASE WHEN flag_direct_delivery = 'X' THEN delivery_number END).
-- For direct delivery share, use COUNT(DISTINCT CASE WHEN flag_direct_delivery = 'X' THEN delivery_number END) * 1.0 / COUNT(DISTINCT delivery_number).
-- Do not invent business-table SQL for S24 compliance, on-time delivery rate, delivery delay, or gross profit/Rohertrag. For these unsupported KPIs, return a single literal limitation query in this shape: SELECT 'The requested KPI is unsupported because the required columns or business rules are not available.' AS limitation
+- CROSS-TABLE LINKAGE — the method depends on what is measured:
+  - Pure shipment measures (Lieferpositionen, Lieferungen, freight/packing cost, delivered quantity) by plant/shipping_point/delivery_type: query shipments directly with GROUP BY that dimension. Do NOT join invoices.
+  - Pure invoice measures with no shipment dimension (revenue by product, revenue by month): query invoices directly. Do NOT join shipments.
+  - Invoice measure (revenue/Umsatz, ordered quantity) filtered or grouped by a SHIPMENT dimension (plant, shipping_point, delivery_type): link via order_number only. Do NOT join on product = customer_material — the two columns have different string formats and the equality matches almost nothing (revenue would collapse to 0).
+- For revenue filtered by a single plant value: SELECT SUM(i.turnover_inv) FROM <invoices> i WHERE <date filter> AND i.order_number IN (SELECT order_number FROM <shipments> WHERE plant = '<value>').
+- For revenue grouped by plant: SELECT s.plant, SUM(i.turnover_inv) AS revenue FROM <invoices> i JOIN (SELECT DISTINCT order_number, plant FROM <shipments>) s ON i.order_number = s.order_number GROUP BY s.plant.
+- Multi-plant caveat: an order can ship from several plants, so its full invoice revenue is attributed to each involved plant; the sum across plants can exceed total revenue. This is acceptable; do not attempt to split it.
+- The full 3-key join (order_number, customer = shiptoparty, product = customer_material) is only for row-level matching questions and under-matches badly; do not use it to link invoice measures to a shipment dimension.
+- For direct delivery count: COUNT(DISTINCT CASE WHEN flag_direct_delivery = 'X' THEN delivery_number END).
+- For direct delivery share: COUNT(DISTINCT CASE WHEN flag_direct_delivery = 'X' THEN delivery_number END) * 1.0 / COUNT(DISTINCT delivery_number).
+- Use LEFT JOIN or anti join patterns when the user asks for unmatched invoice or shipment records.
+- Do not invent business-table SQL for S24 compliance, on-time delivery rate, delivery delay, or gross profit/Rohertrag. For these unsupported KPIs, return: SELECT 'The requested KPI is unsupported because the required columns or business rules are not available.' AS limitation
 """
 
     return """Demo data scenario rules:

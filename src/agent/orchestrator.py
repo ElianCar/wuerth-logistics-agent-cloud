@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import re
+from functools import lru_cache
 from time import perf_counter
 from typing import Any, Literal
 
@@ -9,12 +11,18 @@ from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
 from src.agent.data_overview import build_data_overview
+from src.agent.db import execute_read_only_sql
 from src.agent.id_utils import generate_run_id
 from src.agent.langgraph_sql_agent import SQLAgentConfig, StepCallback, run_sql_agent
 from src.agent.logging_utils import append_csv_row, current_timestamp, get_log_dir
 from src.agent.reporting_agent import build_reporting_result
+from src.agent.visualization_spec import build_visualization_spec
 from src.agent.router import RouterState, build_router_graph
-from src.config.scenarios import get_active_scenario, get_active_scenario_id
+from src.config.scenarios import (
+    get_active_scenario,
+    get_active_scenario_id,
+    load_semantic_column_metadata,
+)
 from src.llm.model_adapter import get_provider, get_token_usage, reset_token_usage
 
 load_dotenv()
@@ -291,6 +299,123 @@ def _build_router_context(state: OrchestratorState) -> dict[str, Any]:
     }
 
 
+@lru_cache(maxsize=8)
+def _semantic_column_metadata_cached(semantic_layer_path: str) -> dict[str, Any]:
+    """Load and cache the per-column semantic metadata for the active scenario.
+
+    Cached by the semantic layer file path so the YAML is parsed at most once per
+    scenario. Failures degrade to an empty mapping (chart profiler falls back to
+    name/value heuristics).
+    """
+    try:
+        return load_semantic_column_metadata(get_active_scenario())
+    except Exception:
+        return {"columns": {}}
+
+
+_MONTH_PERIOD_NAME_RE = re.compile(r"yearmonth|year_month|monat|month", re.IGNORECASE)
+
+
+def _semantic_date_columns(semantic_metadata: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Return (month-period columns, day-level columns) from the semantic layer."""
+    columns = semantic_metadata.get("columns", {}) if isinstance(semantic_metadata, dict) else {}
+    month_cols: list[str] = []
+    day_cols: list[str] = []
+    for name, meta in columns.items():
+        semantic_type = str((meta or {}).get("semantic_type", "")).strip().lower()
+        if semantic_type == "date_period":
+            month_cols.append(str(name))
+        elif semantic_type == "date":
+            day_cols.append(str(name))
+    return month_cols, day_cols
+
+
+def _maybe_upgrade_chart_to_daily(
+    reporting_result: dict[str, Any],
+    *,
+    result: dict[str, Any],
+    semantic_metadata: dict[str, Any],
+    user_question: str,
+    router_context: dict[str, Any],
+) -> dict[str, Any]:
+    """Chart-only refinement: when a monthly time series collapsed to a single point,
+    re-run the SQL at day granularity for the visualization only.
+
+    Never touches the main answer, table, SQL or query_result. Falls back silently to
+    the monthly chart on any failure (rewrite, execution, or empty result).
+    """
+    chart_plan = reporting_result.get("chart_plan") if isinstance(reporting_result, dict) else None
+    if not isinstance(chart_plan, dict) or not chart_plan.get("render_allowed"):
+        return reporting_result
+    if str(chart_plan.get("chart_type")) not in {"area", "line"}:
+        return reporting_result
+    # Only act when the time series degenerated to a single time point.
+    if int(result.get("row_count", 0) or 0) > 1:
+        return reporting_result
+
+    final_sql = str(result.get("final_sql") or result.get("generated_sql") or "")
+    if not final_sql.strip():
+        return reporting_result
+
+    month_cols, day_cols = _semantic_date_columns(semantic_metadata)
+    day_col = next((c for c in day_cols if "day" in c.lower()), day_cols[0] if day_cols else "")
+    if not day_col:
+        return reporting_result
+
+    x_axis = str(chart_plan.get("x_axis") or "")
+    candidates = [c for c in month_cols if re.search(rf"\b{re.escape(c)}\b", final_sql)]
+    if not candidates and _MONTH_PERIOD_NAME_RE.search(x_axis) and re.search(rf"\b{re.escape(x_axis)}\b", final_sql):
+        candidates = [x_axis]
+    if not candidates:
+        return reporting_result
+    month_col = candidates[0]
+    if month_col == day_col:
+        return reporting_result
+
+    daily_sql = re.sub(rf"\b{re.escape(month_col)}\b", day_col, final_sql)
+    if daily_sql == final_sql:
+        return reporting_result
+
+    try:
+        daily = execute_read_only_sql(daily_sql, user_question)
+    except Exception:
+        return reporting_result
+    if not isinstance(daily, dict):
+        return reporting_result
+    rows = list(daily.get("rows") or [])
+    if len(rows) <= 1:
+        # Nothing finer to show — keep the monthly chart.
+        return reporting_result
+
+    daily_qr = {
+        "columns": list(daily.get("columns", []) or []),
+        "rows": rows,
+        "row_count": len(rows),
+        "executed_sql": daily_sql,
+    }
+    daily_plan = build_visualization_spec(
+        user_question=user_question,
+        router_context=router_context,
+        output_mode=str(router_context.get("output_mode", "")),
+        query_result=daily_qr,
+        execution_success=True,
+        validation_success=True,
+        row_count=len(rows),
+        final_sql=daily_sql,
+        source_tables=list(result.get("source_tables", [])),
+        semantic_metadata=semantic_metadata,
+    )
+    if not daily_plan.get("render_allowed"):
+        return reporting_result
+
+    note = "Da nur ein Monat Daten enthält, zeigt das Diagramm den Tagesverlauf."
+    existing_note = str(daily_plan.get("note") or "").strip()
+    daily_plan = {**daily_plan, "note": (f"{existing_note} {note}".strip())}
+    reporting_result["chart_plan"] = daily_plan
+    reporting_result["chart_query_result"] = daily_qr
+    return reporting_result
+
+
 def _build_reporting_result(
     *,
     user_question: str,
@@ -298,7 +423,8 @@ def _build_reporting_result(
     result: dict[str, Any],
 ) -> dict[str, Any]:
     try:
-        return build_reporting_result(
+        semantic_metadata = _semantic_column_metadata_cached(str(get_active_scenario().semantic_layer_path))
+        reporting_result = build_reporting_result(
             user_question=user_question,
             router_state=router_context,
             sql=str(result.get("final_sql") or result.get("generated_sql") or ""),
@@ -308,7 +434,19 @@ def _build_reporting_result(
             execution_success=bool(result.get("execution_success", False)),
             validation_success=bool(result.get("validation_success", result.get("sql_valid", False))),
             language=str(router_context.get("language") or "de"),
+            semantic_metadata=semantic_metadata,
         )
+        try:  # chart-only daily refinement; must never break the reporting result
+            reporting_result = _maybe_upgrade_chart_to_daily(
+                reporting_result,
+                result=result,
+                semantic_metadata=semantic_metadata,
+                user_question=user_question,
+                router_context=router_context,
+            )
+        except Exception:
+            pass
+        return reporting_result
     except Exception as error:
         return _reporting_failure_result(result=result, error=error)
 

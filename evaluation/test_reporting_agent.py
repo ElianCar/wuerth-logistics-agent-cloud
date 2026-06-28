@@ -61,12 +61,29 @@ class ReportingAgentTests(unittest.TestCase):
             sql="SELECT monat, anzahl_auftraege FROM result ORDER BY monat",
         )
 
-        self.assertEqual(report["chart_plan"]["chart_type"], "line")
+        self.assertEqual(report["chart_plan"]["chart_type"], "area")
         self.assertIn("sichtbare Verlauf", report["interpretation"])
         self.assertIn("2024-01", report["interpretation"])
         self.assertIn("2024-02", report["interpretation"])
         self.assertNotIn("höchste sichtbare Wert", report["interpretation"])
         self.assertNotIn("hÃ¶chste sichtbare Wert", report["interpretation"])
+
+    def test_dimensionless_single_row_two_measures_does_not_crash(self) -> None:
+        # Regression: a measure_bar chart sets x_axis == y_axis == a measure. The
+        # reporting layer must not promote that to a grouping column, otherwise
+        # df[[grouping, metric]] selects duplicate columns and pd.to_numeric crashes
+        # with "arg must be a list, tuple, 1-d array, or Series".
+        report = build_report(
+            query_result(["anzahl_auftraege", "anteil_prozent"], [(42, Decimal("3.7"))]),
+            user_question="Wie viele Aufträge in mehr als einem Vertriebszentrum, inklusive Anteil",
+            sql="SELECT anzahl_auftraege, anteil_prozent FROM result",
+        )
+
+        self.assertEqual(report["chart_plan"]["chart_type"], "measure_bar")
+        self.assertTrue(report["chart_plan"]["render_allowed"])
+        self.assertIn("Kurzantwort", report["summary"])
+        # The dimensionless measure must not be promoted to a grouping column.
+        self.assertNotIn("anzahl_auftraege", report["audit"]["grouping_columns"])
 
     def test_summary_does_not_invent_units(self) -> None:
         report = build_report(query_result(["n_name", "total_revenue"], [("ARGENTINA", 10)]))

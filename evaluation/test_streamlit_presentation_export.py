@@ -207,6 +207,8 @@ def _load_streamlit_app() -> types.ModuleType:
         anthropic_api_key_is_placeholder=lambda: False,
         gemini_api_key_is_placeholder=lambda: False,
         get_provider=lambda: "ollama",
+        get_token_usage=lambda: {},
+        reset_token_usage=lambda: None,
     )
 
     fake_modules = {
