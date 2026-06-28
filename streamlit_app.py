@@ -52,6 +52,7 @@ from src.agent.profiles import (
 )
 from src.agent.response_profiles import display_policy_for_response_profile
 from src.config.scenarios import (
+    LOCAL_SCENARIO_OPTIONS,
     SCENARIOS,
     get_active_scenario,
     get_active_scenario_id,
@@ -850,6 +851,7 @@ def scenario_display_label(scenario_id: str) -> str:
     labels = {
         "demo": "Demo-Daten",
         "wuerth_local": "Würth-Daten",
+        "databricks": "Würth Databricks",
     }
     return labels.get(scenario_id, SCENARIOS[scenario_id].label)
 
@@ -1057,7 +1059,7 @@ def render_sidebar() -> tuple[str, SQLAgentConfig, UserProfile]:
                             st.rerun()
 
         st.header("Konfiguration")
-        scenario_ids = [scenario_id for scenario_id in ("demo", "wuerth_local") if scenario_id in SCENARIOS]
+        scenario_ids = [scenario_id for scenario_id in LOCAL_SCENARIO_OPTIONS if scenario_id in SCENARIOS]
         default_scenario_id = st.session_state.get("data_scenario", get_active_scenario_id())
         if default_scenario_id not in scenario_ids:
             default_scenario_id = scenario_ids[0]
