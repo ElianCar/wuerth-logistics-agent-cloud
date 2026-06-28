@@ -9,8 +9,8 @@
 +-----------------------------------------------------------------------+
 |                       User-facing application                          |
 |                                                                       |
-|  Streamlit UI             CLI prototype          Golden test CLI       |
-|  `streamlit_app.py`       `main.py`              `evaluation/run_evaluation.py` |
+|  Streamlit UI                              Golden test CLI             |
+|  `streamlit_app.py`                        `evaluation/run_evaluation.py` |
 +------------+--------------------+---------------------+----------------+
              |                    |                     |
              v                    v                     v
@@ -48,7 +48,6 @@
 | Component | Responsibility | File |
 |-----------|----------------|------|
 | Streamlit application | Owns chat UI, scenario selection, model toggles, result rendering, feedback, memory review, template review, and golden test controls. Keep UI state in `st.session_state` and call orchestration functions for business work. | `streamlit_app.py` |
-| CLI prototype | Runs the older direct SQL-generation path against `app/` helpers. Treat as compatibility and smoke-test surface, not the primary app architecture. | `main.py` |
 | Orchestrator | Runs router first, selects a tiered model, calls the SQL agent only when needed, builds reporting output, and writes router logs. | `src/agent/orchestrator.py` |
 | Router | Classifies intent, SQL need, clarification need, safety blocks, complexity tier, output mode, language, constraints, and metadata-only template candidates. | `src/agent/router.py` |
 | SQL agent | LangGraph workflow for schema loading, SQL generation, local validation, execution, repair, fallback switching, final answer creation, and query logging. | `src/agent/langgraph_sql_agent.py` |
@@ -86,8 +85,8 @@
 
 **UI and Entrypoints:**
 - Purpose: Accept user questions, show configuration, render results, collect feedback, run memory review, and launch golden tests.
-- Location: `streamlit_app.py`, `main.py`, `evaluation/run_evaluation.py`
-- Contains: Streamlit pages, CLI loops, result displays, export buttons for CSV/XLSX, and test execution controls.
+- Location: `streamlit_app.py`, `evaluation/run_evaluation.py`
+- Contains: Streamlit pages, result displays, export buttons for CSV/XLSX, and test execution controls.
 - Depends on: `src/agent/orchestrator.py`, `src/agent/golden_test_runner.py`, `src/agent/memory_store.py`, `src/config/scenarios.py`, `src/llm/model_adapter.py`
 - Used by: Local users through Streamlit and CLI commands.
 
@@ -114,10 +113,10 @@
 
 **Validation and Safety:**
 - Purpose: Enforce read-only SQL and scenario-bounded table/column usage before execution.
-- Location: `src/agent/sql_validator.py`, `src/agent/memory_validation.py`, `app/sql_validator.py`
+- Location: `src/agent/sql_validator.py`, `src/agent/memory_validation.py`
 - Contains: destructive keyword blocks, table extraction, CTE handling, allowed table mapping from schema context, broad-query limit validation, known-column validation, and template validation.
 - Depends on: Schema text from `src/agent/db.py` and active scenario state from `src/config/scenarios.py`.
-- Used by: `src/agent/langgraph_sql_agent.py`, `src/agent/golden_test_runner.py`, `src/agent/memory_validation.py`, legacy `main.py`
+- Used by: `src/agent/langgraph_sql_agent.py`, `src/agent/golden_test_runner.py`, `src/agent/memory_validation.py`
 
 **Backend Abstraction:**
 - Purpose: Hide data-source details behind a stable SQL backend contract.
@@ -128,14 +127,14 @@
 
 **Scenario and Semantic Layer:**
 - Purpose: Define the active dataset, backend, dialect, allowed tables, semantic context, memory location, and evaluation location.
-- Location: `src/config/scenarios.py`, `semantic_layer/demo/tpch_semantic_layer.yaml`, `semantic_layer/databricks/wuerth_semantic_layer.yaml`
+- Location: `src/config/scenarios.py`, `semantic_layer/demo/tpch_semantic_layer.yaml`, `semantic_layer/wuerth_local/wuerth_semantic_layer.yaml`
 - Contains: `ScenarioConfig`, context-local active scenario override, supported scenario constants, and semantic YAML loading.
 - Depends on: YAML files under `semantic_layer/`.
 - Used by: Backend adapters, Streamlit sidebar, SQL prompt rules, memory store, golden tests, validation scripts.
 
 **Memory and Template Review:**
 - Purpose: Let successful runs become human-reviewed reusable solution templates.
-- Location: `src/agent/memory_store.py`, `src/agent/memory_retriever.py`, `src/agent/memory_validation.py`, `memory/demo/`, `memory/databricks/`
+- Location: `src/agent/memory_store.py`, `src/agent/memory_retriever.py`, `src/agent/memory_validation.py`, `memory/demo/`, `memory/wuerth_local/`
 - Contains: YAML initialization, candidate creation, editing, approval, rejection, template disable/reactivation, audit CSV writing, and approved template retrieval.
 - Depends on: `src/config/scenarios.py`, `src/agent/logging_utils.py`, `src/agent/sql_validator.py`
 - Used by: `streamlit_app.py`, `src/agent/langgraph_sql_agent.py`, `src/agent/router.py`
@@ -280,11 +279,6 @@
 - Triggers: `streamlit run streamlit_app.py`, Docker `CMD` in `Dockerfile`
 - Responsibilities: UI, chat state, scenario selection, model selection, result rendering, downloads, feedback, memory review, templates, and golden tests.
 
-**CLI prototype:**
-- Location: `main.py`
-- Triggers: `python main.py`
-- Responsibilities: Direct older prompt-to-SQL loop through `app/` helpers for TPC-H PostgreSQL.
-
 **Golden test CLI:**
 - Location: `evaluation/run_evaluation.py`
 - Triggers: `python evaluation/run_evaluation.py [question_ids]`
@@ -305,11 +299,6 @@
 - Triggers: `python scripts/validate_wuerth_local_setup.py [--skip-db]`
 - Responsibilities: Validate local Wuerth CSV files, semantic layer, scenarios, and PostgreSQL table/schema context.
 
-**Databricks connection test:**
-- Location: `scripts/databricks/test_databricks_connection.py`
-- Triggers: `python scripts/databricks/test_databricks_connection.py`
-- Responsibilities: Test optional Databricks adapter connectivity.
-
 **TPC-H database helpers:**
 - Location: `database/create_tpch_database.py`, `database/export_tpch_to_csv.py`, `database/inspect_schema.py`
 - Triggers: Direct Python scripts.
@@ -324,18 +313,18 @@
 - **SQL safety:** SQL generation must produce one read-only `SELECT` or `WITH ... SELECT`; destructive keywords, multiple statements, comments/prose, unknown tables, unknown qualified columns, and broad row-level queries without `LIMIT 50` are rejected in `src/agent/sql_validator.py`.
 - **External secrets:** Runtime secrets live in environment variables. `.env` and `.env.*` files must not be read or committed; `.env.example` exists only as configuration documentation.
 - **PowerPoint output:** The template exists at `assets/templates/PPT_Vorlage_Wuerth.pptx`, but no generation path exists. Add PPTX code as deterministic post-reporting output, not inside the router or SQL generator.
-- **Circular imports:** No circular import chain is detected by inspection. There is a cross-package dependency where `src/backends/demo/postgres_adapter.py` imports `app.db` and `app.schema`, and `app/semantic_layer.py` imports `src.config.scenarios`.
+- **Circular imports:** No circular import chain is detected by inspection. There is a cross-package dependency where `src/backends/demo/postgres_adapter.py` imports `app.db` and `app.schema`.
 - **Project skills:** No repo-local `.codex/skills/` or `.agents/skills/` directories are detected.
 
 ## Anti-Patterns
 
 ### Bypassing The Orchestrator For New UI Work
 
-**What happens:** `main.py` uses the older direct `app/` path: prompt building in `app/prompt_builder.py`, LLM call in `app/llm_client.py`, validation in `app/sql_validator.py`, and execution in `app/query_executor.py`.
+**What happens:** Resolved in cleanup. The older direct `app/` SQL path was removed, so user-facing question flows should remain on the orchestrator path.
 
 **Why it's wrong:** New UI or product flows that use this path skip router classification, scenario-specific SQL rules, LangGraph repair/fallback, reporting output, memory handling, and router logs.
 
-**Do this instead:** Use `run_orchestrator` from `src/agent/orchestrator.py` for user-facing question flows. Keep `main.py` as a compatibility CLI unless it is explicitly migrated.
+**Do this instead:** Use `run_orchestrator` from `src/agent/orchestrator.py` for user-facing question flows.
 
 ### Treating Router Template Retrieval As Active Retrieval
 
@@ -370,7 +359,7 @@
 
 **Logging:** Use CSV append helpers in `src/agent/logging_utils.py`. Query attempts and final runs go to `logs/query_log.csv`; feedback goes to `logs/feedback.csv`; router decisions go to `logs/router_log.csv`; memory audits go to scenario-specific `memory/*/memory_audit_log.csv`.
 
-**Validation:** Use `src/agent/sql_validator.py` for active agent SQL and `src/agent/memory_validation.py` for template YAML. Use `app/sql_validator.py` only for the legacy CLI path in `main.py`.
+**Validation:** Use `src/agent/sql_validator.py` for active agent SQL and `src/agent/memory_validation.py` for template YAML.
 
 **Authentication:** LLM providers use environment variables in `src/llm/model_adapter.py`; Databricks uses environment variables validated by `src/backends/config.py`; PostgreSQL uses environment variables read by `app/config.py`.
 

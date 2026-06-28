@@ -11,13 +11,16 @@ from uuid import uuid4
 
 import yaml
 
+from src.agent.access_control import TemplateAction, require_permission
 from src.agent.id_utils import (
     generate_audit_id,
     generate_candidate_id,
     generate_template_id,
 )
 from src.agent.logging_utils import append_csv_row, get_log_dir, read_csv_rows
-from src.config.scenarios import get_active_scenario
+from src.agent.memory_audit import log_memory_action
+from src.agent.profiles import PermissionRole
+from src.config.scenarios import get_active_scenario, normalize_scenario_id
 
 
 ACTOR = "manual_review"
@@ -230,6 +233,26 @@ def append_audit(
     )
 
 
+def _action_scenario(scenario: str | None = None) -> str:
+    active_scenario = get_active_scenario().scenario_id
+    scenario_id = normalize_scenario_id(scenario or active_scenario)
+    if scenario_id != active_scenario:
+        raise MemoryStoreError(
+            f"Requested scenario '{scenario_id}' does not match active scenario '{active_scenario}'."
+        )
+    return scenario_id
+
+
+def _candidate_scenario(candidate: dict[str, Any], scenario: str | None = None) -> str:
+    scenario_id = _action_scenario(scenario)
+    candidate_scenario = str(candidate.get("scenario") or "").strip()
+    if candidate_scenario and normalize_scenario_id(candidate_scenario) != scenario_id:
+        raise MemoryStoreError(
+            f"Candidate scenario '{candidate_scenario}' does not match active scenario '{scenario_id}'."
+        )
+    return scenario_id
+
+
 def latest_feedback_for_run(run_id: str) -> dict[str, str] | None:
     if not run_id:
         return None
@@ -304,9 +327,17 @@ def _find_template_index(templates: list[dict[str, Any]], template_id: str) -> i
     raise MemoryStoreError(f"Template not found: {template_id}")
 
 
-def create_candidate_from_run(record: dict[str, Any]) -> tuple[dict[str, Any], bool, str]:
+def create_candidate_from_run(
+    record: dict[str, Any],
+    *,
+    actor_id: str,
+    actor_role: PermissionRole | str,
+    scenario: str | None = None,
+) -> tuple[dict[str, Any], bool, str]:
+    require_permission(actor_role, TemplateAction.CREATE_CANDIDATE)
     initialize_memory_files()
-    scenario = get_active_scenario()
+    active_scenario = get_active_scenario()
+    scenario_id = _action_scenario(scenario)
     candidates = load_candidates()
     run_id = str(record.get("run_id", "")).strip()
     if not run_id:
@@ -330,8 +361,8 @@ def create_candidate_from_run(record: dict[str, Any]) -> tuple[dict[str, Any], b
     timestamp = now_iso()
 
     proposed_template = {
-        "scenario": scenario.scenario_id,
-        "dataset_id": scenario.dataset_id,
+        "scenario": scenario_id,
+        "dataset_id": active_scenario.dataset_id,
         "intent": build_intent(question),
         "trigger_phrases": build_trigger_phrases(question),
         "required_tables": source_tables,
@@ -343,8 +374,8 @@ def create_candidate_from_run(record: dict[str, Any]) -> tuple[dict[str, Any], b
 
     candidate = {
         "candidate_id": generate_candidate_id(),
-        "scenario": scenario.scenario_id,
-        "dataset_id": scenario.dataset_id,
+        "scenario": scenario_id,
+        "dataset_id": active_scenario.dataset_id,
         "run_id": run_id,
         "feedback_id": feedback.get("feedback_id") or None,
         "status": "pending_review",
@@ -390,6 +421,17 @@ def create_candidate_from_run(record: dict[str, Any]) -> tuple[dict[str, Any], b
         old_status="",
         new_status="pending_review",
         comment=f"Created from run_id {run_id}",
+        actor=actor_id,
+    )
+    log_memory_action(
+        actor_id=actor_id,
+        actor_role=actor_role,
+        action="candidate_created",
+        candidate_id=candidate["candidate_id"],
+        previous_status="",
+        new_status="pending_review",
+        scenario=scenario_id,
+        comment=f"Created from run_id {run_id}",
     )
     return candidate, True, "Candidate created."
 
@@ -397,10 +439,16 @@ def create_candidate_from_run(record: dict[str, Any]) -> tuple[dict[str, Any], b
 def update_candidate_proposed_template(
     candidate_id: str,
     proposed_template: dict[str, Any],
+    *,
+    actor_id: str,
+    actor_role: PermissionRole | str,
+    scenario: str | None = None,
 ) -> dict[str, Any]:
+    require_permission(actor_role, TemplateAction.EDIT_CANDIDATE)
     candidates = load_candidates()
     index = _find_candidate_index(candidates, candidate_id)
     candidate = candidates[index]
+    scenario_id = _candidate_scenario(candidate, scenario)
     old_status = str(candidate.get("status", ""))
     if old_status in {"approved", "rejected"}:
         raise MemoryStoreError("Approved or rejected candidates cannot be edited.")
@@ -414,6 +462,17 @@ def update_candidate_proposed_template(
         candidate_id=candidate_id,
         old_status=old_status,
         new_status=old_status,
+        comment="Edited proposed_template",
+        actor=actor_id,
+    )
+    log_memory_action(
+        actor_id=actor_id,
+        actor_role=actor_role,
+        action="candidate_edited",
+        candidate_id=candidate_id,
+        previous_status=old_status,
+        new_status=old_status,
+        scenario=scenario_id,
         comment="Edited proposed_template",
     )
     return candidate
@@ -430,11 +489,18 @@ def audit_candidate_validation(candidate_id: str, valid: bool, error_count: int)
 def approve_candidate(
     candidate_id: str,
     proposed_template: dict[str, Any],
+    *,
+    actor_id: str,
+    actor_role: PermissionRole | str,
+    scenario: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    scenario = get_active_scenario()
+    require_permission(actor_role, TemplateAction.APPROVE_CANDIDATE)
+    active_scenario = get_active_scenario()
+    scenario_id = _action_scenario(scenario)
     candidates = load_candidates()
     candidate_index = _find_candidate_index(candidates, candidate_id)
     candidate = candidates[candidate_index]
+    scenario_id = _candidate_scenario(candidate, scenario_id)
     old_status = str(candidate.get("status", ""))
     review = candidate.setdefault("review", {})
 
@@ -461,15 +527,15 @@ def approve_candidate(
     template = {
         "template_id": template_id,
         "version": 1,
-        "scenario": scenario.scenario_id,
-        "dataset_id": scenario.dataset_id,
+        "scenario": scenario_id,
+        "dataset_id": active_scenario.dataset_id,
         "status": "approved",
         "is_active": True,
         "created_from_candidate_id": candidate_id,
         "source_run_id": candidate.get("run_id", ""),
         "created_at": timestamp,
         "approved_at": timestamp,
-        "approved_by": ACTOR,
+        "approved_by": actor_id,
         "intent": proposed_template.get("intent", ""),
         "trigger_phrases": proposed_template.get("trigger_phrases", []),
         "required_tables": proposed_template.get("required_tables", []),
@@ -491,7 +557,7 @@ def approve_candidate(
     candidate["is_active"] = False
     candidate["proposed_template"] = proposed_template
     candidate["updated_at"] = timestamp
-    review["reviewed_by"] = ACTOR
+    review["reviewed_by"] = actor_id
     review["reviewed_at"] = timestamp
     review["approved_template_id"] = template_id
     candidates[candidate_index] = candidate
@@ -505,17 +571,37 @@ def approve_candidate(
         template_id=template_id,
         old_status=old_status,
         new_status="approved",
+        actor=actor_id,
+    )
+    log_memory_action(
+        actor_id=actor_id,
+        actor_role=actor_role,
+        action="candidate_approved",
+        candidate_id=candidate_id,
+        template_id=template_id,
+        previous_status=old_status,
+        new_status="approved",
+        scenario=scenario_id,
     )
     return candidate, template
 
 
-def reject_candidate(candidate_id: str, rejection_reason: str = "") -> dict[str, Any]:
+def reject_candidate(
+    candidate_id: str,
+    rejection_reason: str = "",
+    *,
+    actor_id: str,
+    actor_role: PermissionRole | str,
+    scenario: str | None = None,
+) -> dict[str, Any]:
+    require_permission(actor_role, TemplateAction.REJECT_CANDIDATE)
     if not rejection_reason.strip():
         raise MemoryStoreError("A rejection reason is required.")
 
     candidates = load_candidates()
     index = _find_candidate_index(candidates, candidate_id)
     candidate = candidates[index]
+    scenario_id = _candidate_scenario(candidate, scenario)
     old_status = str(candidate.get("status", ""))
     if old_status not in {"pending_review", "needs_changes"}:
         raise MemoryStoreError("Only pending or needs_changes candidates can be rejected.")
@@ -525,7 +611,7 @@ def reject_candidate(candidate_id: str, rejection_reason: str = "") -> dict[str,
     candidate["status"] = "rejected"
     candidate["is_active"] = False
     candidate["updated_at"] = timestamp
-    review["reviewed_by"] = ACTOR
+    review["reviewed_by"] = actor_id
     review["reviewed_at"] = timestamp
     review["rejection_reason"] = rejection_reason
     candidates[index] = candidate
@@ -536,14 +622,34 @@ def reject_candidate(candidate_id: str, rejection_reason: str = "") -> dict[str,
         old_status=old_status,
         new_status="rejected",
         comment=rejection_reason,
+        actor=actor_id,
+    )
+    log_memory_action(
+        actor_id=actor_id,
+        actor_role=actor_role,
+        action="candidate_rejected",
+        candidate_id=candidate_id,
+        previous_status=old_status,
+        new_status="rejected",
+        scenario=scenario_id,
+        comment=rejection_reason,
     )
     return candidate
 
 
-def mark_candidate_needs_changes(candidate_id: str, review_comment: str = "") -> dict[str, Any]:
+def mark_candidate_needs_changes(
+    candidate_id: str,
+    review_comment: str = "",
+    *,
+    actor_id: str,
+    actor_role: PermissionRole | str,
+    scenario: str | None = None,
+) -> dict[str, Any]:
+    require_permission(actor_role, TemplateAction.REQUEST_CHANGES)
     candidates = load_candidates()
     index = _find_candidate_index(candidates, candidate_id)
     candidate = candidates[index]
+    scenario_id = _candidate_scenario(candidate, scenario)
     old_status = str(candidate.get("status", ""))
     if old_status != "pending_review":
         raise MemoryStoreError("Only pending candidates can be marked as needs_changes.")
@@ -553,7 +659,7 @@ def mark_candidate_needs_changes(candidate_id: str, review_comment: str = "") ->
     candidate["status"] = "needs_changes"
     candidate["is_active"] = False
     candidate["updated_at"] = timestamp
-    review["reviewed_by"] = ACTOR
+    review["reviewed_by"] = actor_id
     review["reviewed_at"] = timestamp
     review["review_comment"] = review_comment
     candidates[index] = candidate
@@ -564,17 +670,36 @@ def mark_candidate_needs_changes(candidate_id: str, review_comment: str = "") ->
         old_status=old_status,
         new_status="needs_changes",
         comment=review_comment,
+        actor=actor_id,
+    )
+    log_memory_action(
+        actor_id=actor_id,
+        actor_role=actor_role,
+        action="changes_requested",
+        candidate_id=candidate_id,
+        previous_status=old_status,
+        new_status="needs_changes",
+        scenario=scenario_id,
+        comment=review_comment,
     )
     return candidate
 
 
-def disable_template(template_id: str, disabled_reason: str = "") -> dict[str, Any]:
+def disable_template(
+    template_id: str,
+    disabled_reason: str = "",
+    *,
+    actor_id: str,
+    actor_role: PermissionRole | str,
+) -> dict[str, Any]:
+    require_permission(actor_role, TemplateAction.DEACTIVATE_TEMPLATE)
     if not disabled_reason.strip():
         raise MemoryStoreError("A disabled reason is required.")
 
     templates = load_templates()
     index = _find_template_index(templates, template_id)
     template = templates[index]
+    scenario_id = normalize_scenario_id(template.get("scenario") or get_active_scenario().scenario_id)
     old_status = str(template.get("status", ""))
     if old_status != "approved" or template.get("is_active") is not True:
         raise MemoryStoreError("Only approved active templates can be disabled.")
@@ -582,7 +707,7 @@ def disable_template(template_id: str, disabled_reason: str = "") -> dict[str, A
     template["status"] = "disabled"
     template["is_active"] = False
     template["disabled_at"] = now_iso()
-    template["disabled_by"] = ACTOR
+    template["disabled_by"] = actor_id
     template["disabled_reason"] = disabled_reason
     templates[index] = template
     save_templates(templates)
@@ -592,14 +717,32 @@ def disable_template(template_id: str, disabled_reason: str = "") -> dict[str, A
         old_status=old_status,
         new_status="disabled",
         comment=disabled_reason,
+        actor=actor_id,
+    )
+    log_memory_action(
+        actor_id=actor_id,
+        actor_role=actor_role,
+        action="template_deactivated",
+        template_id=template_id,
+        previous_status=old_status,
+        new_status="disabled",
+        scenario=scenario_id,
+        comment=disabled_reason,
     )
     return template
 
 
-def reactivate_template(template_id: str) -> dict[str, Any]:
+def reactivate_template(
+    template_id: str,
+    *,
+    actor_id: str,
+    actor_role: PermissionRole | str,
+) -> dict[str, Any]:
+    require_permission(actor_role, TemplateAction.REACTIVATE_TEMPLATE)
     templates = load_templates()
     index = _find_template_index(templates, template_id)
     template = templates[index]
+    scenario_id = normalize_scenario_id(template.get("scenario") or get_active_scenario().scenario_id)
     old_status = str(template.get("status", ""))
     if old_status != "disabled":
         raise MemoryStoreError("Only disabled templates can be reactivated.")
@@ -607,7 +750,7 @@ def reactivate_template(template_id: str) -> dict[str, Any]:
     template["status"] = "approved"
     template["is_active"] = True
     template["reactivated_at"] = now_iso()
-    template["reactivated_by"] = ACTOR
+    template["reactivated_by"] = actor_id
     templates[index] = template
     save_templates(templates)
     append_audit(
@@ -615,5 +758,15 @@ def reactivate_template(template_id: str) -> dict[str, Any]:
         template_id=template_id,
         old_status=old_status,
         new_status="approved",
+        actor=actor_id,
+    )
+    log_memory_action(
+        actor_id=actor_id,
+        actor_role=actor_role,
+        action="template_reactivated",
+        template_id=template_id,
+        previous_status=old_status,
+        new_status="approved",
+        scenario=scenario_id,
     )
     return template

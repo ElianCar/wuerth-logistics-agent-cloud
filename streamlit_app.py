@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 import yaml
 
+from src.agent.access_control import TemplateAction, can
 from src.agent.db import get_active_backend_metadata
 from src.agent.golden_test_runner import (
     DEFAULT_GOLDEN_RUNTIME_MODE,
@@ -33,7 +34,9 @@ from src.agent.memory_store import (
 from src.agent.memory_lifecycle import (
     MemoryLifecycleError,
     approve_candidate_to_vsm,
+    deactivate_approved_template,
     load_approved_template_records,
+    reactivate_approved_template,
 )
 from src.agent.memory_validation import validate_proposed_template
 from src.agent.presentation_export import (
@@ -41,11 +44,17 @@ from src.agent.presentation_export import (
     build_presentation_export,
     can_export_presentation,
 )
+from src.agent.profiles import (
+    DEFAULT_PROFILE_ID,
+    DEMO_PROFILES,
+    UserProfile,
+    get_demo_profile,
+)
+from src.agent.response_profiles import display_policy_for_response_profile
 from src.config.scenarios import (
     SCENARIOS,
     get_active_scenario,
     get_active_scenario_id,
-    get_scenario_options,
     set_active_scenario_id,
 )
 from src.llm.model_adapter import (
@@ -560,7 +569,7 @@ def render_chart_from_spec(record: dict, df: pd.DataFrame) -> None:
         st.altair_chart(chart, use_container_width=True)
 
 
-def render_reporting_summary(record: dict) -> None:
+def render_reporting_summary(record: dict, heading: str = "Management-Zusammenfassung") -> None:
     reporting = record.get("reporting_result")
     if not isinstance(reporting, dict):
         return
@@ -569,7 +578,7 @@ def render_reporting_summary(record: dict) -> None:
     if not summary:
         return
 
-    st.subheader("Management-Zusammenfassung")
+    st.subheader(heading)
     st.markdown(summary)
 
     kpi_cards = reporting.get("kpi_cards", [])
@@ -590,6 +599,64 @@ def render_reporting_audit(record: dict) -> None:
         return
     with st.expander("Reporting-Audit", expanded=False):
         st.json(audit, expanded=False)
+
+
+def render_sql_and_sources(record: dict) -> None:
+    with st.expander("SQL-Anweisung", expanded=False):
+        st.code(record.get("final_sql") or record.get("generated_sql", "") or "(kein SQL erzeugt)", language="sql")
+
+    source_tables = record.get("source_tables", [])
+    st.subheader("Quelltabellen")
+    if source_tables:
+        for table in source_tables:
+            st.markdown(f"- `{table}`")
+    else:
+        st.write("Es wurden keine Quelltabellen erkannt.")
+
+
+def render_technical_debug(record: dict) -> None:
+    debug_payload = {
+        "scenario": get_active_scenario_id(),
+        "validation_success": record.get("validation_success", record.get("sql_valid")),
+        "execution_success": record.get("execution_success"),
+        "result_status": record.get("result_status"),
+        "selected_model": record.get("selected_model") or record.get("model_used"),
+        "primary_model": record.get("primary_model") or record.get("model_primary"),
+        "fallback_model": record.get("fallback_model"),
+        "secondary_fallback_model": record.get("secondary_fallback_model"),
+        "fallback_used": record.get("fallback_used"),
+        "memory_retrieval": record.get("memory_retrieval", {}),
+        "template_candidates": record.get("template_candidates", []),
+        "router_context": record.get("router_context", {}),
+        "token_usage": record.get("token_usage", {}),
+    }
+    with st.expander("Debug-Details", expanded=False):
+        st.json(debug_payload, expanded=False)
+
+
+def render_management_decision_support(record: dict) -> None:
+    reporting = record.get("reporting_result")
+    if not isinstance(reporting, dict):
+        return
+    interpretation = str(reporting.get("interpretation") or "").strip()
+    caveats = reporting.get("caveats", [])
+    if interpretation:
+        st.subheader("Business Implication")
+        st.write(interpretation)
+    st.subheader("Recommended Next Step")
+    if caveats:
+        st.write("Nutze das Ergebnis als Entscheidungsgrundlage und prüfe die genannten Einschränkungen vor operativen Maßnahmen.")
+    else:
+        st.write("Nutze das Ergebnis als Entscheidungsgrundlage und vergleiche es bei Bedarf mit weiteren Segmenten oder Zeiträumen.")
+
+
+def render_collapsed_technical_details(record: dict) -> None:
+    with st.expander("Technische Details", expanded=False):
+        render_sql_and_sources(record)
+        if record.get("sql_error"):
+            st.subheader("SQL-Fehler")
+            st.error(record["sql_error"])
+        render_step_log(record)
 
 
 def _presentation_export_warnings(export: object) -> list[str]:
@@ -706,6 +773,7 @@ def render_presentation_unavailable_compact(record: dict) -> None:
 
 
 def initialize_state() -> None:
+    st.session_state.setdefault("selected_profile_id", DEFAULT_PROFILE_ID)
     if "data_scenario" in st.session_state:
         set_active_scenario_id(st.session_state.data_scenario)
     if "chats" not in st.session_state:
@@ -743,6 +811,47 @@ def render_flash() -> None:
         st.error(message)
     else:
         st.info(message)
+
+
+def current_profile() -> UserProfile:
+    return get_demo_profile(st.session_state.get("selected_profile_id", DEFAULT_PROFILE_ID))
+
+
+def actor_kwargs(profile: UserProfile) -> dict[str, str]:
+    return {
+        "actor_id": profile.profile_id,
+        "actor_role": profile.permission_role.value,
+    }
+
+
+def render_demo_profile_selector() -> UserProfile:
+    profile_ids = list(DEMO_PROFILES)
+    current_profile_id = st.session_state.get("selected_profile_id", DEFAULT_PROFILE_ID)
+    if current_profile_id not in DEMO_PROFILES:
+        current_profile_id = DEFAULT_PROFILE_ID
+    st.header("Demo-Nutzerprofil")
+    selected_profile_id = st.selectbox(
+        "Demo-Nutzerprofil auswählen",
+        profile_ids,
+        index=profile_ids.index(current_profile_id),
+        key="selected_profile_id",
+        format_func=lambda profile_id: (
+            f"{DEMO_PROFILES[profile_id].avatar} {DEMO_PROFILES[profile_id].display_name}"
+        ),
+        accept_new_options=False,
+        label_visibility="collapsed",
+        width="stretch",
+    )
+    selected_profile_id = selected_profile_id or current_profile_id
+    return get_demo_profile(selected_profile_id)
+
+
+def scenario_display_label(scenario_id: str) -> str:
+    labels = {
+        "demo": "Demo-Daten",
+        "wuerth_local": "Würth-Daten",
+    }
+    return labels.get(scenario_id, SCENARIOS[scenario_id].label)
 
 
 def build_streamlit_llm_config() -> SQLAgentConfig:
@@ -881,8 +990,10 @@ def apply_app_styles() -> None:
     )
 
 
-def render_sidebar() -> tuple[str, SQLAgentConfig]:
+def render_sidebar() -> tuple[str, SQLAgentConfig, UserProfile]:
     with st.sidebar:
+        profile = render_demo_profile_selector()
+
         st.header("Navigation")
         page = st.radio(
             "Ansicht",
@@ -946,16 +1057,24 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
                             st.rerun()
 
         st.header("Konfiguration")
-        scenario_ids = [scenario.scenario_id for scenario in get_scenario_options()]
+        scenario_ids = [scenario_id for scenario_id in ("demo", "wuerth_local") if scenario_id in SCENARIOS]
         default_scenario_id = st.session_state.get("data_scenario", get_active_scenario_id())
-        default_index = scenario_ids.index(default_scenario_id) if default_scenario_id in scenario_ids else 0
+        if default_scenario_id not in scenario_ids:
+            default_scenario_id = scenario_ids[0]
+        if st.session_state.get("data_scenario_selector") not in (None, *scenario_ids):
+            st.session_state.data_scenario_selector = default_scenario_id
+        st.subheader("Datenszenario")
         selected_scenario_id = st.selectbox(
-            "Data scenario",
+            "Datenszenario auswählen",
             scenario_ids,
-            index=default_index,
+            index=scenario_ids.index(default_scenario_id),
             key="data_scenario_selector",
-            format_func=lambda scenario_id: SCENARIOS[scenario_id].label,
+            format_func=scenario_display_label,
+            accept_new_options=False,
+            label_visibility="collapsed",
+            width="stretch",
         )
+        selected_scenario_id = selected_scenario_id or default_scenario_id
         previous_scenario_id = st.session_state.get("data_scenario")
         st.session_state.data_scenario = selected_scenario_id
         if previous_scenario_id and previous_scenario_id != selected_scenario_id:
@@ -985,15 +1104,13 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
             }
             st.error(f"Datenbank-Backend ist nicht korrekt konfiguriert: {error}")
 
-        st.write(f"Active data scenario: `{backend_metadata.get('scenario_label', scenario.label)}`")
+        st.write(f"Aktives Datenszenario: `{scenario_display_label(scenario.scenario_id)}`")
         st.write(f"Backend: `{backend_metadata.get('backend_display_name', backend_metadata.get('backend_name', ''))}`")
         st.write(f"SQL-Dialekt: `{backend_metadata.get('sql_dialect', '')}`")
-        st.write(f"Semantic layer: `{backend_metadata.get('semantic_layer', scenario.semantic_layer_filename)}`")
+        st.write(f"Semantischer Layer: `{backend_metadata.get('semantic_layer', scenario.semantic_layer_filename)}`")
         if backend_metadata.get("auth_type"):
             st.write(f"Databricks-Auth-Modus: `{backend_metadata.get('auth_type', '')}`")
         st.write(f"LLM-Anbieter: `{config.llm_provider}`")
-        st.write(f"Primäres Modell: `{config.primary_model}`")
-        st.write(f"Fallback-Modell: `{config.fallback_model}`")
         st.write(f"Max. primäre Versuche: `{config.max_primary_attempts}`")
         if config.llm_provider == "anthropic":
             if anthropic_api_key_is_placeholder():
@@ -1015,7 +1132,7 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
         for table in allowed_tables:
             st.write(f"- `{table}`")
 
-    return page, config
+    return page, config, profile
 
 
 def write_feedback(record: dict, rating: str, comment: str) -> str:
@@ -1033,12 +1150,71 @@ def write_feedback(record: dict, rating: str, comment: str) -> str:
     )
 
 
-def retry_with_comment(record: dict, index: int, comment: str, config: SQLAgentConfig) -> None:
+def build_retry_context(
+    record: dict,
+    index: int,
+    comment: str,
+    profile: UserProfile | None = None,
+) -> dict:
+    router_context = record.get("router_context", {})
+    if not isinstance(router_context, dict):
+        router_context = {}
+    previous_error = record.get("error_message") or record.get("sql_error") or ""
+    context = {
+        "original_question": record.get("user_question") or record.get("question") or "",
+        "previous_assistant_answer": record.get("final_answer") or record.get("answer") or "",
+        "previous_status": record.get("result_status") or "",
+        "previous_router_decision": {
+            "intent": record.get("intent") or router_context.get("intent", ""),
+            "needs_sql": record.get("needs_sql", router_context.get("needs_sql", "")),
+            "needs_clarification": record.get(
+                "needs_clarification",
+                router_context.get("needs_clarification", ""),
+            ),
+            "blocked_or_unsafe": record.get(
+                "blocked_or_unsafe",
+                router_context.get("blocked_or_unsafe", ""),
+            ),
+            "complexity_tier": record.get("complexity_tier") or router_context.get("complexity_tier", ""),
+        },
+        "previous_error": previous_error,
+        "user_comment": comment.strip(),
+        "retry_parent_index": index,
+        "scenario": get_active_scenario_id(),
+    }
+    if profile is not None:
+        context.update(
+            {
+                "role_profile": profile.profile_id,
+                "permission_role": profile.permission_role.value,
+                "response_profile": profile.response_profile.value,
+            }
+        )
+    return context
+
+
+def apply_retry_metadata(record: dict, retry_context: dict, retry_mode: str) -> None:
+    record["retry_context"] = retry_context
+    record["retry_context_used"] = True
+    record["retry_mode"] = retry_mode
+    record["retry_parent_question"] = retry_context.get("original_question", "")
+    record["retry_parent_assistant_answer"] = retry_context.get("previous_assistant_answer", "")
+    record["retry_user_comment"] = retry_context.get("user_comment", "")
+
+
+def retry_with_comment(
+    record: dict,
+    index: int,
+    comment: str,
+    config: SQLAgentConfig,
+    profile: UserProfile | None = None,
+) -> None:
     if not comment.strip():
         st.warning("Bitte zuerst eine kurze Korrektur eingeben.")
         return
 
     _steps_log: list[dict] = []
+    retry_context = build_retry_context(record, index, comment, profile)
     write_feedback(record, "neutral", f"retry_with_comment: {comment}")
     with st.status("Wiederhole den Lauf mit deiner Korrektur...", expanded=True) as _retry_status:
         def _retry_on_step(node: str, duration: float, metadata: dict) -> None:
@@ -1063,10 +1239,12 @@ def retry_with_comment(record: dict, index: int, comment: str, config: SQLAgentC
             previous_sql_error=record.get("sql_error", ""),
             previous_final_answer=record.get("final_answer", ""),
             user_correction=comment.strip(),
+            retry_context=retry_context,
             step_callback=_retry_on_step,
         )
         _retry_status.update(label="Fertig ✓", state="complete", expanded=False)
     corrected_record["agent_step_log"] = _steps_log
+    apply_retry_metadata(corrected_record, retry_context, "comment_retry")
     active_history()[index] = corrected_record
     st.rerun()
 
@@ -1076,8 +1254,10 @@ def rerun_with_fallback(
     index: int,
     config: SQLAgentConfig,
     comment: str = "",
+    profile: UserProfile | None = None,
 ) -> None:
     _steps_log: list[dict] = []
+    retry_context = build_retry_context(record, index, comment, profile) if comment.strip() else {}
     write_feedback(record, "neutral", f"fallback_requested: {comment}")
     with st.status("Wiederhole den Lauf mit dem Fallback-Modell...", expanded=True) as _fb_status:
         def _fb_on_step(node: str, duration: float, metadata: dict) -> None:
@@ -1095,10 +1275,13 @@ def rerun_with_fallback(
             previous_sql_error=record.get("sql_error", ""),
             previous_final_answer=record.get("final_answer", ""),
             user_correction=comment.strip(),
+            retry_context=retry_context or None,
             step_callback=_fb_on_step,
         )
         _fb_status.update(label="Fertig ✓", state="complete", expanded=False)
     fallback_record["agent_step_log"] = _steps_log
+    if retry_context:
+        apply_retry_metadata(fallback_record, retry_context, "fallback_retry")
     active_history()[index] = fallback_record
     st.rerun()
 
@@ -1122,15 +1305,20 @@ def can_create_template_candidate(record: dict) -> bool:
     )
 
 
-def render_candidate_creation(record: dict, index: int) -> None:
+def render_candidate_creation(record: dict, index: int, profile: UserProfile) -> None:
     if not can_create_template_candidate(record):
+        return
+    if not can(profile.permission_role, TemplateAction.CREATE_CANDIDATE):
         return
 
     st.subheader("Memory")
     if st.button("YAML Template Vorschlag erstellen", key=f"create_candidate_{index}"):
         try:
-            _candidate, created, message = create_candidate_from_run(record)
-        except MemoryStoreError as error:
+            _candidate, created, message = create_candidate_from_run(
+                record,
+                **actor_kwargs(profile),
+            )
+        except (MemoryStoreError, PermissionError) as error:
             st.error(str(error))
             return
 
@@ -1306,7 +1494,7 @@ def render_memory_approval_result(result: dict) -> None:
         st.info("Der Smoke-Test hat keinen Treffer oberhalb des Schwellenwerts gefunden.")
 
 
-def render_memory_review_view() -> None:
+def render_memory_review_view(profile: UserProfile) -> None:
     st.title("Memory-Prüfung")
     render_flash()
     active_scenario = get_active_scenario()
@@ -1427,7 +1615,8 @@ def render_memory_review_view() -> None:
     candidate = candidate_by_id[selected_candidate_id]
     candidate_id = str(candidate.get("candidate_id", ""))
     status = str(candidate.get("status", ""))
-    editing_disabled = status in {"approved", "rejected"}
+    may_edit = can(profile.permission_role, TemplateAction.EDIT_CANDIDATE)
+    editing_disabled = status in {"approved", "rejected"} or not may_edit
 
     render_candidate_details(candidate)
 
@@ -1438,10 +1627,11 @@ def render_memory_review_view() -> None:
         st.session_state[yaml_key] = dump_yaml(candidate.get("proposed_template", {}))
         st.session_state[loaded_key] = candidate.get("updated_at", "")
 
-    if st.button("Neu laden", key=f"reload_{candidate_id}"):
-        st.session_state[yaml_key] = dump_yaml(candidate.get("proposed_template", {}))
-        st.session_state[loaded_key] = candidate.get("updated_at", "")
-        st.rerun()
+    if may_edit:
+        if st.button("Neu laden", key=f"reload_{candidate_id}"):
+            st.session_state[yaml_key] = dump_yaml(candidate.get("proposed_template", {}))
+            st.session_state[loaded_key] = candidate.get("updated_at", "")
+            st.rerun()
 
     edited_yaml = st.text_area(
         "proposed_template",
@@ -1455,16 +1645,30 @@ def render_memory_review_view() -> None:
         "`is_active=true` unter dem aktiven Szenario erzeugt. `source_sql` bleibt Prompt-Guidance."
     )
 
+    has_review_actions = any(
+        can(profile.permission_role, action)
+        for action in (
+            TemplateAction.EDIT_CANDIDATE,
+            TemplateAction.APPROVE_CANDIDATE,
+            TemplateAction.REJECT_CANDIDATE,
+            TemplateAction.REQUEST_CHANGES,
+        )
+    )
+    if not has_review_actions:
+        st.info("Dieses Demo-Profil hat nur Leserechte in der Memory-Prüfung.")
+        return
+
     review_comment = st.text_area("Review-Kommentar", key=f"review_comment_{candidate_id}")
     rejection_reason = st.text_area("Ablehnungsgrund", key=f"rejection_reason_{candidate_id}")
 
     col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
+        can_edit = may_edit and status not in {"approved", "rejected"}
         if st.button(
             "Änderungen speichern",
             key=f"save_{candidate_id}",
-            disabled=editing_disabled,
+            disabled=not can_edit,
         ):
             if candidate_editor_is_stale(candidate_id, candidate):
                 st.warning("Dieser Vorschlag wurde seit dem Laden geändert. Bitte zuerst neu laden.")
@@ -1473,8 +1677,13 @@ def render_memory_review_view() -> None:
                 parsed = parse_yaml_editor(edited_yaml)
             if parsed is not None:
                 try:
-                    update_candidate_proposed_template(candidate_id, parsed)
-                except MemoryStoreError as error:
+                    update_candidate_proposed_template(
+                        candidate_id,
+                        parsed,
+                        scenario=active_scenario.scenario_id,
+                        **actor_kwargs(profile),
+                    )
+                except (MemoryStoreError, PermissionError) as error:
                     st.error(str(error))
                 else:
                     st.session_state[loaded_key] = ""
@@ -1482,7 +1691,7 @@ def render_memory_review_view() -> None:
                     st.rerun()
 
     with col2:
-        if st.button("YAML prüfen", key=f"validate_{candidate_id}"):
+        if st.button("YAML prüfen", key=f"validate_{candidate_id}", disabled=not may_edit):
             parsed = parse_yaml_editor(edited_yaml)
             if parsed is not None:
                 errors = validate_proposed_template(parsed)
@@ -1490,7 +1699,10 @@ def render_memory_review_view() -> None:
                 show_validation_result(errors)
 
     with col3:
-        can_approve = status in {"pending_review", "needs_changes"}
+        can_approve = status in {"pending_review", "needs_changes"} and can(
+            profile.permission_role,
+            TemplateAction.APPROVE_CANDIDATE,
+        )
         if st.button("Template freigeben", key=f"approve_{candidate_id}", disabled=not can_approve):
             if candidate_editor_is_stale(candidate_id, candidate):
                 st.warning("Dieser Vorschlag wurde seit dem Laden geändert. Bitte zuerst neu laden.")
@@ -1507,8 +1719,9 @@ def render_memory_review_view() -> None:
                             candidate_id,
                             parsed,
                             scenario=active_scenario.scenario_id,
+                            **actor_kwargs(profile),
                         )
-                    except (MemoryStoreError, MemoryLifecycleError) as error:
+                    except (MemoryStoreError, MemoryLifecycleError, PermissionError) as error:
                         st.warning(str(error))
                     else:
                         st.session_state["last_memory_approval_result"] = result
@@ -1520,36 +1733,52 @@ def render_memory_review_view() -> None:
                         st.rerun()
 
     with col4:
-        can_reject = status in {"pending_review", "needs_changes"}
+        can_reject = status in {"pending_review", "needs_changes"} and can(
+            profile.permission_role,
+            TemplateAction.REJECT_CANDIDATE,
+        )
         if st.button("Vorschlag verwerfen", key=f"reject_{candidate_id}", disabled=not can_reject):
             if not rejection_reason.strip():
                 st.warning("Bitte Ablehnungsgrund angeben.")
             else:
                 try:
-                    reject_candidate(candidate_id, rejection_reason)
-                except MemoryStoreError as error:
+                    reject_candidate(
+                        candidate_id,
+                        rejection_reason,
+                        scenario=active_scenario.scenario_id,
+                        **actor_kwargs(profile),
+                    )
+                except (MemoryStoreError, PermissionError) as error:
                     st.error(str(error))
                 else:
                     set_flash("success", "Vorschlag wurde verworfen.")
                     st.rerun()
 
     with col5:
-        can_mark_needs_changes = status == "pending_review"
+        can_mark_needs_changes = status == "pending_review" and can(
+            profile.permission_role,
+            TemplateAction.REQUEST_CHANGES,
+        )
         if st.button(
             "Überarbeitung nötig",
             key=f"needs_changes_{candidate_id}",
             disabled=not can_mark_needs_changes,
         ):
             try:
-                mark_candidate_needs_changes(candidate_id, review_comment)
-            except MemoryStoreError as error:
+                mark_candidate_needs_changes(
+                    candidate_id,
+                    review_comment,
+                    scenario=active_scenario.scenario_id,
+                    **actor_kwargs(profile),
+                )
+            except (MemoryStoreError, PermissionError) as error:
                 st.error(str(error))
             else:
                 set_flash("success", "Vorschlag wurde als Überarbeitung nötig markiert.")
                 st.rerun()
 
 
-def render_approved_templates_view() -> None:
+def render_approved_templates_view(profile: UserProfile) -> None:
     st.title("Freigegebene Templates")
     render_flash()
     active_scenario = get_active_scenario()
@@ -1641,6 +1870,56 @@ def render_approved_templates_view() -> None:
     st.subheader("Source SQL")
     st.caption("Nur Prompt-Guidance; wird nicht ausgeführt und ersetzt keine SQL-Validierung.")
     st.code(template.get("source_sql", "") or "(leer)", language="sql")
+
+    can_deactivate = can(profile.permission_role, TemplateAction.DEACTIVATE_TEMPLATE)
+    can_reactivate = can(profile.permission_role, TemplateAction.REACTIVATE_TEMPLATE)
+    status = str(template.get("status", ""))
+    is_active = bool(template.get("is_active", False))
+
+    if can_deactivate or can_reactivate:
+        st.subheader("Governance")
+        if status == "approved" and is_active:
+            disabled_reason = st.text_area(
+                "Deaktivierungsgrund",
+                key=f"disable_reason_{selected_template_id}",
+            )
+            if st.button(
+                "Template deaktivieren",
+                key=f"disable_template_{selected_template_id}",
+                disabled=not can_deactivate,
+            ):
+                if not disabled_reason.strip():
+                    st.warning("Bitte Deaktivierungsgrund angeben.")
+                else:
+                    try:
+                        deactivate_approved_template(
+                            str(selected_template_id),
+                            disabled_reason,
+                            scenario=active_scenario.scenario_id,
+                            **actor_kwargs(profile),
+                        )
+                    except (MemoryLifecycleError, PermissionError) as error:
+                        st.error(str(error))
+                    else:
+                        set_flash("success", "Template wurde deaktiviert und der Szenario-Index neu aufgebaut.")
+                        st.rerun()
+        elif status == "disabled":
+            if st.button(
+                "Template reaktivieren",
+                key=f"reactivate_template_{selected_template_id}",
+                disabled=not can_reactivate,
+            ):
+                try:
+                    reactivate_approved_template(
+                        str(selected_template_id),
+                        scenario=active_scenario.scenario_id,
+                        **actor_kwargs(profile),
+                    )
+                except (MemoryLifecycleError, PermissionError) as error:
+                    st.error(str(error))
+                else:
+                    set_flash("success", "Template wurde reaktiviert und der Szenario-Index neu aufgebaut.")
+                    st.rerun()
 
 
 def golden_checkbox_key(question_id: str) -> str:
@@ -2056,17 +2335,21 @@ def render_step_log(record: dict) -> None:
             st.markdown(f"**{token_line}**")
 
 
-def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
+def render_record(record: dict, index: int, config: SQLAgentConfig, profile: UserProfile) -> None:
+    policy = display_policy_for_response_profile(profile.response_profile)
     with st.chat_message("user"):
         st.caption("Frage")
         st.markdown(record.get("user_question", ""))
 
     with st.chat_message("assistant"):
-        render_metadata(record)
+        if policy.show_metadata:
+            render_metadata(record)
 
-        st.subheader("Antwort")
+        st.subheader(policy.answer_heading)
         st.write(record.get("final_answer") or "Es wurde keine Antwort erzeugt.")
-        render_reporting_summary(record)
+        render_reporting_summary(record, heading=policy.summary_heading)
+        if profile.response_profile.value == "management":
+            render_management_decision_support(record)
 
         query_result = record.get("query_result", {})
         rows = query_result.get("rows", [])
@@ -2104,24 +2387,19 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
         else:
             render_presentation_unavailable_compact(record)
 
-        with st.expander("SQL-Anweisung", expanded=False):
-            st.code(record.get("final_sql") or record.get("generated_sql", "") or "(kein SQL erzeugt)", language="sql")
-
-        source_tables = record.get("source_tables", [])
-        st.subheader("Quelltabellen")
-        if source_tables:
-            for table in source_tables:
-                st.markdown(f"- `{table}`")
+        if policy.show_sql_inline:
+            render_sql_and_sources(record)
+            if record.get("sql_error"):
+                st.subheader("SQL-Fehler")
+                st.error(record["sql_error"])
+            render_step_log(record)
         else:
-            st.write("Es wurden keine Quelltabellen erkannt.")
+            render_collapsed_technical_details(record)
 
-        if record.get("sql_error"):
-            st.subheader("SQL-Fehler")
-            st.error(record["sql_error"])
-
-        render_step_log(record)
-
-        render_reporting_audit(record)
+        if policy.show_reporting_audit:
+            render_reporting_audit(record)
+        if policy.show_technical_debug:
+            render_technical_debug(record)
 
         if record.get("user_correction"):
             st.subheader("Nutzerkorrektur")
@@ -2140,12 +2418,12 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
                 st.warning("Rückmeldung gespeichert.")
         with col3:
             if st.button("Mit Kommentar wiederholen", key=f"feedback_retry_{index}"):
-                retry_with_comment(record, index, comment, config)
+                retry_with_comment(record, index, comment, config, profile)
         with col4:
             if st.button("Fallback-Modell verwenden", key=f"feedback_fallback_{index}"):
-                rerun_with_fallback(record, index, config, comment)
+                rerun_with_fallback(record, index, config, comment, profile)
 
-        render_candidate_creation(record, index)
+        render_candidate_creation(record, index, profile)
 
 
 def main() -> None:
@@ -2168,10 +2446,10 @@ def main() -> None:
             pass
     apply_app_styles()
     initialize_state()
-    page, config = render_sidebar()
+    page, config, profile = render_sidebar()
 
     if page == PAGE_MEMORY:
-        render_memory_review_view()
+        render_memory_review_view(profile)
         return
 
     if page == PAGE_GOLDEN:
@@ -2179,7 +2457,7 @@ def main() -> None:
         return
 
     if page == PAGE_TEMPLATES:
-        render_approved_templates_view()
+        render_approved_templates_view(profile)
         return
 
     _shield_uri = _img_data_uri(WUERTH_SHIELD_PATH)
@@ -2201,7 +2479,7 @@ def main() -> None:
 
     history = active_history()
     for index, record in enumerate(history):
-        render_record(record, index, config)
+        render_record(record, index, config, profile)
 
     context_key = f"send_context_{st.session_state.active_chat_id}"
     if history:

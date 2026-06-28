@@ -8,7 +8,7 @@
 - Use lower_snake_case for Python modules in `src/`, `app/`, `scripts/`, and `evaluation/`: `src/agent/visualization_spec.py`, `src/agent/golden_test_runner.py`, `scripts/validate_wuerth_local_setup.py`.
 - Use package directories for bounded areas: `src/agent/`, `src/backends/`, `src/config/`, `src/llm/`, `app/`.
 - Use `test_*.py` for discoverable test files under `evaluation/`: `evaluation/test_orchestrator.py`, `evaluation/test_visualization_spec.py`, `evaluation/test_backend_config_and_validation.py`.
-- Use scenario-scoped fixture directories for golden data: `evaluation/demo/`, `evaluation/databricks/`, `evaluation/wuerth_local/`.
+- Use scenario-scoped fixture directories for current golden data: `evaluation/demo/` and `evaluation/wuerth_local/`. Databricks fixtures were removed from the current local hand-in/demo scope.
 - Keep binary and branded assets under `assets/templates/`; the copied PowerPoint master template is `assets/templates/PPT_Vorlage_Wuerth.pptx`.
 
 **Functions:**
@@ -48,11 +48,11 @@
 1. `from __future__ import annotations` first where used, as in `src/agent/langgraph_sql_agent.py`.
 2. Standard library imports next: `os`, `re`, `csv`, `Path`, `dataclass`, `typing` in `src/backends/config.py` and `src/agent/logging_utils.py`.
 3. Third-party imports after a blank line: `yaml`, `pandas`, `streamlit`, `langgraph`, `dotenv` in `src/agent/langgraph_sql_agent.py` and `streamlit_app.py`.
-4. Local imports last, using absolute package paths: `from src.agent...` and `from app...` in `src/agent/orchestrator.py`, `src/backends/demo/postgres_adapter.py`, and `main.py`.
+4. Local imports last, using absolute package paths: `from src.agent...` and `from app...` in `src/agent/orchestrator.py` and `src/backends/demo/postgres_adapter.py`.
 
 **Path Aliases:**
 - No configured path aliases are detected. Use absolute imports from repo-root packages: `from src.config.scenarios import get_active_scenario` in `src/backends/config.py`, `from app.db import get_connection` in `src/backends/demo/postgres_adapter.py`.
-- CLI scripts that are run directly add `PROJECT_ROOT` to `sys.path` before local imports: `evaluation/run_evaluation.py`, `scripts/validate_wuerth_local_setup.py`, `scripts/databricks/test_databricks_connection.py`.
+- CLI scripts that are run directly add `PROJECT_ROOT` to `sys.path` before local imports: `evaluation/run_evaluation.py` and `scripts/validate_wuerth_local_setup.py`.
 - Avoid adding logic to package markers. Existing `__init__.py` files are empty in `src/__init__.py`, `src/agent/__init__.py`, `src/backends/__init__.py`, and `app/__init__.py`.
 
 ## Error Handling
@@ -61,8 +61,8 @@
 - Define domain-specific errors close to the domain: `BackendConfigError` in `src/backends/config.py`, `ScenarioConfigError` in `src/config/scenarios.py`, `ModelAdapterError` in `src/llm/model_adapter.py`, `MemoryStoreError` in `src/agent/memory_store.py`.
 - Raise configuration errors with missing key names, not secret values. `load_databricks_config()` in `src/backends/config.py` reports missing env var names and tests assert that sensitive placeholders are absent in `evaluation/test_backend_config_and_validation.py`.
 - Sanitize external connector exceptions before returning them to callers. `_safe_databricks_error()` in `src/backends/databricks/databricks_adapter.py` reports the connector error type while omitting host, path, and token values.
-- Return structured validation objects for expected invalid input rather than raising exceptions. `validate_generated_sql()` returns `SQLValidationResult` in `src/agent/sql_validator.py`; the legacy `app/sql_validator.py` returns `ValidationResult`.
-- Keep terminal and UI flows resilient. `main.py` catches startup, LLM, explain, and execution failures and prints short messages; `streamlit_app.py` catches `MemoryStoreError` around memory review actions.
+- Return structured validation objects for expected invalid input rather than raising exceptions. `validate_generated_sql()` returns `SQLValidationResult` in `src/agent/sql_validator.py`.
+- Keep terminal and UI flows resilient. `streamlit_app.py` catches `MemoryStoreError` around memory review actions.
 - Preserve exception chaining for dependency and configuration failures with `raise ... from error`, as in `src/llm/model_adapter.py`, `src/backends/databricks/databricks_adapter.py`, and `scripts/validate_wuerth_local_setup.py`.
 - Logging failures are intentionally non-fatal: `append_csv_row()` in `src/agent/logging_utils.py` catches exceptions and prints `Logging failed for ...`.
 
@@ -72,9 +72,8 @@
 
 **Patterns:**
 - Use `src/agent/logging_utils.py` for query, feedback, router, and memory audit CSV output. It owns CSV schemas such as `QUERY_LOG_FIELDS` and `FEEDBACK_LOG_FIELDS`.
-- Use `app/logging_utils.py` only for the legacy CLI path under `app/` and `main.py`.
 - Use Python's `logging` module for operational scripts, as in `scripts/ingest_wuerth_csv_to_postgres.py`.
-- Use `print()` for short CLI status in `main.py`, `evaluation/run_evaluation.py`, and `scripts/validate_wuerth_local_setup.py`.
+- Use `print()` for short CLI status in `evaluation/run_evaluation.py` and `scripts/validate_wuerth_local_setup.py`.
 - Never log raw credentials or connector secrets. Follow the safe-error pattern in `src/backends/databricks/databricks_adapter.py` and the assertions in `evaluation/test_backend_config_and_validation.py`.
 
 ## Comments

@@ -74,6 +74,7 @@ class OrchestratorState(TypedDict, total=False):
     run_id: str
     user_question: str
     chat_context: str
+    retry_context: dict[str, Any]
     llm_provider: str
     ollama_host: str
 
@@ -508,13 +509,129 @@ def _reporting_failure_result(*, result: dict[str, Any], error: Exception) -> di
     }
 
 
+def _format_retry_context_for_router(retry_context: dict[str, Any] | None) -> str:
+    if not isinstance(retry_context, dict) or not retry_context:
+        return ""
+
+    original_question = str(retry_context.get("original_question", "")).strip()
+    previous_answer = str(retry_context.get("previous_assistant_answer", "")).strip()
+    user_comment = str(retry_context.get("user_comment", "")).strip()
+    previous_router_decision = retry_context.get("previous_router_decision", {})
+    if isinstance(previous_router_decision, dict):
+        router_decision_text = ", ".join(
+            f"{key}={value}"
+            for key, value in previous_router_decision.items()
+            if value not in (None, "")
+        )
+    else:
+        router_decision_text = str(previous_router_decision or "")
+
+    lines = [
+        "RÜCKFRAGE-KONTEXT FÜR ERNEUTE AUSFÜHRUNG:",
+        "URSPRÜNGLICHE NUTZERFRAGE:",
+        original_question,
+        "",
+        "RÜCKFRAGE DES SYSTEMS:",
+        previous_answer,
+        "",
+        "ANTWORT DES NUTZERS AUF DIE RÜCKFRAGE:",
+        user_comment,
+        "",
+        "ANWEISUNG:",
+        (
+            "Die Antwort des Nutzers gehört zur ursprünglichen Nutzerfrage. "
+            "Verwende sie zur Disambiguierung der ursprünglichen Frage. "
+            "Behandle die Antwort nicht als neue eigenständige Frage. "
+            "Stelle dieselbe Rückfrage nicht erneut, wenn die Antwort die "
+            "Ambiguität auflöst."
+        ),
+    ]
+    optional_lines = []
+    previous_status = str(retry_context.get("previous_status", "")).strip()
+    previous_error = str(retry_context.get("previous_error", "")).strip()
+    if previous_status:
+        optional_lines.append(f"Vorheriger Status: {previous_status}")
+    if router_decision_text:
+        optional_lines.append(f"Vorherige Router-Entscheidung: {router_decision_text}")
+    if previous_error:
+        optional_lines.append(f"Vorheriger Fehler: {previous_error}")
+    if optional_lines:
+        lines.extend(["", "ZUSÄTZLICHER KONTEXT:", *optional_lines])
+    return "\n".join(lines).strip()
+
+
+def _format_retry_context_for_agent(retry_context: dict[str, Any] | None) -> str:
+    if not isinstance(retry_context, dict) or not retry_context:
+        return ""
+
+    previous_router_decision = retry_context.get("previous_router_decision", {})
+    if isinstance(previous_router_decision, dict):
+        router_decision_text = ", ".join(
+            f"{key}={value}"
+            for key, value in previous_router_decision.items()
+            if value not in (None, "")
+        )
+    else:
+        router_decision_text = str(previous_router_decision or "")
+
+    lines = [
+        "RETRY CONTEXT:",
+        f"Original user question: {retry_context.get('original_question', '')}",
+        (
+            "Previous assistant response / clarification: "
+            f"{retry_context.get('previous_assistant_answer', '')}"
+        ),
+        f"Previous status: {retry_context.get('previous_status', '')}",
+        f"Previous router decision: {router_decision_text}",
+        f"Previous error: {retry_context.get('previous_error', '')}",
+        f"User correction/comment: {retry_context.get('user_comment', '')}",
+        f"Active scenario: {retry_context.get('scenario', '')}",
+        f"Active profile: {retry_context.get('role_profile', '')}",
+        f"Permission role: {retry_context.get('permission_role', '')}",
+        (
+            "Instruction: The user correction/comment belongs to the original "
+            "question. Resolve the original question using this clarification. "
+            "Do not treat the correction/comment as a standalone new question."
+        ),
+    ]
+    return "\n".join(line for line in lines if line.strip())
+
+
+def _merge_retry_context_into_chat_context(
+    chat_context: str,
+    retry_context: dict[str, Any] | None,
+) -> str:
+    retry_context_text = _format_retry_context_for_router(retry_context)
+    if not retry_context_text:
+        return chat_context
+    if chat_context.strip():
+        return f"{chat_context.rstrip()}\n\n{retry_context_text}"
+    return retry_context_text
+
+
+def _merge_retry_context_into_agent_chat_context(
+    chat_context: str,
+    retry_context: dict[str, Any] | None,
+) -> str:
+    retry_context_text = _format_retry_context_for_agent(retry_context)
+    if not retry_context_text:
+        return chat_context
+    if chat_context.strip():
+        return f"{chat_context.rstrip()}\n\n{retry_context_text}"
+    return retry_context_text
+
+
 def run_router_node(state: OrchestratorState) -> dict[str, Any]:
+    router_chat_context = _merge_retry_context_into_chat_context(
+        state.get("chat_context", ""),
+        state.get("retry_context", {}),
+    )
     router_input: RouterState = {
         "user_question": state.get("user_question", ""),
         "active_scenario": get_active_scenario_id(),
         "llm_provider": state.get("llm_provider", get_provider()),
         "ollama_host": state.get("ollama_host", "http://localhost:11434"),
-        "chat_context": state.get("chat_context", ""),
+        "chat_context": router_chat_context,
     }
     result: RouterState = _get_compiled_router().invoke(router_input, {"recursion_limit": 10})
 
@@ -641,7 +758,10 @@ def _run_sql_agent_node_impl(state: OrchestratorState, step_callback: StepCallba
         router_context=router_context,
         memory_retrieval=state.get("memory_retrieval", {}),
         step_callback=step_callback,
-        chat_context=state.get("chat_context", ""),
+        chat_context=_merge_retry_context_into_agent_chat_context(
+            state.get("chat_context", ""),
+            state.get("retry_context", {}),
+        ),
     )
     reporting_result = _build_reporting_result(
         user_question=state.get("user_question", ""),
@@ -914,11 +1034,13 @@ def _initial_state(
     enable_memory_candidate_generation: bool,
     log_to_query_log: bool,
     chat_context: str = "",
+    retry_context: dict[str, Any] | None = None,
 ) -> OrchestratorState:
     return {
         "run_id": run_id,
         "user_question": user_question,
         "chat_context": chat_context,
+        "retry_context": dict(retry_context or {}),
         "llm_provider": config.llm_provider,
         "ollama_host": config.ollama_host,
         "trace_steps": [],
@@ -978,6 +1100,9 @@ def _run_forced_fallback(
         "template_candidates": [],
         "memory_retrieval": {},
     }
+    retry_context = initial.get("retry_context", {})
+    if retry_context:
+        forced_router_context["retry_context"] = retry_context
     result = run_sql_agent(
         user_question,
         run_id=run_id,
@@ -997,6 +1122,10 @@ def _run_forced_fallback(
         router_context=forced_router_context,
         memory_retrieval=forced_router_context.get("memory_retrieval", {}),
         step_callback=step_callback,
+        chat_context=_merge_retry_context_into_agent_chat_context(
+            initial.get("chat_context", ""),
+            retry_context,
+        ),
     )
     reporting_result = _build_reporting_result(
         user_question=user_question,
@@ -1047,6 +1176,7 @@ def run_orchestrator(
     log_to_query_log: bool = True,
     step_callback: StepCallback | None = None,
     chat_context: str = "",
+    retry_context: dict[str, Any] | None = None,
 ) -> OrchestratorState:
     sql_config = _coerce_sql_config(config)
     run_id = generate_run_id()
@@ -1066,6 +1196,7 @@ def run_orchestrator(
         enable_memory_candidate_generation=enable_memory_candidate_generation,
         log_to_query_log=log_to_query_log,
         chat_context=chat_context,
+        retry_context=retry_context,
     )
 
     if force_fallback:
@@ -1085,6 +1216,8 @@ def run_orchestrator(
     final["force_fallback"] = force_fallback
     final.setdefault("template_candidates", [])
     final.setdefault("memory_retrieval", {})
+    if retry_context:
+        final["retry_context"] = dict(retry_context)
     final["token_usage"] = get_token_usage()
 
     if log_to_query_log:
