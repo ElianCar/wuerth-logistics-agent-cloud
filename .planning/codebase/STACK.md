@@ -9,7 +9,7 @@
 
 **Secondary:**
 - SQL - PostgreSQL schema/load/test SQL and query fixtures live in `database/postgres_create_tpch_schema.sql`, `database/postgres_load_tpch_csv.sql`, `database/postgres_test_queries.sql`, `docker/postgres/init/01_create_tpch_schema.sql`, `docker/postgres/init/02_load_tpch_data.sql`, and `evaluation/**/solution_sql/*.sql`.
-- YAML - semantic layers, router context, golden questions, and memory files live in `semantic_layer/router_excerpt.yaml`, `semantic_layer/demo/tpch_semantic_layer.yaml`, `semantic_layer/databricks/wuerth_semantic_layer.yaml`, `evaluation/**/golden_questions.yaml`, and `memory/**.yaml`.
+- YAML - semantic layers, router context, golden questions, and memory files live in `semantic_layer/router_excerpt.yaml`, `semantic_layer/demo/tpch_semantic_layer.yaml`, `semantic_layer/wuerth_local/wuerth_semantic_layer.yaml`, `evaluation/**/golden_questions.yaml`, and `memory/**.yaml`.
 - CSV - committed demo TPC-H exports live in `database/exports/*.csv`; local Wuerth CSV inputs are expected under ignored paths `database/exports/wuerth/` or `database/exports/Wuerth/`.
 - Dockerfile and Docker Compose - local container runtime is defined in `Dockerfile`, `docker-compose.yml`, and `.dockerignore`.
 
@@ -19,7 +19,7 @@
 - Python 3.11 in containers via `python:3.11-slim` in `Dockerfile`.
 - Streamlit serves the primary app on port `8501` via `streamlit run streamlit_app.py` in `Dockerfile`.
 - Docker Compose starts `postgres`, `wuerth_ingest`, and `app` services in `docker-compose.yml`; PostgreSQL uses image `postgres:16`.
-- Local CLI prototype entry point remains available through `main.py`, but README positions `streamlit_app.py` as the normal UI path.
+- The old direct CLI entry point was removed; `streamlit_app.py` is the normal UI path.
 
 **Package Manager:**
 - pip with `requirements.txt`.
@@ -55,7 +55,7 @@
 - `langgraph` - composes router and SQL agent state machines in `src/agent/router.py`, `src/agent/orchestrator.py`, and `src/agent/langgraph_sql_agent.py`.
 - `langchain-google-genai` and `google-genai` - Gemini provider support in `src/llm/model_adapter.py`.
 - `langchain-anthropic` - Anthropic provider support in `src/llm/model_adapter.py`.
-- `langchain-ollama` and `ollama` - local Ollama provider support in `src/llm/model_adapter.py` and `src/agent/ollama_client.py`.
+- `langchain-ollama` and `ollama` - local Ollama provider support in `src/llm/model_adapter.py`.
 - `psycopg[binary]` - PostgreSQL connectivity in `app/db.py` and Wuerth CSV ingestion in `scripts/ingest_wuerth_csv_to_postgres.py`.
 - `databricks-sql-connector` and `databricks-sdk` - optional Databricks SQL Warehouse connectivity and OAuth M2M support in `src/backends/databricks/databricks_adapter.py`.
 - `pandas` and `altair` - dataframe conversion, report summaries, KPI cards, and chart rendering in `src/agent/reporting_agent.py` and `streamlit_app.py`.
@@ -64,7 +64,7 @@
 **Infrastructure:**
 - `python-dotenv` - loads `.env` values in `app/config.py`, `src/llm/model_adapter.py`, `src/agent/router.py`, `src/agent/orchestrator.py`, and `src/agent/langgraph_sql_agent.py`.
 - `duckdb` - creates and inspects local TPC-H development data in `database/create_tpch_database.py` and `database/inspect_schema.py`.
-- `tabulate` - formats CLI result tables in `app/answer_formatter.py`.
+- `tabulate` - listed in `requirements.txt`; no active runtime import was detected after removing the old direct CLI stack.
 - `sqlalchemy` - listed in `requirements.txt`; no direct import was detected in current Python files.
 - PowerPoint generation dependencies - not detected. `assets/templates/PPT_Vorlage_Wuerth.pptx` exists as a master template asset, but no package such as `python-pptx` is listed in `requirements.txt` and no source code currently references the template.
 

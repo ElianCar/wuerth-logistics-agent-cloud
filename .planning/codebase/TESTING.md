@@ -26,7 +26,7 @@ DATA_SCENARIO=wuerth_local python evaluation/run_evaluation.py W01 W02 W03 W04 W
 
 **Location:**
 - Unit and focused integration tests live under `evaluation/`: `evaluation/test_router.py`, `evaluation/test_orchestrator.py`, `evaluation/test_visualization_spec.py`, `evaluation/test_backend_config_and_validation.py`.
-- Golden question data lives under scenario folders: `evaluation/demo/golden_questions.yaml`, `evaluation/databricks/golden_questions.yaml`, `evaluation/wuerth_local/golden_questions.yaml`.
+- Golden question data for the current local scenarios lives under `evaluation/demo/golden_questions.yaml` and `evaluation/wuerth_local/golden_questions.yaml`. Databricks golden fixtures were removed from the current local hand-in/demo scope.
 - Golden SQL fixtures live under scenario solution folders: `evaluation/demo/solution_sql/`, `evaluation/wuerth_local/solution_sql/`.
 - CLI smoke and evaluation entry points also live under `evaluation/`: `evaluation/run_langgraph_smoke_tests.py`, `evaluation/run_evaluation.py`.
 
@@ -44,8 +44,6 @@ evaluation/
 ├── demo/
 │   ├── golden_questions.yaml
 │   └── solution_sql/
-├── databricks/
-│   └── golden_questions.yaml
 └── wuerth_local/
     ├── golden_questions.yaml
     └── solution_sql/

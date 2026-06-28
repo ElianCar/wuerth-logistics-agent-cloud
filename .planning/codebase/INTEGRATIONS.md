@@ -14,7 +14,7 @@
   - Auth: `ANTHROPIC_API_KEY` read in `src/llm/model_adapter.py`.
   - Model config: `ANTHROPIC_PRIMARY_MODEL`, `ANTHROPIC_FALLBACK_MODEL`, `ANTHROPIC_EASY_MODEL`, `ANTHROPIC_MEDIUM_MODEL`, `ANTHROPIC_HARD_MODEL`, and `ANTHROPIC_ROUTER_MODEL` read in `src/llm/model_adapter.py`, `src/agent/router.py`, and `src/agent/orchestrator.py`.
 - Ollama - optional local LLM provider selected through the Streamlit sidebar or `LLM_PROVIDER=ollama`.
-  - SDK/Client: `langchain_ollama.ChatOllama` in `src/llm/model_adapter.py` and `src/agent/ollama_client.py`; packages listed in `requirements.txt`.
+  - SDK/Client: `langchain_ollama.ChatOllama` in `src/llm/model_adapter.py`; packages listed in `requirements.txt`.
   - Auth: none detected.
   - Endpoint config: `OLLAMA_HOST`, `OLLAMA_MODEL`, `PRIMARY_MODEL`, `FALLBACK_MODEL`, `OLLAMA_EASY_MODEL`, `OLLAMA_MEDIUM_MODEL`, `OLLAMA_HARD_MODEL`, `OLLAMA_FALLBACK_MODEL`, and `OLLAMA_ROUTER_MODEL` read in `app/config.py`, `src/llm/model_adapter.py`, `src/agent/router.py`, and `src/agent/orchestrator.py`.
 
@@ -50,8 +50,8 @@
 - Local filesystem only - no cloud file storage integration detected.
 - Committed demo CSV exports: `database/exports/customer.csv`, `database/exports/lineitem.csv`, `database/exports/nation.csv`, `database/exports/orders.csv`, `database/exports/part.csv`, `database/exports/partsupp.csv`, `database/exports/region.csv`, and `database/exports/supplier.csv`.
 - Ignored Wuerth CSV import locations: `database/exports/wuerth/` and `database/exports/Wuerth/`, referenced in `README.md`, `.gitignore`, `.dockerignore`, and `scripts/ingest_wuerth_csv_to_postgres.py`.
-- Semantic layer files: `semantic_layer/router_excerpt.yaml`, `semantic_layer/demo/tpch_semantic_layer.yaml`, and `semantic_layer/databricks/wuerth_semantic_layer.yaml`.
-- Memory files: `memory/demo/solution_templates.yaml`, `memory/demo/memory_candidates.yaml`, `memory/demo/error_memory.yaml`, `memory/databricks/solution_templates.yaml`, `memory/databricks/memory_candidates.yaml`, and `memory/databricks/error_memory.yaml`.
+- Semantic layer files: `semantic_layer/router_excerpt.yaml`, `semantic_layer/demo/tpch_semantic_layer.yaml`, and `semantic_layer/wuerth_local/wuerth_semantic_layer.yaml`.
+- Memory files: current local runtime memory is scenario-scoped under `memory/demo/` and `memory/wuerth_local/`. Databricks memory fixtures were removed from the current local hand-in/demo scope.
 - Logs and audits: `logs/feedback.csv` is present; runtime CSV logs use `LOG_DIR` from `src/agent/logging_utils.py`; memory audit logs are written by `src/agent/memory_store.py`.
 - PowerPoint master template: `assets/templates/PPT_Vorlage_Wuerth.pptx` exists as a local template asset for future PowerPoint output generation. No current source file references it and no PowerPoint generation dependency is listed in `requirements.txt`.
 

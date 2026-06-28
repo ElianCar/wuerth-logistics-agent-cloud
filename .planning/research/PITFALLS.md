@@ -73,7 +73,7 @@
 
 ### Pitfall 10: Stale Golden Results And Docs Create False Confidence
 **What goes wrong:** `evaluation/demo/golden_results.jsonl` already contains many failed and errored records, and final docs can easily drift from implementation. A PPTX export could pass a narrow demo while docs still claim unsupported data columns, chart types, or security controls are implemented.
-**Warning signs:** Final docs describe conceptual components as implemented; golden results are committed as if they were a passing baseline; docs mention PowerPoint export before `requirements.txt` has a PPTX dependency; README examples show charts or columns that `semantic_layer/databricks/wuerth_semantic_layer.yaml` marks unavailable.
+**Warning signs:** Final docs describe conceptual components as implemented; golden results are committed as if they were a passing baseline; docs mention PowerPoint export before `requirements.txt` has a PPTX dependency; README examples show charts or columns that `semantic_layer/wuerth_local/wuerth_semantic_layer.yaml` marks unavailable.
 **Prevention:** Treat generated golden output as runtime evidence, not a stable fixture unless curated. Refresh or archive stale `evaluation/*/golden_results.jsonl` before final documentation. Add a documentation checklist that maps claims to implemented files such as `src/agent/presentation_export.py`, `evaluation/test_presentation_export.py`, `streamlit_app.py`, and `src/agent/memory_store.py`.
 **Phase to address:** Phase 6 owns documentation freshness. Phase 2 and Phase 3 should update tests before docs claim readiness.
 
