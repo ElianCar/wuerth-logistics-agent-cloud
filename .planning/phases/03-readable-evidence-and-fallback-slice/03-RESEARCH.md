@@ -104,7 +104,7 @@ The planning layer should be deterministic by default and should profile result 
 - Generate PowerPoint only from successful, validated query results. [VERIFIED: AGENTS.md]
 - Use existing `unittest` style and avoid tests that require Microsoft PowerPoint. [VERIFIED: AGENTS.md]
 - Do not present lightweight RBAC or template controls as production security in this phase. [VERIFIED: AGENTS.md]
-- Local Wuerth data lacks several business columns; unsupported KPI answers must stay explicit limitations. [VERIFIED: AGENTS.md] [VERIFIED: semantic_layer/databricks/wuerth_semantic_layer.yaml]
+- Local Wuerth data lacks several business columns; unsupported KPI answers must stay explicit limitations. [VERIFIED: AGENTS.md] [VERIFIED: semantic_layer/wuerth_local/wuerth_semantic_layer.yaml]
 
 ## Standard Stack
 
@@ -313,7 +313,7 @@ Required planning outputs:
 - Top `shiptoparty` groups by summed `shipment_rows` or row count. [VERIFIED: 03-CONTEXT.md]
 - Table evidence: original SQL order, page note such as `Zeilen 1-10 von 50`, visible column-truncation note when columns exceed budget. [VERIFIED: PPT-05]
 
-Do not infer business causes from unmatched records because the semantic layer says invoices and shipments may not match one-to-one due to timing and many-to-many risk. [VERIFIED: semantic_layer/databricks/wuerth_semantic_layer.yaml]
+Do not infer business causes from unmatched records because the semantic layer says invoices and shipments may not match one-to-one due to timing and many-to-many risk. [VERIFIED: semantic_layer/wuerth_local/wuerth_semantic_layer.yaml]
 
 ### Chart Choice Rules
 
@@ -591,7 +591,7 @@ Security enforcement is enabled by default because `.planning/config.json` does 
 | Prompt injection into optional planner | Tampering | Send capped, structured context; require JSON schema validation; deterministic fallback on invalid output. [VERIFIED: 03-CONTEXT.md] |
 | Sensitive data leakage to LLM | Information disclosure | Do not send unbounded rows, secrets, `.env`, or external credentials; keep payload to sanitized question, SQL, metadata, profiles, and capped samples. [VERIFIED: 03-CONTEXT.md] |
 | Active content in PPT template | Tampering | Continue template scan that blocks macros and external relationships while warning on known OLE entries. [VERIFIED: src/agent/presentation_export.py] |
-| Misleading unsupported KPI output | Integrity | Keep missing Wuerth data limitations explicit; do not invent revenue, packing cost, plant, shipment date, or currency. [VERIFIED: semantic_layer/databricks/wuerth_semantic_layer.yaml] |
+| Misleading unsupported KPI output | Integrity | Keep missing Wuerth data limitations explicit; do not invent revenue, packing cost, plant, shipment date, or currency. [VERIFIED: semantic_layer/wuerth_local/wuerth_semantic_layer.yaml] |
 | Broken or unreadable generated deck | Availability | Validate slide budgets before rendering and fall back to table/limitation slides. [VERIFIED: 03-CONTEXT.md] |
 
 ## Sources
@@ -603,7 +603,7 @@ Security enforcement is enabled by default because `.planning/config.json` does 
 - `.planning/phases/03-readable-evidence-and-fallback-slice/03-CONTEXT.md` - user-approved Phase 3 constraints and detailed scope. [VERIFIED: local read]
 - `.planning/phases/01-deterministic-backend-deck-slice/01-CONTEXT.md` and `.planning/phases/02-streamlit-downloadable-deck-slice/02-CONTEXT.md` - prior phase decisions. [VERIFIED: local read]
 - `src/agent/presentation_export.py`, `src/agent/reporting_agent.py`, `src/agent/visualization_spec.py`, `streamlit_app.py`, `evaluation/test_presentation_export.py`, `.env.example`, `requirements.txt` - existing code patterns and extension points. [VERIFIED: local read]
-- `evaluation/wuerth_local/solution_sql/w05_shipments_without_invoices.sql` and `semantic_layer/databricks/wuerth_semantic_layer.yaml` - W05 result shape, join mapping, and source-data limitations. [VERIFIED: local read]
+- `evaluation/wuerth_local/solution_sql/w05_shipments_without_invoices.sql` and `semantic_layer/wuerth_local/wuerth_semantic_layer.yaml` - W05 result shape, join mapping, and source-data limitations. [VERIFIED: local read]
 - python-pptx official docs: https://python-pptx.readthedocs.io/ and https://python-pptx.readthedocs.io/en/latest/user/text.html - PPTX capabilities and rich text runs. [CITED: official docs]
 - Matplotlib official docs: https://matplotlib.org/stable/install/index.html, https://matplotlib.org/stable/api/_as_gen/matplotlib.pyplot.savefig.html, and https://matplotlib.org/stable/api/_as_gen/matplotlib.pyplot.tight_layout.html - non-interactive backend, image saving, and layout. [CITED: official docs]
 - Anthropic structured outputs docs: https://platform.claude.com/docs/en/build-with-claude/structured-outputs - optional JSON schema constrained planning caveats. [CITED: official docs]

@@ -5,10 +5,10 @@
 ## Tech Debt
 
 **Split active and legacy SQL paths:**
-- Issue: The Streamlit path uses `src/agent/orchestrator.py`, `src/agent/langgraph_sql_agent.py`, and `src/agent/sql_validator.py`, while the CLI path in `main.py` still uses legacy `app/*` modules. The legacy path has a weaker validator and executor contract.
-- Files: `main.py`, `app/sql_validator.py`, `app/query_executor.py`, `app/prompt_builder.py`, `src/agent/sql_validator.py`, `src/agent/orchestrator.py`
+- Issue: Resolved in cleanup. The older direct CLI path was removed, leaving Streamlit and golden tests aligned around `src/agent/orchestrator.py`, `src/agent/langgraph_sql_agent.py`, and `src/agent/sql_validator.py`.
+- Files: `src/agent/sql_validator.py`, `src/agent/orchestrator.py`
 - Impact: Fixes to the active agent can miss the CLI path, and CLI behavior can execute SQL under different safety rules from the Streamlit app.
-- Fix approach: Either retire `main.py` and the legacy `app/*` SQL path, or make the CLI call `src.agent.orchestrator.run_orchestrator` so all entry points share validation, backend selection, logging, and reporting behavior.
+- Fix approach: Keep future user-facing question flows on `src.agent.orchestrator.run_orchestrator` so validation, backend selection, logging, and reporting behavior stay shared.
 
 **Large Streamlit controller module:**
 - Issue: UI, chat state, model configuration, memory review, template approval, golden-test UI, result export, and agent execution are all implemented in one 1321-line file.
@@ -56,13 +56,13 @@
 
 **Wuerth local semantics encode unresolved source-data limits:**
 - Symptoms: The Wuerth local semantic layer marks revenue, turnover, invoice amount, packing cost, shipment date, plant, shipping point, and statistics currency as unavailable. It also marks the material mapping as a candidate that needs business confirmation.
-- Files: `semantic_layer/databricks/wuerth_semantic_layer.yaml`, `src/agent/langgraph_sql_agent.py`, `README.md`, `evaluation/wuerth_local/golden_questions.yaml`
+- Files: `semantic_layer/wuerth_local/wuerth_semantic_layer.yaml`, `src/agent/langgraph_sql_agent.py`, `README.md`, `evaluation/wuerth_local/golden_questions.yaml`
 - Trigger: Questions that ask for unsupported KPIs or combined invoice/shipment metrics.
 - Workaround: Return explicit limitation answers for unsupported KPIs and use pre-aggregated joins for invoice/shipment matching until the source CSV columns and join keys are confirmed.
 
 **Postgres error messages can leak operational detail to users:**
 - Symptoms: Postgres connection and execution errors are converted with `str(error)` and displayed through the CLI or Streamlit error flow.
-- Files: `app/db.py`, `app/query_executor.py`, `src/backends/demo/postgres_adapter.py`, `src/agent/langgraph_sql_agent.py`, `streamlit_app.py`
+- Files: `app/db.py`, `src/backends/demo/postgres_adapter.py`, `src/agent/langgraph_sql_agent.py`, `streamlit_app.py`
 - Trigger: Bad credentials, missing tables, syntax errors, permission errors, or backend outages.
 - Workaround: Databricks errors are sanitized in `src/backends/databricks/databricks_adapter.py`; apply the same pattern to Postgres paths and keep raw errors only in private logs.
 
@@ -70,7 +70,7 @@
 
 **Regex-based SQL safety is necessary but incomplete:**
 - Risk: The validator checks destructive keywords, allowed table references, broad row-level limits, and some qualified columns, but it does not enforce an allowlist of SQL functions, cost limits, statement timeouts, or safe aggregate result sizes.
-- Files: `src/agent/sql_validator.py`, `src/backends/demo/postgres_adapter.py`, `src/backends/databricks/databricks_adapter.py`, `app/sql_validator.py`, `app/query_executor.py`
+- Files: `src/agent/sql_validator.py`, `src/backends/demo/postgres_adapter.py`, `src/backends/databricks/databricks_adapter.py`
 - Current mitigation: `src/agent/sql_validator.py` blocks common destructive keywords and unknown tables; `src/backends/demo/postgres_adapter.py` runs Postgres queries in a read-only transaction.
 - Recommendations: Add backend statement timeouts, function allowlists or denylists for risky functions, row and cell-size budgets, and tests for validator bypass attempts. For Databricks, execute through a read-only warehouse or restricted principal and add server-side query limits.
 
@@ -82,7 +82,7 @@
 
 **Raw prompts, SQL, answers, and feedback are written to CSV:**
 - Risk: Query logs and feedback logs store user questions, generated SQL, final SQL, answer previews, comments, corrected SQL, and expected answers. CSV values are not redacted and not escaped against spreadsheet formula execution.
-- Files: `src/agent/logging_utils.py`, `app/logging_utils.py`, `streamlit_app.py`, `logs/feedback.csv`
+- Files: `src/agent/logging_utils.py`, `streamlit_app.py`, `logs/feedback.csv`
 - Current mitigation: `.gitignore` ignores future `logs/*.csv` files, but `logs/feedback.csv` is already tracked.
 - Recommendations: Remove tracked runtime logs, redact sensitive values before logging, add retention rules, and prefix CSV cells beginning with `=`, `+`, `-`, or `@` before export or log writing.
 
@@ -139,7 +139,7 @@
 ## Fragile Areas
 
 **Wuerth local join logic is business-sensitive:**
-- Files: `semantic_layer/databricks/wuerth_semantic_layer.yaml`, `src/agent/langgraph_sql_agent.py`, `evaluation/wuerth_local/golden_questions.yaml`
+- Files: `semantic_layer/wuerth_local/wuerth_semantic_layer.yaml`, `src/agent/langgraph_sql_agent.py`, `evaluation/wuerth_local/golden_questions.yaml`
 - Why fragile: The key mapping uses `invoices.order_number = shipments.order_number`, `invoices.customer = shipments.shiptoparty`, and `invoices.material_price = shipments.customer_material`, while the semantic layer says the material mapping still needs business confirmation. Raw joins can multiply measures.
 - Safe modification: Do not change Wuerth joins or KPI support without updating semantic guidance, scenario rules, golden questions, and ingestion validation together.
 - Test coverage: `evaluation/test_wuerth_local_scenario.py` covers semantic constraints, but there is no committed end-to-end Wuerth CSV golden result baseline.
@@ -245,8 +245,8 @@
 - Priority: High
 
 **Legacy CLI path:**
-- What's not tested: End-to-end behavior of `main.py`, `app/sql_validator.py`, `app/query_executor.py`, and `app/prompt_builder.py`.
-- Files: `main.py`, `app/sql_validator.py`, `app/query_executor.py`, `app/prompt_builder.py`
+- What's not tested: Full Streamlit UI end-to-end behavior remains outside the unit test suite.
+- Files: `streamlit_app.py`
 - Risk: CLI behavior drifts from the Streamlit/orchestrator path and keeps weaker SQL rules alive.
 - Priority: Medium
 
@@ -264,7 +264,7 @@
 
 **Wuerth local end-to-end data flow:**
 - What's not tested: Real local CSV ingestion followed by Wuerth golden SQL execution against the created `wuerth` schema.
-- Files: `scripts/ingest_wuerth_csv_to_postgres.py`, `scripts/validate_wuerth_local_setup.py`, `evaluation/wuerth_local/golden_questions.yaml`, `semantic_layer/databricks/wuerth_semantic_layer.yaml`
+- Files: `scripts/ingest_wuerth_csv_to_postgres.py`, `scripts/validate_wuerth_local_setup.py`, `evaluation/wuerth_local/golden_questions.yaml`, `semantic_layer/wuerth_local/wuerth_semantic_layer.yaml`
 - Risk: Semantic rules can pass unit checks while ingestion or real query execution still fails.
 - Priority: High
 

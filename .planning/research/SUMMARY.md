@@ -218,7 +218,7 @@ Phases with standard patterns where extra research can be skipped:
 - `src/agent/logging_utils.py` - structured logging helpers.
 - `src/agent/memory_rbac.py` - new recommended role/action matrix.
 - `src/agent/memory_service.py` - new recommended backend service for role-aware memory actions.
-- `semantic_layer/databricks/wuerth_semantic_layer.yaml` - Wuerth local data limitations and semantic guidance.
+- `semantic_layer/wuerth_local/wuerth_semantic_layer.yaml` - Wuerth local data limitations and semantic guidance.
 - `evaluation/wuerth_local/golden_questions.yaml` - demo and limitation behavior reference.
 - `evaluation/test_presentation_export.py` - new recommended export test file.
 - `evaluation/test_visualization_spec.py` - existing or extended visualization contract tests.

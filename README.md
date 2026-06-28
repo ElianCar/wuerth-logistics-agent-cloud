@@ -103,7 +103,7 @@ wuerth.shipments
 The active Würth semantic layer is:
 
 ```text
-semantic_layer/databricks/wuerth_semantic_layer.yaml
+semantic_layer/wuerth_local/wuerth_semantic_layer.yaml
 ```
 
 The current local CSV files expose these join-key candidates:
@@ -140,7 +140,7 @@ Open:
 http://localhost:8501
 ```
 
-Select **Demo data** or **Würth local CSV data** in the sidebar.
+Select **Demo-Daten** or **Würth-Daten** in the sidebar.
 
 To start directly in Würth local mode:
 
@@ -219,9 +219,9 @@ Run Würth local golden questions after CSV ingestion:
 DATA_SCENARIO=wuerth_local python evaluation/run_evaluation.py W01 W02 W03 W04 W05
 ```
 
-## Optional Databricks
+## Optional Databricks Backend
 
-Databricks remains available only when explicitly configured:
+Databricks backend code remains available only when explicitly configured. Databricks fixture data, memory files, and connection-test scripts are not part of the current local hand-in/demo scope.
 
 ```text
 DATA_SCENARIO=databricks

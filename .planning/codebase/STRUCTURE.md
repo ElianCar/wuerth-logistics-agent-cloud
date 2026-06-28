@@ -6,7 +6,7 @@
 
 ```text
 wuerth-logistics-agent/
-├── app/                         # Legacy/compatibility PostgreSQL CLI helpers
+├── app/                         # PostgreSQL helper package reused by the active PostgreSQL adapter
 ├── assets/
 │   └── templates/               # Static output templates, including Wuerth PowerPoint master
 ├── database/                    # Demo TPC-H data generation, CSV exports, and PostgreSQL SQL scripts
@@ -27,7 +27,6 @@ wuerth-logistics-agent/
 ├── .gitignore                   # Ignored runtime files, local data, logs, and secrets
 ├── Dockerfile                   # Python 3.11 Streamlit container entry point
 ├── docker-compose.yml           # Local compose stack, contents not inspected because compose files can contain inline secrets
-├── main.py                      # Legacy CLI prototype
 ├── README.md                    # Local setup, scenarios, validation, and workflow notes
 ├── requirements.txt             # Python runtime dependencies
 └── streamlit_app.py             # Primary Streamlit application
@@ -37,7 +36,7 @@ wuerth-logistics-agent/
 
 **`src/agent/`:**
 - Purpose: Active agent runtime and deterministic post-processing.
-- Contains: LangGraph orchestration, router, SQL generation workflow, SQL validation, reporting, visualization spec, presentation planning/export, memory store/retrieval, golden runner, logging, ids, and Ollama compatibility helper.
+- Contains: LangGraph orchestration, router, SQL generation workflow, SQL validation, reporting, visualization spec, presentation planning/export, memory store/retrieval, golden runner, logging, and ids.
 - Key files: `src/agent/orchestrator.py`, `src/agent/router.py`, `src/agent/langgraph_sql_agent.py`, `src/agent/sql_validator.py`, `src/agent/reporting_agent.py`, `src/agent/visualization_spec.py`, `src/agent/presentation_planner.py`, `src/agent/presentation_export.py`, `src/agent/db.py`, `src/agent/memory_store.py`, `src/agent/golden_test_runner.py`
 
 **`src/backends/`:**
@@ -56,19 +55,19 @@ wuerth-logistics-agent/
 - Key files: `src/llm/model_adapter.py`
 
 **`app/`:**
-- Purpose: Legacy/compatibility package plus PostgreSQL helpers still reused by the active PostgreSQL adapter.
-- Contains: Database config/connection, schema introspection, semantic-layer access, prompt builder, LLM client wrapper, query executor, SQL validator, result formatting, logging utility.
-- Key files: `app/db.py`, `app/schema.py`, `app/config.py`, `app/sql_validator.py`, `app/prompt_builder.py`, `app/query_executor.py`, `app/semantic_layer.py`, `app/llm_client.py`, `app/answer_formatter.py`
+- Purpose: PostgreSQL helper package still reused by the active PostgreSQL adapter.
+- Contains: Database config/connection and schema introspection.
+- Key files: `app/db.py`, `app/schema.py`, `app/config.py`
 
 **`semantic_layer/`:**
 - Purpose: Business metadata for router prompts and SQL generation.
-- Contains: `semantic_layer/router_excerpt.yaml`, demo TPC-H semantic layer, Wuerth semantic layer reused by Databricks and local Wuerth PostgreSQL scenarios.
-- Key files: `semantic_layer/router_excerpt.yaml`, `semantic_layer/demo/tpch_semantic_layer.yaml`, `semantic_layer/databricks/wuerth_semantic_layer.yaml`
+- Contains: `semantic_layer/router_excerpt.yaml`, demo TPC-H semantic layer, and Wuerth local semantic layer.
+- Key files: `semantic_layer/router_excerpt.yaml`, `semantic_layer/demo/tpch_semantic_layer.yaml`, `semantic_layer/wuerth_local/wuerth_semantic_layer.yaml`
 
 **`memory/`:**
-- Purpose: Scenario-specific reusable solution templates, pending candidates, and error memory.
-- Contains: `memory/demo/`, `memory/databricks/`, each with `solution_templates.yaml`, `memory_candidates.yaml`, and `error_memory.yaml`.
-- Key files: `memory/demo/solution_templates.yaml`, `memory/demo/memory_candidates.yaml`, `memory/databricks/solution_templates.yaml`, `memory/databricks/memory_candidates.yaml`
+- Purpose: Scenario-specific reusable solution templates, pending candidates, approved templates, and audit data.
+- Contains current local memory under `memory/demo/` and `memory/wuerth_local/`; Databricks memory fixtures were removed from the current local hand-in/demo scope.
+- Key files: `memory/demo/master_index.yaml`, `memory/wuerth_local/master_index.yaml`, `memory/wuerth_local/approved/*.yaml`
 
 **`evaluation/`:**
 - Purpose: Test suite, golden-question fixtures, golden reference SQL, and CLI runners.
@@ -85,11 +84,6 @@ wuerth-logistics-agent/
 - Contains: `evaluation/wuerth_local/golden_questions.yaml` and reference SQL for W01 through W05.
 - Key files: `evaluation/wuerth_local/golden_questions.yaml`, `evaluation/wuerth_local/solution_sql/w01_total_revenue_limitation.sql`, `evaluation/wuerth_local/solution_sql/w05_shipments_without_invoices.sql`
 
-**`evaluation/databricks/`:**
-- Purpose: Optional Databricks golden-question fixtures.
-- Contains: `evaluation/databricks/golden_questions.yaml`.
-- Key files: `evaluation/databricks/golden_questions.yaml`
-
 **`database/`:**
 - Purpose: Local demo data setup and PostgreSQL loading scripts.
 - Contains: DuckDB TPC-H generation/export scripts, schema inspection, SQL scripts, committed TPC-H CSV exports under `database/exports/`.
@@ -102,8 +96,8 @@ wuerth-logistics-agent/
 
 **`scripts/`:**
 - Purpose: Manual and Docker-support operational scripts.
-- Contains: Wuerth CSV ingestion, Wuerth setup validation, Databricks connection test.
-- Key files: `scripts/ingest_wuerth_csv_to_postgres.py`, `scripts/validate_wuerth_local_setup.py`, `scripts/databricks/test_databricks_connection.py`
+- Contains: Wuerth CSV ingestion, Wuerth setup validation, memory index tooling, and memory retrieval evaluation.
+- Key files: `scripts/ingest_wuerth_csv_to_postgres.py`, `scripts/validate_wuerth_local_setup.py`, `scripts/build_memory_index.py`, `scripts/evaluate_memory_retrieval.py`
 
 **`assets/templates/`:**
 - Purpose: Static templates used by generated outputs.
@@ -124,12 +118,10 @@ wuerth-logistics-agent/
 
 **Entry Points:**
 - `streamlit_app.py`: Primary Streamlit app with chat, scenario configuration, memory review, approved template view, golden test mode, result rendering, and CSV/XLSX downloads.
-- `main.py`: Legacy interactive CLI for direct SQL generation and PostgreSQL execution through `app/`.
 - `evaluation/run_evaluation.py`: CLI for running golden questions against the active scenario.
 - `evaluation/run_langgraph_smoke_tests.py`: Script-level smoke test for SQL agent fallback, safety validation, correction, and logs.
 - `scripts/ingest_wuerth_csv_to_postgres.py`: CLI for importing Wuerth CSV exports into local PostgreSQL.
 - `scripts/validate_wuerth_local_setup.py`: CLI for validating Wuerth local CSV, semantic layer, scenarios, and database state.
-- `scripts/databricks/test_databricks_connection.py`: CLI for optional Databricks adapter connectivity.
 
 **Configuration:**
 - `src/config/scenarios.py`: Active scenario registry and semantic layer path mapping.
@@ -161,7 +153,7 @@ wuerth-logistics-agent/
 **Data And Semantics:**
 - `semantic_layer/router_excerpt.yaml`: Router prompt domain excerpt.
 - `semantic_layer/demo/tpch_semantic_layer.yaml`: Demo TPC-H business metadata.
-- `semantic_layer/databricks/wuerth_semantic_layer.yaml`: Wuerth semantic metadata for Databricks and local Wuerth PostgreSQL.
+- `semantic_layer/wuerth_local/wuerth_semantic_layer.yaml`: Wuerth local semantic metadata.
 - `database/exports/*.csv`: Committed demo TPC-H CSV exports.
 - `database/postgres_create_tpch_schema.sql`: TPC-H PostgreSQL schema.
 - `database/postgres_load_tpch_csv.sql`: TPC-H PostgreSQL data loading script.
@@ -193,7 +185,7 @@ wuerth-logistics-agent/
 
 **Directories:**
 - Use feature/domain directories under `src/`: `src/agent/`, `src/backends/`, `src/config/`, `src/llm/`.
-- Use scenario directories where data or fixtures vary by scenario: `memory/demo/`, `memory/databricks/`, `evaluation/wuerth_local/`, `semantic_layer/demo/`.
+- Use scenario directories where data or fixtures vary by current local scenario: `memory/demo/`, `memory/wuerth_local/`, `evaluation/demo/`, `evaluation/wuerth_local/`, `semantic_layer/demo/`, and `semantic_layer/wuerth_local/`.
 - Use adapter directories under `src/backends/` for backend-specific implementations: `src/backends/demo/`, `src/backends/databricks/`.
 - Use `solution_sql/` under each golden fixture directory for reference SQL files.
 
@@ -220,7 +212,6 @@ wuerth-logistics-agent/
 **New SQL Safety Rule:**
 - Primary code: `src/agent/sql_validator.py`
 - Template validation if relevant: `src/agent/memory_validation.py`
-- Legacy CLI rule only if preserving `main.py` behavior: `app/sql_validator.py`
 - Tests: `evaluation/test_backend_config_and_validation.py`
 
 **New Backend:**
@@ -267,7 +258,6 @@ wuerth-logistics-agent/
 
 **New Operational Script:**
 - Implementation: `scripts/<task_name>.py`
-- Databricks-only scripts: `scripts/databricks/<task_name>.py`
 - Import project code by inserting repo root into `sys.path`, matching `scripts/validate_wuerth_local_setup.py`.
 
 **Utilities:**
@@ -305,7 +295,7 @@ wuerth-logistics-agent/
 **`memory/`:**
 - Purpose: Scenario-specific persistent solution memory.
 - Generated: Mixed. Base demo/databricks YAML files are present; runtime audit files and Wuerth local memory are generated.
-- Committed: `memory/demo/` and `memory/databricks/` YAML files are present; `memory/wuerth_local/`, audit CSVs, and backups are ignored by `.gitignore`.
+- Committed: current local memory YAML files live under `memory/demo/` and `memory/wuerth_local/`; audit CSVs and backups are ignored by `.gitignore`.
 - Notes: Memory initialization and writes are centralized in `src/agent/memory_store.py`.
 
 **`evaluation/*/solution_sql/`:**
