@@ -17,7 +17,7 @@ CHART_POINT_LIMIT = 50
 TOP_N_CATEGORY_LIMIT = 8
 TOP_N_LABEL_LIMIT = 32
 EXECUTIVE_BULLET_LIMIT = 8
-SUPPORTED_INPUT_CHART_TYPES = {"none", "bar", "line", "top_n_bar"}
+SUPPORTED_INPUT_CHART_TYPES = {"none", "area", "bar", "line", "pie", "top_n_bar"}
 DEFAULT_PRESENTATION_PLANNING_MODEL = "claude-sonnet-4-6"
 DEFAULT_PRESENTATION_PLANNING_TIMEOUT_SECONDS = 30
 DEFAULT_PRESENTATION_PLANNING_MAX_ROWS = 50
@@ -258,6 +258,12 @@ def _build_deterministic_presentation_plan(*, record: dict[str, Any]) -> Present
     raw_rows = list(query.get("rows", []) or [])
     total_rows = _effective_row_count(safe_record, query, raw_rows)
     rows = _normalized_rows(columns, raw_rows)
+    chart_query = reporting.get("chart_query_result") if isinstance(reporting.get("chart_query_result"), dict) else {}
+    chart_columns = [str(column) for column in chart_query.get("columns", []) or []]
+    chart_raw_rows = list(chart_query.get("rows", []) or [])
+    chart_rows = _normalized_rows(chart_columns, chart_raw_rows) if chart_columns and chart_raw_rows else rows
+    if not chart_columns:
+        chart_columns = columns
 
     table_pages, table_row_truncated, table_column_truncated = _build_table_pages(
         columns=columns,
@@ -265,8 +271,9 @@ def _build_deterministic_presentation_plan(*, record: dict[str, Any]) -> Present
         total_rows=total_rows,
     )
     charts, chart_fallbacks = _build_chart_plans(
-        columns=columns,
-        rows=rows,
+        columns=chart_columns,
+        rows=chart_rows,
+        record=safe_record,
         reporting=reporting,
     )
     executive_bullets = _build_executive_bullets(
@@ -403,7 +410,7 @@ def _build_planner_prompt(*, payload: dict[str, Any], config: PresentationPlanni
     return (
         "Return one strict JSON object for a German PowerPoint presentation plan. "
         "Use only the provided schema fields. Do not include prose outside JSON. "
-        "Allowed chart_type values are none, bar, line, and top_n_bar. "
+        "Allowed chart_type values are none, area, bar, line, pie, and top_n_bar. "
         f"Model hint: {config.model}. Token budget: {config.max_tokens}.\n"
         f"{PLANNER_PAYLOAD_MARKER}{payload_json}"
     )
@@ -869,11 +876,14 @@ def _build_chart_plans(
     *,
     columns: list[str],
     rows: list[dict[str, str]],
+    record: dict[str, Any],
     reporting: dict[str, Any],
 ) -> tuple[list[EvidenceChartPlan], list[str]]:
     fallback_reasons: list[str] = []
     charts: list[EvidenceChartPlan] = []
     chart_plan = reporting.get("chart_plan") if isinstance(reporting.get("chart_plan"), dict) else {}
+    if not chart_plan and isinstance(record.get("chart_spec"), dict):
+        chart_plan = record["chart_spec"]
     chart_type = str(chart_plan.get("chart_type") or "none").strip().lower()
     render_requested = bool(chart_plan.get("render_allowed"))
 
@@ -895,7 +905,7 @@ def _build_chart_plans(
             )
         )
 
-    if render_requested and chart_type in {"bar", "line"}:
+    if render_requested and chart_type in {"area", "bar", "line", "pie"}:
         planned_chart, fallback_reason = _chart_from_reporting_plan(
             chart_plan=chart_plan,
             columns=columns,
@@ -954,7 +964,7 @@ def _chart_from_reporting_plan(
     chart_type = str(chart_plan.get("chart_type") or "").strip().lower()
     x_axis = str(chart_plan.get("x_axis") or "").strip()
     y_axis = str(chart_plan.get("y_axis") or "").strip()
-    if chart_type not in {"bar", "line"}:
+    if chart_type not in {"area", "bar", "line", "pie"}:
         return None, ""
     if x_axis not in columns or y_axis not in columns:
         return None, "Geplantes Diagramm konnte nicht erstellt werden, weil Achsenspalten im Ergebnis fehlen."
@@ -987,7 +997,7 @@ def _chart_from_reporting_plan(
     orientation = str(chart_plan.get("orientation") or "vertical").strip().lower()
     if orientation not in {"vertical", "horizontal"}:
         orientation = "vertical"
-    if chart_type == "line":
+    if chart_type in {"area", "line", "pie"}:
         orientation = "vertical"
 
     return (

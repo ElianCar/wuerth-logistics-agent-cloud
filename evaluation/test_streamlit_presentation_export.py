@@ -180,6 +180,15 @@ def _load_streamlit_app() -> types.ModuleType:
         ),
         can_export_presentation=lambda record: types.SimpleNamespace(can_export=True, reason=""),
     )
+    fake_reporting_agent = _module(
+        "src.agent.reporting_agent",
+        build_management_decision_support=lambda record: {
+            "question": str(record.get("user_question", "")),
+            "business_summary": "Business summary",
+            "business_implication": "Business implication",
+            "recommended_next_step": "Recommended next step",
+        },
+    )
     fake_memory_store = _module(
         "src.agent.memory_store",
         MemoryStoreError=RuntimeError,
@@ -210,6 +219,7 @@ def _load_streamlit_app() -> types.ModuleType:
     )
     fake_scenarios = _module(
         "src.config.scenarios",
+        LOCAL_SCENARIO_OPTIONS=("demo", "wuerth_local", "databricks"),
         SCENARIOS={},
         get_active_scenario=lambda: types.SimpleNamespace(label="Demo", allowed_tables=()),
         get_active_scenario_id=lambda: "demo",
@@ -242,6 +252,7 @@ def _load_streamlit_app() -> types.ModuleType:
         "src.agent.orchestrator": fake_orchestrator,
         "src.agent.logging_utils": fake_logging,
         "src.agent.presentation_export": fake_presentation_export,
+        "src.agent.reporting_agent": fake_reporting_agent,
         "src.agent.memory_store": fake_memory_store,
         "src.agent.memory_lifecycle": fake_memory_lifecycle,
         "src.agent.memory_validation": fake_memory_validation,
@@ -545,7 +556,7 @@ class StreamlitPresentationExportWarningTests(unittest.TestCase):
             with self.subTest(warning=warning):
                 self.assertEqual(app.format_presentation_warning(warning), expected)
 
-    def test_render_feedback_shows_mapped_and_unknown_warnings_in_expander(self) -> None:
+    def test_render_feedback_hides_success_warnings(self) -> None:
         app = _load_streamlit_app()
         container = _FakePresentationContainer()
         _install_fake_streamlit_runtime(app, container)
@@ -557,13 +568,11 @@ class StreamlitPresentationExportWarningTests(unittest.TestCase):
 
         app.render_presentation_export_feedback(export, container.container())
 
-        self.assertIn("PPT created with warnings.", container.warnings)
+        self.assertIn("PPT ready.", container.captions)
         self.assertIn("Slides: 5", container.captions)
-        self.assertEqual(container.expanders, [{"label": "PPT warnings", "expanded": False}])
-        self.assertIn("Tabelle wurde fuer die Folie gekuerzt.", container.writes)
-        self.assertIn("PPT-Planung nutzt den deterministischen Fallback.", container.writes)
-        self.assertIn("Raw backend warning.", container.writes)
-        self.assertNotIn("table_rows_truncated", container.writes)
+        self.assertEqual(container.warnings, [])
+        self.assertEqual(container.expanders, [])
+        self.assertEqual(container.writes, [])
 
 
 class StreamlitPresentationExportWiringTests(unittest.TestCase):
@@ -607,12 +616,10 @@ class StreamlitPresentationExportWiringTests(unittest.TestCase):
             "Download PPT",
             "Creating PPT...",
             "PPT ready.",
-            "PPT created with warnings.",
             "PPT unavailable",
             "Run a successful validated analysis with result rows, then create the deck.",
             "PPT unavailable: {reason}",
             "PPT export failed: {reason}. Fix the template or rerun a valid analysis, then create the deck again.",
-            "PPT warnings",
         ]
 
         for text in approved_copy:
@@ -725,7 +732,7 @@ class StreamlitPresentationExportWiringTests(unittest.TestCase):
         )
         self.assertIn("Slides: 5", container.captions)
 
-    def test_warning_export_keeps_download_and_shows_slide_count(self) -> None:
+    def test_warning_export_keeps_download_and_hides_warning_ui(self) -> None:
         app = _load_streamlit_app()
         record = {"run_id": "run-warning"}
         container = _FakePresentationContainer()
@@ -740,7 +747,9 @@ class StreamlitPresentationExportWiringTests(unittest.TestCase):
             app.render_presentation_export_controls(record, 0, container)
 
         self.assertEqual(container.downloads[0]["type"], "primary")
-        self.assertIn("PPT created with warnings.", container.warnings)
+        self.assertEqual(container.warnings, [])
+        self.assertEqual(container.expanders, [])
+        self.assertIn("PPT ready.", container.captions)
         self.assertIn("Slides: 5", container.captions)
 
     def test_ineligible_record_disables_create_and_shows_reason(self) -> None:
