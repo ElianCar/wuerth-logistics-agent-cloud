@@ -252,7 +252,7 @@ def create_indexes(cursor: psycopg.Cursor, schema_name: str) -> None:
     cursor.execute(
         sql.SQL(
             "CREATE INDEX IF NOT EXISTS invoices_join_idx "
-            "ON {}.{} (order_number, customer, product)"
+            "ON {}.{} (order_number, customer, material_price)"
         ).format(sql.Identifier(schema_name), sql.Identifier("invoices"))
     )
     cursor.execute(
