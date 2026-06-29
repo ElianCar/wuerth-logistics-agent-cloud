@@ -1,0 +1,9 @@
+# Würth corporate theme for the Streamlit data assistant.
+# Light mode is enforced so the black "WÜRTH" wordmark stays visible.
+[theme]
+base = "light"
+primaryColor = "#CC0000"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F5F5"
+textColor = "#4B4B4B"
+font = "sans serif"

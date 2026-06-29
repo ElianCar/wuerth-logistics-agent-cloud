@@ -1,0 +1,734 @@
+execution:
+  target_platform: postgresql
+  sql_dialect: postgresql
+  schema: wuerth
+  require_fully_qualified_table_names: true
+  allowed_tables:
+    - wuerth.invoices
+    - wuerth.shipments
+
+dataset:
+  id: wuerth_local_shipment_invoice_v1
+  name: Würth local PostgreSQL shipment and invoice semantic layer
+  description: >
+    Semantic layer for the full Würth shipment and invoice data loaded into local PostgreSQL
+    (wuerth.invoices and wuerth.shipments). Identical schema to the Databricks tables — 19 invoice
+    columns, 18 shipment columns — but numeric/date columns are properly typed via FORCED_COLUMN_TYPES
+    so no TRY_CAST is needed.
+  source_tables:
+    - wuerth.invoices
+    - wuerth.shipments
+  process_warning: >
+    Invoices and shipments do not always match one to one because invoicing and shipping can happen
+    with time delays. Joins can be non-perfect and many-to-many. Join raw tables first, then aggregate.
+
+tables:
+  invoices:
+    business_name: Invoice extract
+    technical_name: invoices
+    fully_qualified_name: wuerth.invoices
+    description: >
+      Invoice-side data in local PostgreSQL. Contains order, customer, sales organization,
+      product number, real turnover/revenue (turnover_inv), invoice quantity, and reporting dates.
+    grain: >
+      Not confirmed as unique. The data contains multiple rows per order_number and customer.
+      Do not treat order_number as unique.
+    primary_business_use:
+      - Revenue / turnover analysis (turnover_inv)
+      - Invoice-side order, customer, product analysis
+      - Matching invoice-side records to shipment-side records
+    columns:
+      calendar_day:
+        business_name: Calendar day / Kalendertag
+        data_type: timestamp
+        semantic_type: date
+        nullable: true
+        description: >
+          Primary invoice reporting date. Use for filtering or grouping invoices by day, period,
+          month, or year (e.g. WHERE calendar_day >= '2025-07-01' AND calendar_day <= '2025-12-31').
+        aliases:
+          - Kalendertag
+          - Datum
+          - calendar day
+          - date
+      calendar_yearmonth:
+        business_name: Calendar year-month
+        data_type: text
+        semantic_type: date_period
+        nullable: true
+        description: >
+          Reporting year and month as a YYYYMM string (e.g. "202512"). Use for monthly grouping/trends
+          when day-level detail is not required.
+        aliases:
+          - Jahr-Monat
+          - Monat
+          - year month
+      order_date:
+        business_name: Order date / Auftragsdatum
+        data_type: date
+        semantic_type: date
+        nullable: true
+        description: >
+          Date of the original order. For standard reporting/time filtering prefer calendar_day.
+        aliases:
+          - Auftragsdatum
+          - Bestelldatum
+      order_entry_date:
+        business_name: Order entry date
+        data_type: date
+        semantic_type: date
+        nullable: true
+      order_reason_statistic:
+        business_name: Auftragserlangungsgrund / Statistical order reason
+        data_type: text
+        semantic_type: categorical_code
+        nullable: true
+        description: Coded order reason (Auftragserlangungsgrund). Do not translate without a code dictionary.
+      order_number:
+        business_name: Order number
+        data_type: text
+        semantic_type: identifier
+        nullable: false
+        join_role: required_join_key
+        aliases:
+          - Auftrag
+          - Auftragsnummer
+      order_item:
+        business_name: Order item
+        data_type: text
+        semantic_type: uninterpreted
+        nullable: true
+        description: Order item identifier. Business meaning not confirmed for queries. Do not use for joins or grouping.
+      sales_area:
+        business_name: Sales area
+        data_type: text
+        semantic_type: organizational_code
+        nullable: true
+        description: >
+          Sales area code on the invoice side. This is NOT the Vertriebszentrum.
+          Vertriebszentrum = shipments.plant. Use sales_area only if the user explicitly asks for "sales_area".
+        aliases:
+          - sales area
+      sales_territory:
+        business_name: Sales territory
+        data_type: text
+        semantic_type: organizational_code
+        nullable: true
+        description: >
+          Secondary sales territory / region code (distinct from sales_area). NOT the Vertriebszentrum.
+          Use only when the user explicitly asks for sales territory / Vertriebsgebiet.
+        aliases:
+          - Vertriebsgebiet
+          - Verkaufsgebiet
+      customer:
+        business_name: Customer
+        data_type: text
+        semantic_type: customer_identifier
+        nullable: false
+        join_role: required_join_key
+        description: >
+          Invoice-side customer identifier. Maps to shipments.shiptoparty.
+        maps_to:
+          - table: shipments
+            column: shiptoparty
+      market_segment:
+        business_name: Market segment
+        data_type: text
+        semantic_type: uninterpreted
+        nullable: true
+        description: Business meaning not confirmed. Do not use for filtering, grouping, or analysis.
+      product:
+        business_name: Produktnummer / Product number
+        data_type: text
+        semantic_type: product_identifier
+        nullable: true
+        join_role: required_join_key
+        description: >
+          Invoice-side product/material number. Use this column when the user asks about Produkt,
+          Artikel, Produktnummer, or Material. This is the join key to shipments.customer_material.
+        aliases:
+          - Produkt
+          - Produktnummer
+          - Artikel
+          - Material
+          - Materialnummer
+        maps_to:
+          - table: shipments
+            column: customer_material
+      material_price:
+        business_name: "Produktnummer / Artikelnummer / Materialnummer (material_price)"
+        data_type: text
+        semantic_type: product_identifier
+        nullable: true
+        description: >
+          Second product number field — Produktnummer, Artikelnummer, or Materialnummer. This is a
+          distinct column from product with a different format. NOT a monetary price; do not aggregate it.
+          For joining to shipments, use product (the confirmed join key), not material_price.
+        aliases:
+          - Materialnummer
+          - Artikelnummer
+      pack_size:
+        business_name: Pack size
+        data_type: text
+        semantic_type: quantity_code
+        nullable: true
+      price_key_quantity:
+        business_name: Price key quantity (uninterpreted)
+        data_type: text
+        semantic_type: uninterpreted
+        nullable: true
+        description: >
+          Business meaning not confirmed. Do not use this column for filtering, grouping, or measures.
+      invoice_quantity_in_sales_unit_inv:
+        business_name: Invoice quantity in sales units / Bestellmenge
+        data_type: bigint
+        semantic_type: measure
+        nullable: true
+        default_aggregation: sum
+        description: Anzahl der bestellten Produkte pro Lieferposition (ordered quantity in sales units per line item).
+        aliases:
+          - Rechnungsmenge
+          - Bestellmenge
+          - invoice quantity
+          - bestellte Menge
+      turnover_inv:
+        business_name: Revenue / Umsatz (turnover)
+        data_type: numeric
+        semantic_type: monetary_measure
+        nullable: true
+        default_aggregation: sum
+        description: >
+          Invoice-side turnover/revenue. Revenue = SUM(turnover_inv). Column is typed NUMERIC in
+          PostgreSQL — no cast needed. Reported in EUR.
+        aliases:
+          - Umsatz
+          - Revenue
+          - turnover
+          - Erlös
+      freight_cost_inv:
+        business_name: Freight cost (invoice side, unpopulated)
+        data_type: numeric
+        semantic_type: monetary_measure
+        nullable: true
+        description: >
+          Invoice-side freight cost. Currently effectively zero/unpopulated in the data. Do NOT use this
+          for freight questions — use shipments.freight_costs instead.
+      statistics_currency:
+        business_name: Statistics currency
+        data_type: text
+        semantic_type: currency_code
+        nullable: true
+        description: Currency code for the monetary measures (e.g. EUR).
+
+  shipments:
+    business_name: Shipment extract
+    technical_name: shipments
+    fully_qualified_name: wuerth.shipments
+    description: >
+      Shipment-side data in local PostgreSQL. Contains shipment/delivery identifiers, delivered quantity,
+      customer party fields, customer material number, delivery type, freight cost, packing cost,
+      plant (Vertriebszentrum), shipping point (Versandstelle), and shipment date.
+    grain: >
+      Not confirmed as unique. The data contains multiple rows per order_number, shiptoparty,
+      and customer_material. Do not treat order_number as unique.
+    primary_business_use:
+      - Shipment and delivery analysis
+      - Lieferpositionen (COUNT(*)) and Lieferungen (COUNT DISTINCT delivery_number)
+      - Freight cost and packing cost analysis
+      - Vertriebszentrum (plant) and Versandstelle (shipping_point) analysis
+      - Matching shipment-side records to invoice-side records
+    columns:
+      order_number:
+        business_name: Order number
+        data_type: text
+        semantic_type: identifier
+        nullable: false
+        join_role: required_join_key
+      number_delivery_items:
+        business_name: Number of delivery items
+        data_type: bigint
+        semantic_type: count_or_item_index
+        nullable: true
+        description: >
+          Often 0 / not populated in the current data. Treat as low-confidence. Do not treat as
+          equivalent to invoices.order_item without business confirmation.
+      actual_quantity_delivered_in_sales_units:
+        business_name: Actual quantity delivered in sales units
+        data_type: numeric
+        semantic_type: measure
+        nullable: true
+        default_aggregation: sum
+        aliases:
+          - Liefermenge
+          - delivered quantity
+      customer_material:
+        business_name: Produktnummer / Customer material number
+        data_type: text
+        semantic_type: product_identifier
+        nullable: true
+        join_role: required_join_key
+        description: >
+          Shipment-side product/material number. Maps from invoices.product. Use for grouping by Produkt,
+          Artikel, or Produktnummer on the shipment side.
+        maps_from:
+          - table: invoices
+            column: product
+        aliases:
+          - Produkt
+          - Produktnummer
+          - Artikel
+          - Material
+          - Materialnummer
+      priority_of_delivery:
+        business_name: Delivery priority
+        data_type: text
+        semantic_type: categorical_code
+        nullable: true
+      delivery_type:
+        business_name: Delivery type / Lieferart
+        data_type: text
+        semantic_type: categorical_code
+        nullable: true
+        description: >
+          Delivery type code as stored in the data (abbreviation, e.g. ZAUF, ZAE). Use the abbreviation
+          exactly as it appears in the data for filtering.
+        aliases:
+          - Lieferart
+          - delivery type
+          - Liefertyp
+      shiptoparty:
+        business_name: Ship to party
+        data_type: text
+        semantic_type: customer_identifier
+        nullable: false
+        join_role: required_join_key
+        maps_from:
+          - table: invoices
+            column: customer
+      soldtoparty:
+        business_name: Sold to party
+        data_type: text
+        semantic_type: customer_identifier
+        nullable: true
+        description: >
+          Additional shipment customer party field. In the current data soldtoparty equals shiptoparty.
+          The customer join uses shiptoparty; use soldtoparty only if the user explicitly asks for it.
+      delivery_number:
+        business_name: Liefernummer / Delivery number
+        data_type: text
+        semantic_type: delivery_identifier
+        nullable: true
+        description: >
+          Unique delivery identifier. Each row in shipments is one Lieferposition (delivery line).
+          Lieferpositionen (delivery positions/rows) = COUNT(*) on shipments.
+          Anzahl der Lieferungen (number of distinct deliveries) = COUNT(DISTINCT delivery_number).
+        aliases:
+          - Liefernummer
+          - Lieferpositionen
+          - deliveries
+      freight_costs:
+        business_name: Freight costs
+        data_type: numeric
+        semantic_type: monetary_measure
+        nullable: true
+        default_aggregation: sum
+        description: >
+          Freight cost — typed NUMERIC in PostgreSQL, sum directly via SUM(freight_costs). No TRY_CAST needed.
+          This is the authoritative freight cost (invoice-side freight_cost_inv is unpopulated).
+        aliases:
+          - Frachtkosten
+          - freight cost
+      packing_costs:
+        business_name: "Packing cost (numeric). Sum directly via SUM(packing_costs)."
+        data_type: numeric
+        semantic_type: monetary_measure
+        nullable: true
+        default_aggregation: sum
+        description: >
+          Packing cost — typed NUMERIC in PostgreSQL, sum directly via SUM(packing_costs). No TRY_CAST needed.
+        aliases:
+          - Packkosten
+          - packaging cost
+      flag_direct_delivery:
+        business_name: Direct delivery flag
+        data_type: text
+        semantic_type: boolean_flag
+        nullable: true
+        description: >
+          Marks direct deliveries with the value 'X' (otherwise empty/null). Direct delivery count =
+          COUNT(DISTINCT CASE WHEN flag_direct_delivery = 'X' THEN delivery_number END).
+        aliases:
+          - Direktlieferung
+          - direct delivery
+      sorting_system:
+        business_name: Sorting system (uninterpreted)
+        data_type: text
+        semantic_type: uninterpreted
+        nullable: true
+        description: >
+          Business meaning not confirmed. Do not use this column for filtering, grouping, or measures.
+      plant:
+        business_name: Plant / Werk / Vertriebszentrum
+        data_type: text
+        semantic_type: organizational_code
+        nullable: true
+        description: >
+          Vertriebszentrum in Würth's business context. Use this column when the user asks about
+          Vertriebszentrum, Lager (at the distribution center level), Werk, or distribution center.
+          shipping_point is one organizational level BELOW plant.
+        aliases:
+          - Vertriebszentrum
+          - Werk
+          - Lager
+          - distribution center
+          - plant
+      shipping_point:
+        business_name: Shipping point / Versandstelle
+        data_type: text
+        semantic_type: warehouse_location
+        nullable: true
+        description: >
+          Versandstelle — one organizational level BELOW plant/Vertriebszentrum.
+          Use this column when the user explicitly asks about Versandstelle or shipping_point.
+          Do NOT use for Vertriebszentrum or Lager questions (use plant instead).
+        aliases:
+          - Versandstelle
+          - shipping point
+      shipment_date:
+        business_name: Shipment date / Versanddatum
+        data_type: timestamp
+        semantic_type: date
+        nullable: true
+        description: >
+          Shipment reporting date. Use for filtering or grouping shipments by day, period, month, or year
+          (e.g. shipment_date >= '2025-07-01' AND shipment_date <= '2025-12-31').
+        aliases:
+          - Versanddatum
+          - Lieferdatum
+          - shipment date
+      number_of_packages_per_delivery:
+        business_name: Number of packages per delivery
+        data_type: bigint
+        semantic_type: measure
+        nullable: true
+        default_aggregation: sum
+      number_of_pick_trays_of_shipment:
+        business_name: Number of pick trays of shipment
+        data_type: bigint
+        semantic_type: measure
+        nullable: true
+        default_aggregation: sum
+        description: Often 0 / not populated in the current data. Treat as low-confidence.
+
+joins:
+  invoices_to_shipments:
+    name: invoices_to_shipments_by_order_customer_product
+    status: candidate_defined_by_project_team_pending_business_confirmation
+    left_table: wuerth.invoices
+    right_table: wuerth.shipments
+    relationship_type: many_to_many_possible
+    join_condition:
+      - left_column: order_number
+        operator: "="
+        right_column: order_number
+      - left_column: customer
+        operator: "="
+        right_column: shiptoparty
+      - left_column: product
+        operator: "="
+        right_column: customer_material
+    sql_condition: >
+      i.order_number = s.order_number
+      AND i.customer = s.shiptoparty
+      AND i.product = s.customer_material
+    business_meaning: >
+      Links invoice-side records to shipment-side records by order number, customer/ship-to-party,
+      and product number.
+    caveats:
+      - invoices.product and shipments.customer_material can have differing string formats; the equality join may under-match.
+      - Invoices and shipments may be delayed relative to each other and therefore may not match one to one.
+    usage_rule: >
+      This 3-key join is ONLY for row-level matching questions (which invoice line matches which shipment
+      line). Because invoices.product and shipments.customer_material have different string formats, the
+      product equality matches almost nothing and the join under-matches badly. Do NOT use this join to link
+      an invoice measure (revenue, quantity) to a shipment dimension (plant, shipping_point, delivery_type) —
+      use an order_number semi-join instead (see business_rules.cross_table_measure_linkage).
+
+safe_query_patterns:
+  revenue_by_product:
+    description: Revenue (turnover) is available on the invoice side and can be summed without joining shipments.
+    example_sql: >
+      SELECT product, SUM(turnover_inv) AS revenue
+      FROM wuerth.invoices
+      GROUP BY product
+      ORDER BY revenue DESC
+      LIMIT 50;
+
+  revenue_trend_by_month:
+    description: Monthly revenue trend using calendar_yearmonth.
+    example_sql: >
+      SELECT calendar_yearmonth, SUM(turnover_inv) AS revenue
+      FROM wuerth.invoices
+      GROUP BY calendar_yearmonth
+      ORDER BY calendar_yearmonth;
+
+  revenue_for_single_plant:
+    description: >
+      Revenue (Umsatz) filtered by a single Vertriebszentrum (plant). plant lives in shipments, so link
+      via an order_number semi-join — NOT the product join (which under-matches to ~0). Each invoice row
+      is counted once.
+    example_sql: >
+      SELECT SUM(i.turnover_inv) AS revenue
+      FROM wuerth.invoices i
+      WHERE i.calendar_day >= '2025-07-01'
+        AND i.calendar_day <= '2025-12-31'
+        AND i.order_number IN (
+          SELECT order_number
+          FROM wuerth.shipments
+          WHERE plant = '9191'
+        );
+
+  revenue_by_plant:
+    description: >
+      Revenue (Umsatz) grouped by Vertriebszentrum (plant). Link invoices to a DISTINCT (order_number, plant)
+      set from shipments via order_number only. Do NOT join on product = customer_material.
+      Multi-plant caveat: an order shipped from several plants has its full revenue attributed to each
+      involved plant, so the sum across plants can exceed total revenue.
+    example_sql: >
+      SELECT s.plant, SUM(i.turnover_inv) AS revenue
+      FROM wuerth.invoices i
+      JOIN (
+        SELECT DISTINCT order_number, plant
+        FROM wuerth.shipments
+      ) s
+        ON i.order_number = s.order_number
+      GROUP BY s.plant
+      ORDER BY revenue DESC
+      LIMIT 50;
+
+  lieferpositionen_by_plant:
+    description: >
+      Lieferpositionen (delivery positions) per Vertriebszentrum (plant). This is a pure shipment measure —
+      query shipments directly, no invoice join. Each shipment row is one Lieferposition.
+    example_sql: >
+      SELECT plant, COUNT(*) AS lieferpositionen
+      FROM wuerth.shipments
+      GROUP BY plant
+      ORDER BY lieferpositionen DESC
+      LIMIT 50;
+
+  freight_costs_by_plant:
+    description: Freight cost by Vertriebszentrum (plant) — typed NUMERIC, sum directly.
+    example_sql: >
+      SELECT plant, SUM(freight_costs) AS total_freight_costs
+      FROM wuerth.shipments
+      GROUP BY plant
+      ORDER BY total_freight_costs DESC
+      LIMIT 50;
+
+  packing_costs_total:
+    description: Total packing cost — typed NUMERIC in PostgreSQL, sum directly.
+    example_sql: >
+      SELECT SUM(packing_costs) AS total_packing_costs
+      FROM wuerth.shipments;
+
+kpis:
+  invoice_kpis:
+    invoice_row_count:
+      business_name: Invoice row count
+      table: wuerth.invoices
+      formula_sql: COUNT(*)
+      required_columns:
+        - order_number
+
+    invoice_order_count:
+      business_name: Invoice order count
+      table: wuerth.invoices
+      formula_sql: COUNT(DISTINCT order_number)
+      required_columns:
+        - order_number
+
+    revenue:
+      business_name: Revenue / Umsatz
+      table: wuerth.invoices
+      formula_sql: SUM(turnover_inv)
+      required_columns:
+        - turnover_inv
+      notes: Reported in EUR. Column is NUMERIC — no cast needed.
+
+    invoice_quantity:
+      business_name: Invoice quantity in sales units / Bestellmenge
+      table: wuerth.invoices
+      formula_sql: SUM(invoice_quantity_in_sales_unit_inv)
+      required_columns:
+        - invoice_quantity_in_sales_unit_inv
+
+  shipment_kpis:
+    delivery_position_count:
+      business_name: Lieferpositionen / Delivery positions
+      table: wuerth.shipments
+      formula_sql: COUNT(*)
+      notes: >
+        Lieferpositionen = Anzahl der Shipment-Zeilen. Each row in shipments is one delivery position.
+        Use COUNT(*) for Lieferpositionen queries.
+
+    delivery_distinct_count:
+      business_name: Anzahl Lieferungen / Number of distinct deliveries
+      table: wuerth.shipments
+      formula_sql: COUNT(DISTINCT delivery_number)
+      required_columns:
+        - delivery_number
+      notes: >
+        Anzahl der Lieferungen (distinct delivery count). NOT the same as Lieferpositionen.
+        Use COUNT(DISTINCT delivery_number) only when asking for number of distinct deliveries.
+
+    delivered_quantity:
+      business_name: Delivered quantity
+      table: wuerth.shipments
+      formula_sql: SUM(actual_quantity_delivered_in_sales_units)
+      required_columns:
+        - actual_quantity_delivered_in_sales_units
+
+    freight_costs:
+      business_name: Freight costs
+      table: wuerth.shipments
+      formula_sql: SUM(freight_costs)
+      required_columns:
+        - freight_costs
+      notes: Column is NUMERIC — sum directly, no cast needed.
+
+    packing_costs:
+      business_name: Packing costs
+      table: wuerth.shipments
+      formula_sql: SUM(packing_costs)
+      required_columns:
+        - packing_costs
+      notes: Column is NUMERIC — sum directly, no cast needed.
+
+    direct_delivery_count:
+      business_name: Direct delivery count
+      table: wuerth.shipments
+      formula_sql: COUNT(DISTINCT CASE WHEN flag_direct_delivery = 'X' THEN delivery_number END)
+      required_columns:
+        - flag_direct_delivery
+        - delivery_number
+
+business_rules:
+  table_selection:
+    revenue_questions:
+      use_table: wuerth.invoices
+      rule: Revenue/Umsatz = SUM(turnover_inv) on the invoice side.
+    freight_questions:
+      use_table: wuerth.shipments
+      reason: >
+        Freight cost is in shipments.freight_costs (NUMERIC — SUM directly).
+        invoices.freight_cost_inv is unpopulated and must not be used.
+    packing_cost_questions:
+      use_table: wuerth.shipments
+      rule: Packing cost = SUM(packing_costs) on the shipment side.
+    delivery_questions:
+      use_table: wuerth.shipments
+      rule: >
+        All delivery/shipment information (Lieferpositionen, plant, shipping_point, delivery_number)
+        comes exclusively from shipments. Use shipments, not invoices, for delivery-related filtering.
+    date_filter:
+      invoices_date_column: calendar_day
+      shipments_date_column: shipment_date
+      rule: >
+        Use calendar_day for invoice-side time filtering and shipment_date for shipment-side time
+        filtering. Date range end: use <= end_date (e.g. calendar_day <= '2025-12-31').
+    combined_questions:
+      use_tables:
+        - wuerth.invoices
+        - wuerth.shipments
+      rule: >
+        For questions requiring dimensions from shipments (e.g. plant/Vertriebszentrum), JOIN the
+        raw tables first, then GROUP BY and aggregate. Do not pre-aggregate before the join.
+
+  vertriebszentrum_source:
+    rule: >
+      Vertriebszentrum = shipments.plant. Do NOT use invoices.sales_area for Vertriebszentrum.
+      For revenue by Vertriebszentrum, link invoices to shipments via order_number only (semi-join),
+      never via product = customer_material. See cross_table_measure_linkage.
+
+  cross_table_measure_linkage:
+    rule: >
+      The linkage method depends on what is measured.
+    cases:
+      pure_shipment_measure:
+        when: Lieferpositionen, Lieferungen, freight cost, packing cost, delivered quantity by plant/shipping_point/delivery_type.
+        method: Query shipments directly with GROUP BY that dimension. Do NOT join invoices.
+      pure_invoice_measure:
+        when: Revenue by product, revenue by month, total revenue (no shipment dimension).
+        method: Query invoices directly. Do NOT join shipments.
+      invoice_measure_by_shipment_dimension:
+        when: Revenue or ordered quantity filtered/grouped by plant, shipping_point, or delivery_type.
+        method: >
+          Link via order_number only. Filter by a single dimension value with a semi-join:
+          WHERE i.order_number IN (SELECT order_number FROM shipments WHERE <dimension> = '<value>').
+          Group by the dimension by joining a DISTINCT (order_number, dimension) set on order_number.
+          NEVER join on product = customer_material — the formats differ and revenue collapses to 0.
+    multi_plant_caveat: >
+      An order can ship from several plants, so its full invoice revenue is attributed to each involved
+      plant. The sum across plants can exceed total revenue. This is accepted; do not attempt to split it.
+
+  lieferpositionen_vs_lieferungen:
+    rule: >
+      Lieferpositionen (delivery positions) = COUNT(*) on shipments rows.
+      Each shipment row is one Lieferposition.
+      Anzahl Lieferungen (number of distinct deliveries) = COUNT(DISTINCT delivery_number).
+      These are different metrics — do not confuse them.
+
+  aggregation_safety:
+    avoid_fanout: true
+    safe_method: >
+      Pure shipment measures (counts, costs, quantities) by a shipment dimension: query shipments directly.
+      Invoice measures (revenue, quantity) by a shipment dimension: use an order_number semi-join so each
+      invoice row is counted once. Never link an invoice measure to a shipment dimension via the
+      product = customer_material equality — it under-matches to ~0 and would also fan out invoice rows.
+
+  uninterpreted_columns:
+    - invoices.price_key_quantity
+    - invoices.market_segment
+    - invoices.order_item
+    - shipments.sorting_system
+
+  low_confidence_columns:
+    - shipments.number_delivery_items
+    - shipments.number_of_pick_trays_of_shipment
+
+sql_generation_guidance:
+  general:
+    - Use PostgreSQL syntax only — no TRY_CAST, no Databricks catalog names.
+    - Generate exactly one SELECT statement.
+    - Use only wuerth.invoices and wuerth.shipments.
+    - Use explicit joins with aliases i for invoices and s for shipments.
+    - Add LIMIT 50 for broad row-level queries that are not aggregations.
+    - Do not use TPC-H demo tables or Databricks syntax.
+    - Do not query information_schema for business questions.
+  invoice_table:
+    - Use invoices for revenue, order, customer, product, and date questions.
+    - Revenue / Umsatz = SUM(turnover_inv) — column is NUMERIC, no cast needed. Reported in EUR.
+    - Use calendar_day for date filtering (end date inclusive: calendar_day <= 'YYYY-MM-DD'); calendar_yearmonth (YYYYMM) for monthly grouping.
+    - Use the product column (not material_price) as the join key to shipments.customer_material.
+    - material_price is a second product number field (Produktnummer/Artikelnummer) — do not aggregate it; do not join on it.
+    - sales_area is NOT the Vertriebszentrum; do not use it for Vertriebszentrum grouping.
+    - Do not use price_key_quantity, market_segment, or order_item (uninterpreted/irrelevant).
+  shipment_table:
+    - Use shipments for Lieferpositionen, delivery count, delivered quantity, delivery type, party fields, freight cost, packing cost, plant, and shipping_point.
+    - All delivery/shipment info comes exclusively from shipments — do not use invoices for delivery questions.
+    - Freight cost = SUM(freight_costs); packing cost = SUM(packing_costs) — both NUMERIC in PostgreSQL, no cast needed.
+    - Lieferpositionen (delivery positions) = COUNT(*) on shipments rows (each row = one Lieferposition).
+    - Anzahl Lieferungen (number of distinct deliveries) = COUNT(DISTINCT delivery_number).
+    - plant = Vertriebszentrum / Werk. Use s.plant when the user asks about Vertriebszentrum or Lager (at the plant level).
+    - shipping_point = Versandstelle — one level BELOW plant. Use only when user explicitly asks for Versandstelle.
+    - Use shipment_date for shipment-side date filtering (end date inclusive: shipment_date <= 'YYYY-MM-DD').
+    - Direct delivery count = COUNT(DISTINCT CASE WHEN flag_direct_delivery = 'X' THEN delivery_number END).
+    - Do not use sorting_system (uninterpreted).
+  joins:
+    - Pure shipment measures by a shipment dimension (e.g. Lieferpositionen by plant): query shipments directly, no invoice join.
+    - Invoice measures (revenue, quantity) by a shipment dimension (plant, shipping_point, delivery_type): link via order_number ONLY. Filter a single value with WHERE i.order_number IN (SELECT order_number FROM wuerth.shipments WHERE <dim> = '<value>'); group by joining a DISTINCT (order_number, dim) subquery on order_number.
+    - NEVER join invoice measures to a shipment dimension on product = customer_material — the formats differ and the equality matches almost nothing (revenue collapses to 0).
+    - The full 3-key join (order_number, customer = shiptoparty, product = customer_material) is only for row-level matching/unmatched-record questions and under-matches badly.
+    - For unmatched-record questions, use LEFT JOIN or anti join patterns.
+    - Do not use invoices.order_item for joins to shipments.

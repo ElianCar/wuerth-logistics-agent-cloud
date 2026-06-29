@@ -1,6 +1,7 @@
 .DS_Store
 .env
 .venv/
+.cache/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -12,10 +13,12 @@ evaluation/**/golden_results.jsonl
 logs/*.bak_*
 logs/*.log
 logs/*.csv
+logs/*.jsonl
 database/exports/wuerth/
 database/exports/Wuerth/
 memory/memory_candidates.yaml
 memory/memory_audit_log.csv
+memory/*audit*.csv
 memory/wuerth_local/candidates/
 memory/wuerth_local/error_memory.yaml
 memory/wuerth_local/memory_candidates.yaml

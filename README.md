@@ -103,7 +103,7 @@ wuerth.shipments
 The active Würth semantic layer is:
 
 ```text
-semantic_layer/databricks/wuerth_semantic_layer.yaml
+semantic_layer/wuerth_local/wuerth_semantic_layer.yaml
 ```
 
 The current local CSV files expose these join-key candidates:
@@ -140,13 +140,31 @@ Open:
 http://localhost:8501
 ```
 
-Select **Demo data** or **Würth local CSV data** in the sidebar.
+Select **Demo-Daten** or **Würth-Daten** in the sidebar.
 
 To start directly in Würth local mode:
 
 ```bash
 DATA_SCENARIO=wuerth_local docker compose up --build
 ```
+
+## PowerPoint Export
+
+The normal PPT path uses the Wuerth template and a local deterministic renderer. In Docker, PPT creation also uses a bounded Sonnet JSON planning step by default:
+
+```text
+PRESENTATION_EXPORT_MODE=deterministic
+PRESENTATION_PLANNING_MODE=llm
+PRESENTATION_PLANNING_MODEL=claude-sonnet-4-6
+PRESENTATION_PLANNING_MAX_TOKENS=2048
+PRESENTATION_PLANNING_TIMEOUT_SECONDS=30
+```
+
+The Sonnet planner only decides the German presentation plan: title, executive bullets, chart choice, table pages, and caveats. The PPTX file is still rendered locally with editable PowerPoint charts where possible. Set `PRESENTATION_PLANNING_MODE=deterministic` to avoid the extra API call.
+
+Planner debug records are appended to `logs/presentation_planner_debug.jsonl` by default, or to `$LOG_DIR/presentation_planner_debug.jsonl` when `LOG_DIR` is set. Each record contains the Sonnet planning prompt and response text, so treat it as analysis data and do not commit it.
+
+`PRESENTATION_EXPORT_MODE=claude` is a separate experimental path that asks Claude's PowerPoint Skill to create the file. It is intentionally not the default because it can be much more expensive and less predictable.
 
 ## Manual Ingestion
 
@@ -201,9 +219,9 @@ Run Würth local golden questions after CSV ingestion:
 DATA_SCENARIO=wuerth_local python evaluation/run_evaluation.py W01 W02 W03 W04 W05
 ```
 
-## Optional Databricks
+## Optional Databricks Backend
 
-Databricks remains available only when explicitly configured:
+Databricks backend code remains available only when explicitly configured. Databricks fixture data, memory files, and connection-test scripts are not part of the current local hand-in/demo scope.
 
 ```text
 DATA_SCENARIO=databricks

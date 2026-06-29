@@ -64,10 +64,10 @@ class WuerthLocalScenarioTests(unittest.TestCase):
     def tearDown(self) -> None:
         reset_active_scenario_id()
 
-    def test_local_sidebar_options_are_demo_and_wuerth_local(self) -> None:
+    def test_sidebar_options_include_supported_scenarios(self) -> None:
         self.assertEqual(
             [scenario.scenario_id for scenario in get_scenario_options()],
-            ["demo", "wuerth_local"],
+            ["demo", "wuerth_local", "databricks"],
         )
 
     def test_wuerth_local_scenario_uses_postgres_and_local_allowed_tables(self) -> None:
@@ -83,7 +83,6 @@ class WuerthLocalScenarioTests(unittest.TestCase):
 
         self.assertIn("wuerth.invoices", semantic_layer_text)
         self.assertIn("wuerth.shipments", semantic_layer_text)
-        self.assertIn("not_supported_with_current_local_csv", semantic_layer_text)
 
     @unittest.skipUnless(WUERTH_CSV_DIR.exists(), "Local Würth CSV exports are not present.")
     def test_wuerth_semantic_layer_matches_current_csv_headers(self) -> None:
@@ -101,7 +100,9 @@ class WuerthLocalScenarioTests(unittest.TestCase):
 
         self.assertIn(("order_number", "order_number"), pairs)
         self.assertIn(("customer", "shiptoparty"), pairs)
-        self.assertIn(("material_price", "customer_material"), pairs)
+        # `product` is the confirmed join key to shipments.customer_material (not
+        # material_price), consistent with the databricks semantic layer.
+        self.assertIn(("product", "customer_material"), pairs)
 
     def test_wuerth_validator_allows_only_wuerth_tables(self) -> None:
         valid = validate_generated_sql(

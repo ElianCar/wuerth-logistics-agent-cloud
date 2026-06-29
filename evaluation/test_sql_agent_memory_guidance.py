@@ -482,6 +482,35 @@ class SQLAgentMemoryGuidanceTests(unittest.TestCase):
         self.assertFalse(destructive.is_valid)
         self.assertFalse(disallowed.is_valid)
 
+    def test_user_correction_does_not_bypass_sql_validation(self) -> None:
+        def fake_sql_generator(_prompt: str, _model: str, _ollama_host: str, _node_name: str) -> str:
+            return "DROP TABLE customer"
+
+        def forbidden_executor(_sql: str, _question: str) -> dict[str, object]:
+            raise AssertionError("executor must not run for invalid SQL")
+
+        config = SQLAgentConfig(
+            primary_model="test-primary",
+            fallback_model="",
+            max_primary_attempts=1,
+            llm_provider="gemini",
+            ollama_host="http://localhost:11434",
+        )
+
+        result = run_sql_agent(
+            "How many customers are there?",
+            config=config,
+            user_correction="Try again with customer details.",
+            schema_loader=demo_schema_context,
+            sql_generator=fake_sql_generator,
+            sql_executor=forbidden_executor,
+            log_to_query_log=False,
+        )
+
+        self.assertFalse(result["validation_success"])
+        self.assertFalse(result["execution_success"])
+        self.assertIn("Destruktive Operation", result["sql_error"])
+
 
 if __name__ == "__main__":
     unittest.main()

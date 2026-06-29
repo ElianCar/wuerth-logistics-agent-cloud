@@ -75,7 +75,7 @@ SCENARIOS: dict[str, ScenarioConfig] = {
         backend_name="databricks",
         backend_display_name="Databricks SQL Warehouse",
         sql_dialect="Databricks SQL",
-        semantic_layer_path=PROJECT_ROOT / "semantic_layer" / "databricks" / "wuerth_semantic_layer.yaml",
+        semantic_layer_path=PROJECT_ROOT / "semantic_layer" / "wuerth_local" / "wuerth_semantic_layer.yaml",
         memory_dir=PROJECT_ROOT / "memory" / "databricks",
         evaluation_dir=PROJECT_ROOT / "evaluation" / "databricks",
         dataset_id="wuerth_shipment_invoice_v1",
@@ -87,7 +87,7 @@ SCENARIOS: dict[str, ScenarioConfig] = {
         backend_name="postgres",
         backend_display_name="PostgreSQL Würth local database",
         sql_dialect="PostgreSQL",
-        semantic_layer_path=PROJECT_ROOT / "semantic_layer" / "databricks" / "wuerth_semantic_layer.yaml",
+        semantic_layer_path=PROJECT_ROOT / "semantic_layer" / "wuerth_local" / "wuerth_semantic_layer.yaml",
         memory_dir=PROJECT_ROOT / "memory" / "wuerth_local",
         evaluation_dir=PROJECT_ROOT / "evaluation" / "wuerth_local",
         dataset_id="wuerth_local_shipment_invoice_csv_v1",
@@ -164,3 +164,40 @@ def load_semantic_layer_text(scenario: ScenarioConfig | None = None) -> str:
         raise RuntimeError(f"Semantic layer file is empty: {path}")
 
     return yaml.safe_dump(semantic_layer, sort_keys=False, allow_unicode=True)
+
+
+def load_semantic_column_metadata(scenario: ScenarioConfig | None = None) -> dict[str, dict[str, dict[str, str]]]:
+    """Flatten the semantic layer into a per-column metadata map for the chart profiler.
+
+    Returns ``{"columns": {column_name: {"semantic_type": str, "business_name": str,
+    "unit": str}}}`` by walking ``tables[*].columns``. When a column name appears in
+    multiple tables the last definition wins (Würth keys are consistent across tables).
+    Returns an empty mapping if the semantic layer file is missing or malformed.
+    """
+    active_scenario = scenario or get_active_scenario()
+    path = active_scenario.semantic_layer_path
+    if not path.exists():
+        return {"columns": {}}
+
+    with path.open("r", encoding="utf-8") as file:
+        layer = yaml.safe_load(file)
+
+    columns: dict[str, dict[str, str]] = {}
+    tables = layer.get("tables") if isinstance(layer, dict) else None
+    if isinstance(tables, dict):
+        for table in tables.values():
+            if not isinstance(table, dict):
+                continue
+            table_columns = table.get("columns")
+            if not isinstance(table_columns, dict):
+                continue
+            for column_name, meta in table_columns.items():
+                if not isinstance(meta, dict):
+                    continue
+                columns[str(column_name)] = {
+                    "semantic_type": str(meta.get("semantic_type") or ""),
+                    "business_name": str(meta.get("business_name") or ""),
+                    "unit": str(meta.get("unit") or ""),
+                }
+
+    return {"columns": columns}

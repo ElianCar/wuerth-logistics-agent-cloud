@@ -1,11 +1,13 @@
 import io
 import uuid
+from pathlib import Path
 
 import altair as alt
 import pandas as pd
 import streamlit as st
 import yaml
 
+from src.agent.access_control import TemplateAction, can
 from src.agent.db import get_active_backend_metadata
 from src.agent.golden_test_runner import (
     DEFAULT_GOLDEN_RUNTIME_MODE,
@@ -32,14 +34,30 @@ from src.agent.memory_store import (
 from src.agent.memory_lifecycle import (
     MemoryLifecycleError,
     approve_candidate_to_vsm,
+    deactivate_approved_template,
     load_approved_template_records,
+    reactivate_approved_template,
 )
 from src.agent.memory_validation import validate_proposed_template
+from src.agent.presentation_export import (
+    PPTX_MIME_TYPE,
+    build_presentation_export,
+    can_export_presentation,
+)
+from src.agent.reporting_agent import build_management_decision_support
+from src.agent.profiles import (
+    DEFAULT_PROFILE_ID,
+    DEMO_PROFILES,
+    UserProfile,
+    get_demo_profile,
+)
+from src.agent.reporting_agent import rerender_summary
+from src.agent.response_profiles import display_policy_for_response_profile
 from src.config.scenarios import (
+    LOCAL_SCENARIO_OPTIONS,
     SCENARIOS,
     get_active_scenario,
     get_active_scenario_id,
-    get_scenario_options,
     set_active_scenario_id,
 )
 from src.llm.model_adapter import (
@@ -52,6 +70,8 @@ from src.llm.model_adapter import (
     anthropic_api_key_is_placeholder,
     gemini_api_key_is_placeholder,
     get_provider,
+    get_token_usage,
+    reset_token_usage,
 )
 
 
@@ -59,6 +79,18 @@ PAGE_CHAT = "Chat"
 PAGE_GOLDEN = "Golden-Testmodus"
 PAGE_MEMORY = "Memory-Prüfung"
 PAGE_TEMPLATES = "Freigegebene Templates"
+
+# --- Würth corporate identity (colors from the PPT template theme) ---
+WUERTH_RED = "#CC0000"
+WUERTH_TEXT = "#4B4B4B"
+WUERTH_BLUE = "#0093DD"
+_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+WUERTH_LOGO_PATH = _ASSETS_DIR / "wuerth_logo.png"
+WUERTH_SHIELD_PATH = _ASSETS_DIR / "wuerth_shield.png"
+# Combined TUM + Würth logo for the top-left brand slot (provided by the user).
+TUM_WUERTH_LOGO_PATH = _ASSETS_DIR / "tum_wuerth_logo.png"
+# Categorical palette for multi-series charts; Würth red first, then theme accents.
+WUERTH_PALETTE = ["#CC0000", "#4B4B4B", "#0093DD", "#FDC300", "#008448", "#90112C", "#8B8B8D"]
 
 GOLDEN_RUNTIME_LABELS: dict[GoldenRuntimeMode, str] = {
     "orchestrator": "Real chat path: Orchestrator",
@@ -109,6 +141,99 @@ def _make_chat(name: str = "") -> dict:
 
 def active_history() -> list[dict]:
     return st.session_state.chats[st.session_state.active_chat_id]["history"]
+
+
+_PRESENTATION_UNAVAILABLE_REASON_COPY: dict[str, str] = {
+    "record_missing": "No analysis record was found.",
+    "blocked_request": "This request was blocked for safety.",
+    "clarification_needed": "This run needs clarification before export.",
+    "sql_execution_failed": "SQL execution did not finish successfully.",
+    "sql_validation_failed": "SQL validation did not pass.",
+    "missing_query_result": "No query result is available.",
+    "missing_query_columns": "The query result has no columns.",
+    "missing_query_rows": "The query result has no rows.",
+    "zero_row_count": "The query returned zero rows.",
+    "presentation_mode_invalid": "The configured PPT export mode is unsupported.",
+    "anthropic_api_key_missing": "ANTHROPIC_API_KEY is missing for Claude PPT generation.",
+    "anthropic_dependency_missing": "The Anthropic dependency is missing in the app environment.",
+    "claude_upload_failed": "Claude could not receive the template or analysis payload.",
+    "claude_generation_failed": "Claude PPT generation failed.",
+    "claude_generation_incomplete": "Claude PPT generation did not finish before the retry limit.",
+    "claude_output_missing": "Claude did not return a PowerPoint file.",
+    "claude_output_invalid": "Claude returned a file, but it was not a readable PowerPoint deck.",
+}
+
+_PRESENTATION_WARNING_COPY: dict[str, str] = {
+    "presentation_planner_fallback": "PPT-Planung nutzt den deterministischen Fallback.",
+    "planner_fallback": "PPT-Planung nutzt den deterministischen Fallback.",
+    "presentation_table_truncated": "Tabelle wurde fuer die Folie gekuerzt.",
+    "table_rows_truncated": "Tabelle wurde fuer die Folie gekuerzt.",
+    "table_columns_truncated": "Tabelle wurde fuer die Folie gekuerzt.",
+    "presentation_chart_fallback": "Diagramm wurde durch eine lesbare Ersatzdarstellung ersetzt.",
+    "chart_fallback": "Diagramm wurde durch eine lesbare Ersatzdarstellung ersetzt.",
+    "presentation_label_truncated": "Lange Beschriftungen wurden fuer die Folie gekuerzt.",
+    "label_truncated": "Lange Beschriftungen wurden fuer die Folie gekuerzt.",
+}
+
+
+def presentation_export_key(
+    record: dict,
+    index: int,
+    *,
+    active_chat_id: str | None = None,
+) -> str:
+    chat_id = active_chat_id or st.session_state.get("active_chat_id", "chat")
+    record_id = record.get("run_id") or index
+    return f"ppt_export_{chat_id}_{record_id}"
+
+
+def presentation_download_key_from_export_key(export_key: str) -> str:
+    suffix = str(export_key).removeprefix("ppt_export_")
+    return f"download_ppt_{suffix}"
+
+
+def presentation_exports_state(session_state: dict | None = None) -> dict:
+    state = session_state if session_state is not None else st.session_state
+    exports = state.setdefault("presentation_exports", {})
+    if not isinstance(exports, dict):
+        exports = {}
+        state["presentation_exports"] = exports
+    return exports
+
+
+def clear_presentation_exports_for_chat(chat_id: str, session_state: dict | None = None) -> None:
+    exports = presentation_exports_state(session_state)
+    prefix = f"ppt_export_{chat_id}_"
+    for key in list(exports):
+        if str(key).startswith(prefix):
+            del exports[key]
+
+
+def format_presentation_unavailable_reason(reason: object) -> str:
+    return _PRESENTATION_UNAVAILABLE_REASON_COPY.get(
+        str(reason or ""),
+        "The backend exporter marked this run as unavailable.",
+    )
+
+
+def format_presentation_failure_reason(reason: object) -> str:
+    raw_reason = str(reason or "unknown_reason").strip()
+    if not raw_reason:
+        return "Unknown reason"
+    if raw_reason in _PRESENTATION_UNAVAILABLE_REASON_COPY:
+        return _PRESENTATION_UNAVAILABLE_REASON_COPY[raw_reason]
+    return raw_reason.replace("_", " ").capitalize()
+
+
+def format_presentation_warning(warning: object) -> str:
+    raw_warning = str(warning or "").strip()
+    if not raw_warning:
+        return ""
+    warning_code = raw_warning.split(":", 1)[0].strip()
+    return _PRESENTATION_WARNING_COPY.get(
+        raw_warning,
+        _PRESENTATION_WARNING_COPY.get(warning_code, raw_warning),
+    )
 
 
 _STOP_WORDS = {
@@ -205,10 +330,17 @@ def render_chart_from_spec(record: dict, df: pd.DataFrame) -> None:
     if not isinstance(chart_spec, dict) or not chart_spec.get("render_allowed"):
         return
 
+    # Chart-only daily refinement: when a monthly time series collapsed to a single
+    # point, the orchestrator attaches a finer (daily) result used for the chart only.
+    chart_qr = record.get("reporting_result", {}).get("chart_query_result") if isinstance(record.get("reporting_result"), dict) else None
+    if isinstance(chart_qr, dict) and chart_qr.get("rows") and chart_qr.get("columns"):
+        df = pd.DataFrame(chart_qr.get("rows", []), columns=chart_qr.get("columns", []))
+
     chart_type = str(chart_spec.get("chart_type", "none"))
     x_axis = chart_spec.get("x_axis")
     y_axis = chart_spec.get("y_axis")
-    if chart_type not in {"bar", "line"} or not x_axis or not y_axis:
+    renderable_types = {"bar", "line", "area", "scatter", "pie", "grouped_bar", "stacked_bar", "faceted_bar", "measure_bar"}
+    if chart_type not in renderable_types or not x_axis or not y_axis:
         return
     if x_axis not in df.columns or y_axis not in df.columns:
         st.warning("Die Visualisierung konnte nicht gerendert werden, weil Spalten im Ergebnis fehlen.")
@@ -219,6 +351,173 @@ def render_chart_from_spec(record: dict, df: pd.DataFrame) -> None:
     unit = str(chart_spec.get("unit") or "")
     display_y_label = f"{y_label} ({unit})" if unit else y_label
     display_row_limit = int(chart_spec.get("display_row_limit") or len(df))
+
+    st.subheader("Visualisierung")
+    title = str(chart_spec.get("title") or "")
+    if title:
+        st.caption(title)
+    note = str(chart_spec.get("note") or "")
+    if note:
+        st.caption(note)
+
+    # --- Scatter: 2 numeric axes, no category mapping needed ---
+    if chart_type == "scatter":
+        scatter_df = df[[x_axis, y_axis]].head(display_row_limit).copy()
+        scatter_df["_chart_x"] = pd.to_numeric(scatter_df[x_axis], errors="coerce")
+        scatter_df["_chart_y"] = pd.to_numeric(scatter_df[y_axis], errors="coerce")
+        scatter_df = scatter_df.dropna(subset=["_chart_x", "_chart_y"])
+        if scatter_df.empty:
+            return
+        chart = alt.Chart(scatter_df).mark_circle(size=80, color=WUERTH_RED).encode(
+            x=alt.X("_chart_x:Q", title=x_label),
+            y=alt.Y("_chart_y:Q", title=display_y_label),
+            tooltip=[
+                alt.Tooltip("_chart_x:Q", title=x_label),
+                alt.Tooltip("_chart_y:Q", title=display_y_label),
+            ],
+        )
+        st.altair_chart(chart, use_container_width=True)
+        return
+
+    # --- Grouped / Stacked Bar: uses series_column for color grouping ---
+    if chart_type in ("grouped_bar", "stacked_bar"):
+        series_column = chart_spec.get("series_column")
+        if not series_column or series_column not in df.columns:
+            return
+        cols_needed = [x_axis, y_axis, series_column]
+        gb_df = df[cols_needed].head(display_row_limit).copy()
+        gb_df["_chart_category"] = gb_df[x_axis].astype(str)
+        gb_df["_chart_value"] = pd.to_numeric(gb_df[y_axis], errors="coerce")
+        gb_df["_chart_series"] = gb_df[series_column].astype(str)
+        gb_df = gb_df.dropna(subset=["_chart_value"])
+        if gb_df.empty:
+            return
+        category_order = [str(v) for v in chart_spec.get("category_order", [])]
+        if not category_order:
+            category_order = list(dict.fromkeys(gb_df["_chart_category"].tolist()))
+        series_label = str(series_column).replace("_", " ").title()
+        stack = True if chart_type == "stacked_bar" else None
+        chart = alt.Chart(gb_df).mark_bar().encode(
+            x=alt.X("_chart_category:N", sort=category_order, title=x_label),
+            y=alt.Y("_chart_value:Q", stack=stack, scale=alt.Scale(zero=True), title=display_y_label),
+            color=alt.Color("_chart_series:N", title=series_label, scale=alt.Scale(range=WUERTH_PALETTE)),
+            tooltip=[
+                alt.Tooltip("_chart_category:N", title=x_label),
+                alt.Tooltip("_chart_series:N", title=series_label),
+                alt.Tooltip("_chart_value:Q", title=display_y_label),
+            ],
+        )
+        st.altair_chart(chart, use_container_width=True)
+        return
+
+    # --- Faceted Bar: per facet_column, grouped bars with optional second metric ---
+    if chart_type == "faceted_bar":
+        facet_column = chart_spec.get("facet_column")
+        second_metric = chart_spec.get("second_metric")
+        if not facet_column or facet_column not in df.columns:
+            return
+        cols_needed = [x_axis, y_axis, facet_column]
+        if second_metric and second_metric in df.columns:
+            cols_needed.append(second_metric)
+        fb_df = df[cols_needed].head(display_row_limit).copy()
+
+        if second_metric and second_metric in df.columns:
+            # Reshape to long format via pd.melt so both measures appear as color groups
+            id_cols = [x_axis, facet_column]
+            fb_long = fb_df.melt(id_vars=id_cols, value_vars=[y_axis, second_metric],
+                                  var_name="_measure_name", value_name="_measure_value")
+            fb_long["_chart_category"] = fb_long[x_axis].astype(str)
+            fb_long["_chart_facet"] = fb_long[facet_column].astype(str)
+            fb_long["_chart_value"] = pd.to_numeric(fb_long["_measure_value"], errors="coerce")
+            fb_long = fb_long.dropna(subset=["_chart_value"])
+            if fb_long.empty:
+                return
+            category_order = [str(v) for v in chart_spec.get("category_order", [])]
+            if not category_order:
+                category_order = list(dict.fromkeys(fb_long["_chart_category"].tolist()))
+            base = alt.Chart(fb_long).mark_bar().encode(
+                x=alt.X("_chart_category:N", sort=category_order, title=x_label),
+                y=alt.Y("_chart_value:Q", scale=alt.Scale(zero=True), title=display_y_label),
+                color=alt.Color("_measure_name:N", title="Kennzahl", scale=alt.Scale(range=WUERTH_PALETTE)),
+                tooltip=[
+                    alt.Tooltip("_chart_facet:N", title=str(facet_column).replace("_", " ").title()),
+                    alt.Tooltip("_chart_category:N", title=x_label),
+                    alt.Tooltip("_measure_name:N", title="Kennzahl"),
+                    alt.Tooltip("_chart_value:Q", title=display_y_label),
+                ],
+            )
+            chart = base.facet(facet=alt.Facet("_chart_facet:N", title=str(facet_column).replace("_", " ").title()), columns=3)
+        else:
+            fb_df["_chart_category"] = fb_df[x_axis].astype(str)
+            fb_df["_chart_facet"] = fb_df[facet_column].astype(str)
+            fb_df["_chart_value"] = pd.to_numeric(fb_df[y_axis], errors="coerce")
+            fb_df = fb_df.dropna(subset=["_chart_value"])
+            if fb_df.empty:
+                return
+            category_order = [str(v) for v in chart_spec.get("category_order", [])]
+            if not category_order:
+                category_order = list(dict.fromkeys(fb_df["_chart_category"].tolist()))
+            base = alt.Chart(fb_df).mark_bar().encode(
+                x=alt.X("_chart_category:N", sort=category_order, title=x_label),
+                y=alt.Y("_chart_value:Q", scale=alt.Scale(zero=True), title=display_y_label),
+                color=alt.Color("_chart_category:N", legend=None, scale=alt.Scale(range=WUERTH_PALETTE)),
+                tooltip=[
+                    alt.Tooltip("_chart_facet:N", title=str(facet_column).replace("_", " ").title()),
+                    alt.Tooltip("_chart_category:N", title=x_label),
+                    alt.Tooltip("_chart_value:Q", title=display_y_label),
+                ],
+            )
+            chart = base.facet(facet=alt.Facet("_chart_facet:N", title=str(facet_column).replace("_", " ").title()), columns=3)
+        st.altair_chart(chart, use_container_width=True)
+        return
+
+    # --- Measure bar: dimensionless result, each measure column becomes a bar ---
+    if chart_type == "measure_bar":
+        measure_columns = [c for c in chart_spec.get("measure_columns", []) if c in df.columns]
+        if not measure_columns:
+            return
+        mb_df = df[measure_columns].head(display_row_limit).copy()
+        label_map = {c: str(c).replace("_", " ").title() for c in measure_columns}
+        if len(mb_df) <= 1:
+            long_df = mb_df.melt(var_name="_measure", value_name="_chart_value")
+            long_df["_chart_category"] = long_df["_measure"].map(label_map)
+            long_df["_chart_value"] = pd.to_numeric(long_df["_chart_value"], errors="coerce")
+            long_df = long_df.dropna(subset=["_chart_value"])
+            if long_df.empty:
+                return
+            chart = alt.Chart(long_df).mark_bar().encode(
+                x=alt.X("_chart_category:N", sort=list(label_map.values()), title="Kennzahl"),
+                y=alt.Y("_chart_value:Q", scale=alt.Scale(zero=True), title="Wert"),
+                color=alt.Color("_chart_category:N", legend=None, scale=alt.Scale(range=WUERTH_PALETTE)),
+                tooltip=[
+                    alt.Tooltip("_chart_category:N", title="Kennzahl"),
+                    alt.Tooltip("_chart_value:Q", title="Wert"),
+                ],
+            )
+        else:
+            mb_df["_row"] = range(1, len(mb_df) + 1)
+            long_df = mb_df.melt(id_vars="_row", var_name="_measure", value_name="_chart_value")
+            long_df["_measure_label"] = long_df["_measure"].map(label_map)
+            long_df["_chart_category"] = long_df["_row"].astype(str)
+            long_df["_chart_value"] = pd.to_numeric(long_df["_chart_value"], errors="coerce")
+            long_df = long_df.dropna(subset=["_chart_value"])
+            if long_df.empty:
+                return
+            chart = alt.Chart(long_df).mark_bar().encode(
+                x=alt.X("_chart_category:N", title="Zeile"),
+                xOffset=alt.XOffset("_measure_label:N"),
+                y=alt.Y("_chart_value:Q", scale=alt.Scale(zero=True), title="Wert"),
+                color=alt.Color("_measure_label:N", title="Kennzahl", scale=alt.Scale(range=WUERTH_PALETTE)),
+                tooltip=[
+                    alt.Tooltip("_chart_category:N", title="Zeile"),
+                    alt.Tooltip("_measure_label:N", title="Kennzahl"),
+                    alt.Tooltip("_chart_value:Q", title="Wert"),
+                ],
+            )
+        st.altair_chart(chart, use_container_width=True)
+        return
+
+    # --- Standard single-axis charts (bar, area, line, pie) ---
     chart_df = df[[x_axis, y_axis]].head(display_row_limit).copy()
     chart_df["_chart_category"] = chart_df[x_axis].astype(str)
     chart_df["_chart_value"] = pd.to_numeric(chart_df[y_axis], errors="coerce")
@@ -231,35 +530,40 @@ def render_chart_from_spec(record: dict, df: pd.DataFrame) -> None:
     if not category_order:
         category_order = list(dict.fromkeys(chart_df["_chart_category"].tolist()))
 
-    st.subheader("Visualisierung")
-    title = str(chart_spec.get("title") or "")
-    if title:
-        st.caption(title)
-    note = str(chart_spec.get("note") or "")
-    if note:
-        st.caption(note)
-
     tooltip = [
         alt.Tooltip("_chart_category:N", title=x_label),
         alt.Tooltip("_chart_value:Q", title=display_y_label),
     ]
     base_chart = alt.Chart(chart_df)
-    if chart_type == "bar":
+
+    if chart_type == "pie":
+        chart = base_chart.mark_arc(innerRadius=50 if chart_spec.get("donut") else 0).encode(
+            theta=alt.Theta("_chart_value:Q"),
+            color=alt.Color("_chart_category:N", sort=category_order, title=x_label, scale=alt.Scale(range=WUERTH_PALETTE)),
+            tooltip=tooltip,
+        )
+        st.altair_chart(chart, use_container_width=True)
+    elif chart_type == "bar":
         if str(chart_spec.get("orientation") or "vertical") == "horizontal":
-            chart = base_chart.mark_bar().encode(
+            chart = base_chart.mark_bar(color=WUERTH_RED).encode(
                 y=alt.Y("_chart_category:N", sort=category_order, title=x_label),
                 x=alt.X("_chart_value:Q", scale=alt.Scale(zero=True), title=display_y_label),
                 tooltip=tooltip,
             )
         else:
-            chart = base_chart.mark_bar().encode(
+            chart = base_chart.mark_bar(color=WUERTH_RED).encode(
                 x=alt.X("_chart_category:N", sort=category_order, title=x_label),
                 y=alt.Y("_chart_value:Q", scale=alt.Scale(zero=True), title=display_y_label),
                 tooltip=tooltip,
             )
         st.altair_chart(chart, use_container_width=True)
-    elif chart_type == "line":
-        chart = base_chart.mark_line(point=True).encode(
+    elif chart_type in ("area", "line"):
+        mark = (
+            base_chart.mark_area(point=True, color=WUERTH_RED)
+            if chart_type == "area"
+            else base_chart.mark_line(point=True, color=WUERTH_RED)
+        )
+        chart = mark.encode(
             x=alt.X("_chart_category:N", sort=category_order, title=x_label),
             y=alt.Y("_chart_value:Q", title=display_y_label),
             order=alt.Order("_row_order:Q"),
@@ -268,7 +572,30 @@ def render_chart_from_spec(record: dict, df: pd.DataFrame) -> None:
         st.altair_chart(chart, use_container_width=True)
 
 
-def render_reporting_summary(record: dict) -> None:
+def _ensure_summary_matches_profile(record: dict, profile: UserProfile) -> None:
+    """Re-render the stored summary if it was generated for a different profile.
+
+    Switching the Demo-Nutzerprofil triggers a Streamlit rerun; here we lazily
+    regenerate only the natural-language summary (one reporting-LLM call, no SQL)
+    for the newly selected audience and persist it back into the record.
+    """
+    reporting = record.get("reporting_result")
+    if not isinstance(reporting, dict):
+        return
+    target = profile.response_profile.value
+    current = str((reporting.get("audit") or {}).get("response_profile") or "")
+    if current == target:
+        return
+    language = str(record.get("language") or "de")
+    with st.spinner("Zusammenfassung wird für das gewählte Profil neu erstellt..."):
+        record["reporting_result"] = rerender_summary(
+            reporting,
+            response_profile=target,
+            language=language,
+        )
+
+
+def render_reporting_summary(record: dict, heading: str = "Management-Zusammenfassung") -> None:
     reporting = record.get("reporting_result")
     if not isinstance(reporting, dict):
         return
@@ -277,7 +604,7 @@ def render_reporting_summary(record: dict) -> None:
     if not summary:
         return
 
-    st.subheader("Management-Zusammenfassung")
+    st.subheader(heading)
     st.markdown(summary)
 
     kpi_cards = reporting.get("kpi_cards", [])
@@ -300,7 +627,182 @@ def render_reporting_audit(record: dict) -> None:
         st.json(audit, expanded=False)
 
 
+def render_sql_and_sources(record: dict) -> None:
+    with st.expander("SQL-Anweisung", expanded=False):
+        st.code(record.get("final_sql") or record.get("generated_sql", "") or "(kein SQL erzeugt)", language="sql")
+
+    source_tables = record.get("source_tables", [])
+    st.subheader("Quelltabellen")
+    if source_tables:
+        for table in source_tables:
+            st.markdown(f"- `{table}`")
+    else:
+        st.write("Es wurden keine Quelltabellen erkannt.")
+
+
+def render_technical_debug(record: dict) -> None:
+    debug_payload = {
+        "scenario": get_active_scenario_id(),
+        "validation_success": record.get("validation_success", record.get("sql_valid")),
+        "execution_success": record.get("execution_success"),
+        "result_status": record.get("result_status"),
+        "selected_model": record.get("selected_model") or record.get("model_used"),
+        "primary_model": record.get("primary_model") or record.get("model_primary"),
+        "fallback_model": record.get("fallback_model"),
+        "secondary_fallback_model": record.get("secondary_fallback_model"),
+        "fallback_used": record.get("fallback_used"),
+        "memory_retrieval": record.get("memory_retrieval", {}),
+        "template_candidates": record.get("template_candidates", []),
+        "router_context": record.get("router_context", {}),
+        "token_usage": record.get("token_usage", {}),
+    }
+    with st.expander("Debug-Details", expanded=False):
+        st.json(debug_payload, expanded=False)
+
+
+def _legacy_render_management_decision_support(record: dict) -> None:
+    reporting = record.get("reporting_result")
+    if not isinstance(reporting, dict):
+        return
+    interpretation = str(reporting.get("interpretation") or "").strip()
+    caveats = reporting.get("caveats", [])
+    if interpretation:
+        st.subheader("Business Implication")
+        st.write(interpretation)
+    st.subheader("Recommended Next Step")
+    if caveats:
+        st.write("Nutze das Ergebnis als Entscheidungsgrundlage und prüfe die genannten Einschränkungen vor operativen Maßnahmen.")
+    else:
+        st.write("Nutze das Ergebnis als Entscheidungsgrundlage und vergleiche es bei Bedarf mit weiteren Segmenten oder Zeiträumen.")
+
+
+def render_management_decision_support(record: dict) -> None:
+    support = build_management_decision_support(record)
+    if support.get("business_summary"):
+        st.subheader("Business Summary")
+        st.write(support["business_summary"])
+    if support.get("business_implication"):
+        st.subheader("Business Implication")
+        st.write(support["business_implication"])
+    st.subheader("Recommended Next Step")
+    st.write(support["recommended_next_step"])
+
+
+def render_collapsed_technical_details(record: dict) -> None:
+    with st.expander("Technische Details", expanded=False):
+        render_sql_and_sources(record)
+        if record.get("sql_error"):
+            st.subheader("SQL-Fehler")
+            st.error(record["sql_error"])
+        render_step_log(record)
+
+
+def _presentation_export_warnings(export: object) -> list[str]:
+    warnings = getattr(export, "warnings", []) or []
+    return [str(warning) for warning in warnings if str(warning)]
+
+
+def render_presentation_export_feedback(export: object, container=st) -> None:
+    slide_count = int(getattr(export, "slide_count", 0) or 0)
+    container.caption("PPT ready.")
+    if slide_count:
+        container.caption(f"Slides: {slide_count}")
+
+
+def render_presentation_export_failure(export: object, container=st) -> None:
+    reason = format_presentation_failure_reason(getattr(export, "unavailable_reason", ""))
+    container.error(
+        f"PPT export failed: {reason}. Fix the template or rerun a valid analysis, then create the deck again."
+    )
+    warnings = _presentation_export_warnings(export)
+    if warnings:
+        with container.expander("PPT warnings", expanded=False):
+            for warning in warnings:
+                st.write(warning)
+
+
+def _render_ppt_token_caption(export_key: str, slot) -> None:
+    usage = st.session_state.get("ppt_token_usage", {}).get(export_key)
+    line = _format_token_usage(usage)
+    if line:
+        slot.caption(f"PPT-Generierung — {line}")
+
+
+def render_presentation_export_controls(record: dict, index: int, container=st) -> None:
+    eligibility = can_export_presentation(record)
+    export_key = presentation_export_key(record, index)
+    download_key = presentation_download_key_from_export_key(export_key)
+    exports = presentation_exports_state()
+    export = exports.get(export_key)
+    control_slot = container.empty()
+    feedback_slot = container.container()
+
+    if getattr(export, "available", False):
+        control_slot.download_button(
+            "Download PPT",
+            data=export.content,
+            file_name=export.filename,
+            mime=export.mime_type or PPTX_MIME_TYPE,
+            key=download_key,
+            type="primary",
+            use_container_width=True,
+        )
+        render_presentation_export_feedback(export, feedback_slot)
+        _render_ppt_token_caption(export_key, feedback_slot)
+        return
+
+    reason = format_presentation_unavailable_reason(getattr(eligibility, "reason", ""))
+    if not getattr(eligibility, "can_export", False):
+        control_slot.button(
+            "Create PPT",
+            key=f"create_{export_key}",
+            disabled=True,
+            use_container_width=True,
+        )
+        feedback_slot.caption(f"PPT unavailable: {reason}")
+        return
+
+    clicked = control_slot.button(
+        "Create PPT",
+        key=f"create_{export_key}",
+        type="primary",
+        use_container_width=True,
+    )
+    if clicked:
+        reset_token_usage()
+        with st.spinner("Creating PPT..."):
+            export = build_presentation_export(record=record, include_closing=False)
+        exports[export_key] = export
+        st.session_state.setdefault("ppt_token_usage", {})[export_key] = get_token_usage()
+
+    if getattr(export, "available", False):
+        control_slot.download_button(
+            "Download PPT",
+            data=export.content,
+            file_name=export.filename,
+            mime=export.mime_type or PPTX_MIME_TYPE,
+            key=download_key,
+            type="primary",
+            use_container_width=True,
+        )
+        render_presentation_export_feedback(export, feedback_slot)
+        _render_ppt_token_caption(export_key, feedback_slot)
+    elif export is not None:
+        render_presentation_export_failure(export, feedback_slot)
+
+
+def render_presentation_unavailable_compact(record: dict) -> None:
+    eligibility = can_export_presentation(record)
+    if getattr(eligibility, "can_export", False):
+        return
+    reason = format_presentation_unavailable_reason(getattr(eligibility, "reason", ""))
+    st.caption("PPT unavailable")
+    st.caption("Run a successful validated analysis with result rows, then create the deck.")
+    st.caption(f"PPT unavailable: {reason}")
+
+
 def initialize_state() -> None:
+    st.session_state.setdefault("selected_profile_id", DEFAULT_PROFILE_ID)
     if "data_scenario" in st.session_state:
         set_active_scenario_id(st.session_state.data_scenario)
     if "chats" not in st.session_state:
@@ -317,6 +819,7 @@ def initialize_state() -> None:
     st.session_state.setdefault("last_errored_question_ids", [])
     st.session_state.setdefault("last_golden_result_summary", {})
     st.session_state.setdefault("last_golden_results", [])
+    presentation_exports_state()
     initialize_memory_files()
 
 
@@ -337,6 +840,48 @@ def render_flash() -> None:
         st.error(message)
     else:
         st.info(message)
+
+
+def current_profile() -> UserProfile:
+    return get_demo_profile(st.session_state.get("selected_profile_id", DEFAULT_PROFILE_ID))
+
+
+def actor_kwargs(profile: UserProfile) -> dict[str, str]:
+    return {
+        "actor_id": profile.profile_id,
+        "actor_role": profile.permission_role.value,
+    }
+
+
+def render_demo_profile_selector() -> UserProfile:
+    profile_ids = list(DEMO_PROFILES)
+    current_profile_id = st.session_state.get("selected_profile_id", DEFAULT_PROFILE_ID)
+    if current_profile_id not in DEMO_PROFILES:
+        current_profile_id = DEFAULT_PROFILE_ID
+    st.header("Demo-Nutzerprofil")
+    selected_profile_id = st.selectbox(
+        "Demo-Nutzerprofil auswählen",
+        profile_ids,
+        index=profile_ids.index(current_profile_id),
+        key="selected_profile_id",
+        format_func=lambda profile_id: (
+            f"{DEMO_PROFILES[profile_id].avatar} {DEMO_PROFILES[profile_id].display_name}"
+        ),
+        accept_new_options=False,
+        label_visibility="collapsed",
+        width="stretch",
+    )
+    selected_profile_id = selected_profile_id or current_profile_id
+    return get_demo_profile(selected_profile_id)
+
+
+def scenario_display_label(scenario_id: str) -> str:
+    labels = {
+        "demo": "Demo-Daten",
+        "wuerth_local": "Würth-Daten",
+        "databricks": "Würth Databricks",
+    }
+    return labels.get(scenario_id, SCENARIOS[scenario_id].label)
 
 
 def build_streamlit_llm_config() -> SQLAgentConfig:
@@ -366,24 +911,119 @@ def build_streamlit_llm_config() -> SQLAgentConfig:
     return env_config
 
 
+def _img_data_uri(path: Path) -> str:
+    """Return a base64 data URI for a local PNG (empty string if missing)."""
+    import base64
+
+    if not path.exists():
+        return ""
+    return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+
+
 def apply_app_styles() -> None:
+    logo_uri = _img_data_uri(WUERTH_LOGO_PATH)
     st.markdown(
-        """
+        f"""
         <style>
         p code,
-        li code {
+        li code {{
             white-space: nowrap;
             word-break: keep-all;
             overflow-wrap: normal;
-        }
+        }}
+
+        /* --- Würth branding --- */
+        /* Remove the chat pictograms (avatars) next to question and model/answer. */
+        [data-testid^="stChatMessageAvatar"],
+        [data-testid^="chatAvatarIcon-"] {{
+            display: none !important;
+        }}
+        /* Headings and titles in Würth anthracite, with a red accent for the main title. */
+        h1, h2, h3 {{
+            color: {WUERTH_TEXT};
+        }}
+        /* Active tab underline / labels in Würth red. */
+        .stTabs [aria-selected="true"] {{
+            color: {WUERTH_RED} !important;
+        }}
+        .stTabs [data-baseweb="tab-highlight"] {{
+            background-color: {WUERTH_RED} !important;
+        }}
+        /* Links in Würth red. */
+        a, a:visited {{
+            color: {WUERTH_RED};
+        }}
+        /* Metric values (e.g. "Modell", "Status") in Würth red. */
+        [data-testid="stMetricValue"] {{
+            color: {WUERTH_RED};
+        }}
+        /* Expander headers (Ablaufschritte, SQL-Anweisung) get a subtle red accent. */
+        [data-testid="stExpander"] summary:hover {{
+            color: {WUERTH_RED};
+        }}
+        /* Primary buttons in Würth red. */
+        .stButton > button[kind="primary"],
+        .stDownloadButton > button[kind="primary"] {{
+            background-color: {WUERTH_RED};
+            border-color: {WUERTH_RED};
+            color: #FFFFFF;
+        }}
+
+        /* --- Würth-branded chat input bar (bottom) --- */
+        /* No red bar: keep the default background, just make room on the left for the
+           Würth logo card shown next to the input. */
+        /* Reserve space on the left of the input bar for the Würth logo card. */
+        [data-testid="stBottomBlockContainer"] {{
+            padding-left: 150px;
+        }}
+        /* The actual input box: white with a neutral light border (only the send
+           button is red). */
+        [data-testid="stChatInput"] {{
+            position: relative;
+            overflow: visible;
+            border: 1px solid #D0D0D0;
+            border-radius: 12px;
+            background-color: #FFFFFF;
+        }}
+        /* Würth logo card, anchored to and vertically centred on the input bar itself
+           so it sits exactly at the same height as the chat input. */
+        [data-testid="stChatInput"]::before {{
+            content: "";
+            position: absolute;
+            left: -134px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 116px;
+            height: 46px;
+            background: #FFFFFF url("{logo_uri}") no-repeat center;
+            background-size: 96px auto;
+            border: 1px solid #D9D9D9;
+            border-radius: 8px;
+        }}
+        [data-testid="stChatInput"] textarea {{
+            color: {WUERTH_TEXT};
+        }}
+        /* Solid red send button with a white arrow. */
+        [data-testid="stChatInputSubmitButton"] {{
+            background-color: {WUERTH_RED};
+            border-radius: 8px;
+        }}
+        [data-testid="stChatInputSubmitButton"] svg {{
+            fill: #FFFFFF;
+        }}
+        [data-testid="stChatInputSubmitButton"]:hover {{
+            background-color: #A30000;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def render_sidebar() -> tuple[str, SQLAgentConfig]:
+def render_sidebar() -> tuple[str, SQLAgentConfig, UserProfile]:
     with st.sidebar:
+        profile = render_demo_profile_selector()
+
         st.header("Navigation")
         page = st.radio(
             "Ansicht",
@@ -421,6 +1061,7 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
                 st.warning(f"„{chat['name'] or 'Neuer Chat'}\" löschen?")
                 c1, c2 = st.columns(2)
                 if c1.button("Ja, löschen", key=f"confirm_del_{chat_id}", type="primary", use_container_width=True):
+                    clear_presentation_exports_for_chat(chat_id)
                     del st.session_state.chats[chat_id]
                     if st.session_state.active_chat_id == chat_id:
                         st.session_state.active_chat_id = next(iter(st.session_state.chats))
@@ -446,16 +1087,24 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
                             st.rerun()
 
         st.header("Konfiguration")
-        scenario_ids = [scenario.scenario_id for scenario in get_scenario_options()]
+        scenario_ids = [scenario_id for scenario_id in LOCAL_SCENARIO_OPTIONS if scenario_id in SCENARIOS]
         default_scenario_id = st.session_state.get("data_scenario", get_active_scenario_id())
-        default_index = scenario_ids.index(default_scenario_id) if default_scenario_id in scenario_ids else 0
+        if default_scenario_id not in scenario_ids:
+            default_scenario_id = scenario_ids[0]
+        if st.session_state.get("data_scenario_selector") not in (None, *scenario_ids):
+            st.session_state.data_scenario_selector = default_scenario_id
+        st.subheader("Datenszenario")
         selected_scenario_id = st.selectbox(
-            "Data scenario",
+            "Datenszenario auswählen",
             scenario_ids,
-            index=default_index,
+            index=scenario_ids.index(default_scenario_id),
             key="data_scenario_selector",
-            format_func=lambda scenario_id: SCENARIOS[scenario_id].label,
+            format_func=scenario_display_label,
+            accept_new_options=False,
+            label_visibility="collapsed",
+            width="stretch",
         )
+        selected_scenario_id = selected_scenario_id or default_scenario_id
         previous_scenario_id = st.session_state.get("data_scenario")
         st.session_state.data_scenario = selected_scenario_id
         if previous_scenario_id and previous_scenario_id != selected_scenario_id:
@@ -470,6 +1119,7 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
             st.session_state.last_errored_question_ids = []
             st.session_state.last_golden_result_summary = {}
             st.session_state.last_golden_results = []
+            st.session_state.presentation_exports = {}
         set_active_scenario_id(selected_scenario_id)
         initialize_memory_files()
         scenario = get_active_scenario()
@@ -484,15 +1134,13 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
             }
             st.error(f"Datenbank-Backend ist nicht korrekt konfiguriert: {error}")
 
-        st.write(f"Active data scenario: `{backend_metadata.get('scenario_label', scenario.label)}`")
+        st.write(f"Aktives Datenszenario: `{scenario_display_label(scenario.scenario_id)}`")
         st.write(f"Backend: `{backend_metadata.get('backend_display_name', backend_metadata.get('backend_name', ''))}`")
         st.write(f"SQL-Dialekt: `{backend_metadata.get('sql_dialect', '')}`")
-        st.write(f"Semantic layer: `{backend_metadata.get('semantic_layer', scenario.semantic_layer_filename)}`")
+        st.write(f"Semantischer Layer: `{backend_metadata.get('semantic_layer', scenario.semantic_layer_filename)}`")
         if backend_metadata.get("auth_type"):
             st.write(f"Databricks-Auth-Modus: `{backend_metadata.get('auth_type', '')}`")
         st.write(f"LLM-Anbieter: `{config.llm_provider}`")
-        st.write(f"Primäres Modell: `{config.primary_model}`")
-        st.write(f"Fallback-Modell: `{config.fallback_model}`")
         st.write(f"Max. primäre Versuche: `{config.max_primary_attempts}`")
         if config.llm_provider == "anthropic":
             if anthropic_api_key_is_placeholder():
@@ -514,7 +1162,7 @@ def render_sidebar() -> tuple[str, SQLAgentConfig]:
         for table in allowed_tables:
             st.write(f"- `{table}`")
 
-    return page, config
+    return page, config, profile
 
 
 def write_feedback(record: dict, rating: str, comment: str) -> str:
@@ -532,12 +1180,71 @@ def write_feedback(record: dict, rating: str, comment: str) -> str:
     )
 
 
-def retry_with_comment(record: dict, index: int, comment: str, config: SQLAgentConfig) -> None:
+def build_retry_context(
+    record: dict,
+    index: int,
+    comment: str,
+    profile: UserProfile | None = None,
+) -> dict:
+    router_context = record.get("router_context", {})
+    if not isinstance(router_context, dict):
+        router_context = {}
+    previous_error = record.get("error_message") or record.get("sql_error") or ""
+    context = {
+        "original_question": record.get("user_question") or record.get("question") or "",
+        "previous_assistant_answer": record.get("final_answer") or record.get("answer") or "",
+        "previous_status": record.get("result_status") or "",
+        "previous_router_decision": {
+            "intent": record.get("intent") or router_context.get("intent", ""),
+            "needs_sql": record.get("needs_sql", router_context.get("needs_sql", "")),
+            "needs_clarification": record.get(
+                "needs_clarification",
+                router_context.get("needs_clarification", ""),
+            ),
+            "blocked_or_unsafe": record.get(
+                "blocked_or_unsafe",
+                router_context.get("blocked_or_unsafe", ""),
+            ),
+            "complexity_tier": record.get("complexity_tier") or router_context.get("complexity_tier", ""),
+        },
+        "previous_error": previous_error,
+        "user_comment": comment.strip(),
+        "retry_parent_index": index,
+        "scenario": get_active_scenario_id(),
+    }
+    if profile is not None:
+        context.update(
+            {
+                "role_profile": profile.profile_id,
+                "permission_role": profile.permission_role.value,
+                "response_profile": profile.response_profile.value,
+            }
+        )
+    return context
+
+
+def apply_retry_metadata(record: dict, retry_context: dict, retry_mode: str) -> None:
+    record["retry_context"] = retry_context
+    record["retry_context_used"] = True
+    record["retry_mode"] = retry_mode
+    record["retry_parent_question"] = retry_context.get("original_question", "")
+    record["retry_parent_assistant_answer"] = retry_context.get("previous_assistant_answer", "")
+    record["retry_user_comment"] = retry_context.get("user_comment", "")
+
+
+def retry_with_comment(
+    record: dict,
+    index: int,
+    comment: str,
+    config: SQLAgentConfig,
+    profile: UserProfile | None = None,
+) -> None:
     if not comment.strip():
         st.warning("Bitte zuerst eine kurze Korrektur eingeben.")
         return
 
     _steps_log: list[dict] = []
+    retry_context = build_retry_context(record, index, comment, profile)
     write_feedback(record, "neutral", f"retry_with_comment: {comment}")
     with st.status("Wiederhole den Lauf mit deiner Korrektur...", expanded=True) as _retry_status:
         def _retry_on_step(node: str, duration: float, metadata: dict) -> None:
@@ -562,10 +1269,13 @@ def retry_with_comment(record: dict, index: int, comment: str, config: SQLAgentC
             previous_sql_error=record.get("sql_error", ""),
             previous_final_answer=record.get("final_answer", ""),
             user_correction=comment.strip(),
+            retry_context=retry_context,
             step_callback=_retry_on_step,
+            response_profile=current_profile().response_profile.value,
         )
         _retry_status.update(label="Fertig ✓", state="complete", expanded=False)
     corrected_record["agent_step_log"] = _steps_log
+    apply_retry_metadata(corrected_record, retry_context, "comment_retry")
     active_history()[index] = corrected_record
     st.rerun()
 
@@ -575,8 +1285,10 @@ def rerun_with_fallback(
     index: int,
     config: SQLAgentConfig,
     comment: str = "",
+    profile: UserProfile | None = None,
 ) -> None:
     _steps_log: list[dict] = []
+    retry_context = build_retry_context(record, index, comment, profile) if comment.strip() else {}
     write_feedback(record, "neutral", f"fallback_requested: {comment}")
     with st.status("Wiederhole den Lauf mit dem Fallback-Modell...", expanded=True) as _fb_status:
         def _fb_on_step(node: str, duration: float, metadata: dict) -> None:
@@ -594,10 +1306,14 @@ def rerun_with_fallback(
             previous_sql_error=record.get("sql_error", ""),
             previous_final_answer=record.get("final_answer", ""),
             user_correction=comment.strip(),
+            retry_context=retry_context or None,
             step_callback=_fb_on_step,
+            response_profile=current_profile().response_profile.value,
         )
         _fb_status.update(label="Fertig ✓", state="complete", expanded=False)
     fallback_record["agent_step_log"] = _steps_log
+    if retry_context:
+        apply_retry_metadata(fallback_record, retry_context, "fallback_retry")
     active_history()[index] = fallback_record
     st.rerun()
 
@@ -621,15 +1337,20 @@ def can_create_template_candidate(record: dict) -> bool:
     )
 
 
-def render_candidate_creation(record: dict, index: int) -> None:
+def render_candidate_creation(record: dict, index: int, profile: UserProfile) -> None:
     if not can_create_template_candidate(record):
+        return
+    if not can(profile.permission_role, TemplateAction.CREATE_CANDIDATE):
         return
 
     st.subheader("Memory")
     if st.button("YAML Template Vorschlag erstellen", key=f"create_candidate_{index}"):
         try:
-            _candidate, created, message = create_candidate_from_run(record)
-        except MemoryStoreError as error:
+            _candidate, created, message = create_candidate_from_run(
+                record,
+                **actor_kwargs(profile),
+            )
+        except (MemoryStoreError, PermissionError) as error:
             st.error(str(error))
             return
 
@@ -805,7 +1526,7 @@ def render_memory_approval_result(result: dict) -> None:
         st.info("Der Smoke-Test hat keinen Treffer oberhalb des Schwellenwerts gefunden.")
 
 
-def render_memory_review_view() -> None:
+def render_memory_review_view(profile: UserProfile) -> None:
     st.title("Memory-Prüfung")
     render_flash()
     active_scenario = get_active_scenario()
@@ -926,7 +1647,8 @@ def render_memory_review_view() -> None:
     candidate = candidate_by_id[selected_candidate_id]
     candidate_id = str(candidate.get("candidate_id", ""))
     status = str(candidate.get("status", ""))
-    editing_disabled = status in {"approved", "rejected"}
+    may_edit = can(profile.permission_role, TemplateAction.EDIT_CANDIDATE)
+    editing_disabled = status in {"approved", "rejected"} or not may_edit
 
     render_candidate_details(candidate)
 
@@ -937,10 +1659,11 @@ def render_memory_review_view() -> None:
         st.session_state[yaml_key] = dump_yaml(candidate.get("proposed_template", {}))
         st.session_state[loaded_key] = candidate.get("updated_at", "")
 
-    if st.button("Neu laden", key=f"reload_{candidate_id}"):
-        st.session_state[yaml_key] = dump_yaml(candidate.get("proposed_template", {}))
-        st.session_state[loaded_key] = candidate.get("updated_at", "")
-        st.rerun()
+    if may_edit:
+        if st.button("Neu laden", key=f"reload_{candidate_id}"):
+            st.session_state[yaml_key] = dump_yaml(candidate.get("proposed_template", {}))
+            st.session_state[loaded_key] = candidate.get("updated_at", "")
+            st.rerun()
 
     edited_yaml = st.text_area(
         "proposed_template",
@@ -954,16 +1677,30 @@ def render_memory_review_view() -> None:
         "`is_active=true` unter dem aktiven Szenario erzeugt. `source_sql` bleibt Prompt-Guidance."
     )
 
+    has_review_actions = any(
+        can(profile.permission_role, action)
+        for action in (
+            TemplateAction.EDIT_CANDIDATE,
+            TemplateAction.APPROVE_CANDIDATE,
+            TemplateAction.REJECT_CANDIDATE,
+            TemplateAction.REQUEST_CHANGES,
+        )
+    )
+    if not has_review_actions:
+        st.info("Dieses Demo-Profil hat nur Leserechte in der Memory-Prüfung.")
+        return
+
     review_comment = st.text_area("Review-Kommentar", key=f"review_comment_{candidate_id}")
     rejection_reason = st.text_area("Ablehnungsgrund", key=f"rejection_reason_{candidate_id}")
 
     col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
+        can_edit = may_edit and status not in {"approved", "rejected"}
         if st.button(
             "Änderungen speichern",
             key=f"save_{candidate_id}",
-            disabled=editing_disabled,
+            disabled=not can_edit,
         ):
             if candidate_editor_is_stale(candidate_id, candidate):
                 st.warning("Dieser Vorschlag wurde seit dem Laden geändert. Bitte zuerst neu laden.")
@@ -972,8 +1709,13 @@ def render_memory_review_view() -> None:
                 parsed = parse_yaml_editor(edited_yaml)
             if parsed is not None:
                 try:
-                    update_candidate_proposed_template(candidate_id, parsed)
-                except MemoryStoreError as error:
+                    update_candidate_proposed_template(
+                        candidate_id,
+                        parsed,
+                        scenario=active_scenario.scenario_id,
+                        **actor_kwargs(profile),
+                    )
+                except (MemoryStoreError, PermissionError) as error:
                     st.error(str(error))
                 else:
                     st.session_state[loaded_key] = ""
@@ -981,7 +1723,7 @@ def render_memory_review_view() -> None:
                     st.rerun()
 
     with col2:
-        if st.button("YAML prüfen", key=f"validate_{candidate_id}"):
+        if st.button("YAML prüfen", key=f"validate_{candidate_id}", disabled=not may_edit):
             parsed = parse_yaml_editor(edited_yaml)
             if parsed is not None:
                 errors = validate_proposed_template(parsed)
@@ -989,7 +1731,10 @@ def render_memory_review_view() -> None:
                 show_validation_result(errors)
 
     with col3:
-        can_approve = status in {"pending_review", "needs_changes"}
+        can_approve = status in {"pending_review", "needs_changes"} and can(
+            profile.permission_role,
+            TemplateAction.APPROVE_CANDIDATE,
+        )
         if st.button("Template freigeben", key=f"approve_{candidate_id}", disabled=not can_approve):
             if candidate_editor_is_stale(candidate_id, candidate):
                 st.warning("Dieser Vorschlag wurde seit dem Laden geändert. Bitte zuerst neu laden.")
@@ -1006,8 +1751,9 @@ def render_memory_review_view() -> None:
                             candidate_id,
                             parsed,
                             scenario=active_scenario.scenario_id,
+                            **actor_kwargs(profile),
                         )
-                    except (MemoryStoreError, MemoryLifecycleError) as error:
+                    except (MemoryStoreError, MemoryLifecycleError, PermissionError) as error:
                         st.warning(str(error))
                     else:
                         st.session_state["last_memory_approval_result"] = result
@@ -1019,36 +1765,52 @@ def render_memory_review_view() -> None:
                         st.rerun()
 
     with col4:
-        can_reject = status in {"pending_review", "needs_changes"}
+        can_reject = status in {"pending_review", "needs_changes"} and can(
+            profile.permission_role,
+            TemplateAction.REJECT_CANDIDATE,
+        )
         if st.button("Vorschlag verwerfen", key=f"reject_{candidate_id}", disabled=not can_reject):
             if not rejection_reason.strip():
                 st.warning("Bitte Ablehnungsgrund angeben.")
             else:
                 try:
-                    reject_candidate(candidate_id, rejection_reason)
-                except MemoryStoreError as error:
+                    reject_candidate(
+                        candidate_id,
+                        rejection_reason,
+                        scenario=active_scenario.scenario_id,
+                        **actor_kwargs(profile),
+                    )
+                except (MemoryStoreError, PermissionError) as error:
                     st.error(str(error))
                 else:
                     set_flash("success", "Vorschlag wurde verworfen.")
                     st.rerun()
 
     with col5:
-        can_mark_needs_changes = status == "pending_review"
+        can_mark_needs_changes = status == "pending_review" and can(
+            profile.permission_role,
+            TemplateAction.REQUEST_CHANGES,
+        )
         if st.button(
             "Überarbeitung nötig",
             key=f"needs_changes_{candidate_id}",
             disabled=not can_mark_needs_changes,
         ):
             try:
-                mark_candidate_needs_changes(candidate_id, review_comment)
-            except MemoryStoreError as error:
+                mark_candidate_needs_changes(
+                    candidate_id,
+                    review_comment,
+                    scenario=active_scenario.scenario_id,
+                    **actor_kwargs(profile),
+                )
+            except (MemoryStoreError, PermissionError) as error:
                 st.error(str(error))
             else:
                 set_flash("success", "Vorschlag wurde als Überarbeitung nötig markiert.")
                 st.rerun()
 
 
-def render_approved_templates_view() -> None:
+def render_approved_templates_view(profile: UserProfile) -> None:
     st.title("Freigegebene Templates")
     render_flash()
     active_scenario = get_active_scenario()
@@ -1140,6 +1902,56 @@ def render_approved_templates_view() -> None:
     st.subheader("Source SQL")
     st.caption("Nur Prompt-Guidance; wird nicht ausgeführt und ersetzt keine SQL-Validierung.")
     st.code(template.get("source_sql", "") or "(leer)", language="sql")
+
+    can_deactivate = can(profile.permission_role, TemplateAction.DEACTIVATE_TEMPLATE)
+    can_reactivate = can(profile.permission_role, TemplateAction.REACTIVATE_TEMPLATE)
+    status = str(template.get("status", ""))
+    is_active = bool(template.get("is_active", False))
+
+    if can_deactivate or can_reactivate:
+        st.subheader("Governance")
+        if status == "approved" and is_active:
+            disabled_reason = st.text_area(
+                "Deaktivierungsgrund",
+                key=f"disable_reason_{selected_template_id}",
+            )
+            if st.button(
+                "Template deaktivieren",
+                key=f"disable_template_{selected_template_id}",
+                disabled=not can_deactivate,
+            ):
+                if not disabled_reason.strip():
+                    st.warning("Bitte Deaktivierungsgrund angeben.")
+                else:
+                    try:
+                        deactivate_approved_template(
+                            str(selected_template_id),
+                            disabled_reason,
+                            scenario=active_scenario.scenario_id,
+                            **actor_kwargs(profile),
+                        )
+                    except (MemoryLifecycleError, PermissionError) as error:
+                        st.error(str(error))
+                    else:
+                        set_flash("success", "Template wurde deaktiviert und der Szenario-Index neu aufgebaut.")
+                        st.rerun()
+        elif status == "disabled":
+            if st.button(
+                "Template reaktivieren",
+                key=f"reactivate_template_{selected_template_id}",
+                disabled=not can_reactivate,
+            ):
+                try:
+                    reactivate_approved_template(
+                        str(selected_template_id),
+                        scenario=active_scenario.scenario_id,
+                        **actor_kwargs(profile),
+                    )
+                except (MemoryLifecycleError, PermissionError) as error:
+                    st.error(str(error))
+                else:
+                    set_flash("success", "Template wurde reaktiviert und der Szenario-Index neu aufgebaut.")
+                    st.rerun()
 
 
 def golden_checkbox_key(question_id: str) -> str:
@@ -1555,17 +2367,22 @@ def render_step_log(record: dict) -> None:
             st.markdown(f"**{token_line}**")
 
 
-def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
+def render_record(record: dict, index: int, config: SQLAgentConfig, profile: UserProfile) -> None:
+    policy = display_policy_for_response_profile(profile.response_profile)
     with st.chat_message("user"):
         st.caption("Frage")
         st.markdown(record.get("user_question", ""))
 
     with st.chat_message("assistant"):
-        render_metadata(record)
+        if policy.show_metadata:
+            render_metadata(record)
 
-        st.subheader("Antwort")
+        st.subheader(policy.answer_heading)
         st.write(record.get("final_answer") or "Es wurde keine Antwort erzeugt.")
-        render_reporting_summary(record)
+        _ensure_summary_matches_profile(record, profile)
+        render_reporting_summary(record, heading=policy.summary_heading)
+        if profile.response_profile.value == "management":
+            render_management_decision_support(record)
 
         query_result = record.get("query_result", {})
         rows = query_result.get("rows", [])
@@ -1576,7 +2393,7 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
             st.dataframe(df, use_container_width=True)
             render_chart_from_spec(record, df)
 
-            col_csv, col_xlsx = st.columns(2)
+            col_csv, col_xlsx, col_ppt = st.columns(3)
             csv_data = df.to_csv(index=False).encode("utf-8")
             col_csv.download_button(
                 "Als CSV exportieren",
@@ -1587,7 +2404,10 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
                 use_container_width=True,
             )
             xlsx_buffer = io.BytesIO()
-            df.to_excel(xlsx_buffer, index=False)
+            xlsx_df = df.copy()
+            for col in xlsx_df.select_dtypes(include=["datetimetz"]).columns:
+                xlsx_df[col] = xlsx_df[col].dt.tz_localize(None)
+            xlsx_df.to_excel(xlsx_buffer, index=False)
             col_xlsx.download_button(
                 "Als Excel exportieren",
                 data=xlsx_buffer.getvalue(),
@@ -1596,25 +2416,23 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
                 key=f"export_xlsx_{index}",
                 use_container_width=True,
             )
-
-        st.subheader("SQL-Anweisung")
-        st.code(record.get("final_sql") or record.get("generated_sql", "") or "(kein SQL erzeugt)", language="sql")
-
-        source_tables = record.get("source_tables", [])
-        st.subheader("Quelltabellen")
-        if source_tables:
-            for table in source_tables:
-                st.markdown(f"- `{table}`")
+            render_presentation_export_controls(record, index, col_ppt)
         else:
-            st.write("Es wurden keine Quelltabellen erkannt.")
+            render_presentation_unavailable_compact(record)
 
-        if record.get("sql_error"):
-            st.subheader("SQL-Fehler")
-            st.error(record["sql_error"])
+        if policy.show_sql_inline:
+            render_sql_and_sources(record)
+            if record.get("sql_error"):
+                st.subheader("SQL-Fehler")
+                st.error(record["sql_error"])
+            render_step_log(record)
+        else:
+            render_collapsed_technical_details(record)
 
-        render_step_log(record)
-
-        render_reporting_audit(record)
+        if policy.show_reporting_audit:
+            render_reporting_audit(record)
+        if policy.show_technical_debug:
+            render_technical_debug(record)
 
         if record.get("user_correction"):
             st.subheader("Nutzerkorrektur")
@@ -1633,22 +2451,38 @@ def render_record(record: dict, index: int, config: SQLAgentConfig) -> None:
                 st.warning("Rückmeldung gespeichert.")
         with col3:
             if st.button("Mit Kommentar wiederholen", key=f"feedback_retry_{index}"):
-                retry_with_comment(record, index, comment, config)
+                retry_with_comment(record, index, comment, config, profile)
         with col4:
             if st.button("Fallback-Modell verwenden", key=f"feedback_fallback_{index}"):
-                rerun_with_fallback(record, index, config, comment)
+                rerun_with_fallback(record, index, config, comment, profile)
 
-        render_candidate_creation(record, index)
+        render_candidate_creation(record, index, profile)
 
 
 def main() -> None:
-    st.set_page_config(page_title="Agentic AI Datenassistent", layout="wide")
+    # Top-left brand slot: prefer the combined TUM + Würth logo, fall back to Würth.
+    _corner_logo = (
+        str(TUM_WUERTH_LOGO_PATH) if TUM_WUERTH_LOGO_PATH.exists()
+        else str(WUERTH_LOGO_PATH) if WUERTH_LOGO_PATH.exists()
+        else None
+    )
+    _page_icon = str(WUERTH_SHIELD_PATH) if WUERTH_SHIELD_PATH.exists() else "📊"
+    st.set_page_config(
+        page_title="Würth Datenassistent",
+        page_icon=_page_icon,
+        layout="wide",
+    )
+    if _corner_logo:
+        try:  # st.logo requires Streamlit >= 1.35; degrade gracefully otherwise.
+            st.logo(_corner_logo)
+        except Exception:
+            pass
     apply_app_styles()
     initialize_state()
-    page, config = render_sidebar()
+    page, config, profile = render_sidebar()
 
     if page == PAGE_MEMORY:
-        render_memory_review_view()
+        render_memory_review_view(profile)
         return
 
     if page == PAGE_GOLDEN:
@@ -1656,10 +2490,20 @@ def main() -> None:
         return
 
     if page == PAGE_TEMPLATES:
-        render_approved_templates_view()
+        render_approved_templates_view(profile)
         return
 
-    st.title("Agentic AI Datenassistent")
+    _shield_uri = _img_data_uri(WUERTH_SHIELD_PATH)
+    if _shield_uri:
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:18px;margin:0 0 4px 0;">'
+            f'<img src="{_shield_uri}" alt="Würth" style="height:64px;width:auto;"/>'
+            f'<h1 style="margin:0;color:{WUERTH_TEXT};font-weight:700;">Würth Datenassistent</h1>'
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.title("Würth Datenassistent")
     scenario = get_active_scenario()
     st.caption(
         f"LangGraph-SQL-Workflow für {scenario.label} mit konfigurierbaren Primary- und Fallback-Modellen."
@@ -1668,7 +2512,7 @@ def main() -> None:
 
     history = active_history()
     for index, record in enumerate(history):
-        render_record(record, index, config)
+        render_record(record, index, config, profile)
 
     context_key = f"send_context_{st.session_state.active_chat_id}"
     if history:
@@ -1711,7 +2555,13 @@ def main() -> None:
                     "metadata": metadata,
                 })
 
-            record = run_orchestrator(question, config=config, chat_context=chat_context, step_callback=_on_step)
+            record = run_orchestrator(
+                question,
+                config=config,
+                chat_context=chat_context,
+                step_callback=_on_step,
+                response_profile=current_profile().response_profile.value,
+            )
             token_line = _format_token_usage(record.get("token_usage"))
             if token_line:
                 status.write(token_line)

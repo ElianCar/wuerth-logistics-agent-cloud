@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 import yaml
 
+from src.agent.access_control import TemplateAction, require_permission
 from src.agent.id_utils import generate_template_id
 from src.agent.memory_index_builder import (
     approved_templates_dir,
@@ -25,6 +26,7 @@ from src.agent.memory_store import (
     parse_source_tables,
     save_candidates,
 )
+from src.agent.memory_audit import log_memory_action
 from src.agent.memory_template_schema import (
     is_retrievable_template,
     load_and_validate_template,
@@ -304,7 +306,10 @@ def mark_candidate_approved_for_vsm(
     proposed_template: dict[str, Any],
     *,
     template_id: str,
+    actor_id: str,
+    actor_role: str,
 ) -> dict[str, Any]:
+    require_permission(actor_role, TemplateAction.APPROVE_CANDIDATE)
     candidates, index, candidate = _candidate_by_id(candidate_id)
     old_status = str(candidate.get("status", ""))
     if old_status == "approved" or candidate.get("review", {}).get("approved_template_id"):
@@ -318,7 +323,7 @@ def mark_candidate_approved_for_vsm(
     candidate["is_active"] = False
     candidate["proposed_template"] = proposed_template
     candidate["updated_at"] = timestamp
-    review["reviewed_by"] = ACTOR
+    review["reviewed_by"] = actor_id
     review["reviewed_at"] = timestamp
     review["approved_template_id"] = template_id
     review["runtime_memory_target"] = "approved_yaml"
@@ -331,6 +336,18 @@ def mark_candidate_approved_for_vsm(
         old_status=old_status,
         new_status="approved",
         comment="Approved to scenario scoped approved YAML and rebuilt VSM index.",
+        actor=actor_id,
+    )
+    log_memory_action(
+        actor_id=actor_id,
+        actor_role=actor_role,
+        action="candidate_approved",
+        candidate_id=candidate_id,
+        template_id=template_id,
+        previous_status=old_status,
+        new_status="approved",
+        scenario=normalize_scenario_id(str(candidate.get("scenario", ""))),
+        comment="Approved to scenario scoped approved YAML and rebuilt VSM index.",
     )
     return candidate
 
@@ -339,10 +356,13 @@ def approve_candidate_to_vsm(
     candidate_id: str,
     proposed_template: dict[str, Any],
     *,
+    actor_id: str,
+    actor_role: str,
     scenario: str | None = None,
     memory_dir: Path | None = None,
     index_writer: IndexWriter = write_master_index,
 ) -> dict[str, Any]:
+    require_permission(actor_role, TemplateAction.APPROVE_CANDIDATE)
     candidates, index, candidate = _candidate_by_id(candidate_id)
     _ = (candidates, index)
     old_status = str(candidate.get("status", ""))
@@ -359,6 +379,7 @@ def approve_candidate_to_vsm(
         candidate,
         proposed_template,
         scenario=scenario_id,
+        approved_by=actor_id,
     )
     template_path: Path | None = None
     try:
@@ -383,6 +404,8 @@ def approve_candidate_to_vsm(
         candidate_id,
         proposed_template,
         template_id=str(template.get("id", "")),
+        actor_id=actor_id,
+        actor_role=actor_role,
     )
     return {
         "candidate": approved_candidate,
@@ -391,6 +414,155 @@ def approve_candidate_to_vsm(
         "index": index_data,
         "index_path": str(master_index_path(scenario_id, resolved_memory_dir)),
         "smoke_test": smoke_test,
+    }
+
+
+def _approved_template_path_by_id(
+    scenario: str,
+    template_id: str,
+    *,
+    memory_dir: Path | None = None,
+) -> Path:
+    scenario_id = normalize_scenario_id(scenario)
+    approved_dir = approved_templates_dir(scenario_id, memory_dir)
+    direct_path = approved_dir / f"{template_id}.yaml"
+    if direct_path.exists():
+        return direct_path
+
+    if approved_dir.exists():
+        for path in sorted(approved_dir.glob("*.yaml")):
+            validation = load_and_validate_template(path, expected_scenario=scenario_id)
+            if validation.template.get("id") == template_id:
+                return path
+    raise MemoryLifecycleError(f"Approved template not found: {template_id}")
+
+
+def _write_existing_approved_template(path: Path, template: dict[str, Any], scenario: str) -> None:
+    scenario_id = normalize_scenario_id(scenario)
+    validation = validate_template(template, expected_scenario=scenario_id)
+    if not validation.is_valid:
+        raise MemoryLifecycleError(
+            "Approved template schema validation failed: " + "; ".join(validation.errors)
+        )
+    temp_path = path.with_name(f".{path.name}.tmp")
+    with temp_path.open("w", encoding="utf-8") as file:
+        yaml.safe_dump(template, file, sort_keys=False, allow_unicode=True)
+    os.replace(temp_path, path)
+
+
+def deactivate_approved_template(
+    template_id: str,
+    disabled_reason: str,
+    *,
+    actor_id: str,
+    actor_role: str,
+    scenario: str,
+    memory_dir: Path | None = None,
+    index_writer: IndexWriter = write_master_index,
+) -> dict[str, Any]:
+    require_permission(actor_role, TemplateAction.DEACTIVATE_TEMPLATE)
+    if not disabled_reason.strip():
+        raise MemoryLifecycleError("A deactivation reason is required.")
+
+    scenario_id = normalize_scenario_id(scenario)
+    resolved_memory_dir = scenario_memory_dir(scenario_id, memory_dir)
+    path = _approved_template_path_by_id(
+        scenario_id,
+        template_id,
+        memory_dir=resolved_memory_dir,
+    )
+    validation = load_and_validate_template(path, expected_scenario=scenario_id)
+    if not validation.is_valid:
+        raise MemoryLifecycleError(
+            "Approved template schema validation failed: " + "; ".join(validation.errors)
+        )
+    template = validation.template
+    old_status = str(template.get("status", ""))
+    if old_status != "approved" or template.get("is_active") is not True:
+        raise MemoryLifecycleError("Only approved active templates can be deactivated.")
+
+    timestamp = now_iso()
+    template["status"] = "disabled"
+    template["is_active"] = False
+    template["disabled_at"] = timestamp
+    template["disabled_by"] = actor_id
+    template["disabled_reason"] = disabled_reason
+    _write_existing_approved_template(path, template, scenario_id)
+    index_data = rebuild_scenario_master_index(
+        scenario_id,
+        memory_dir=resolved_memory_dir,
+        index_writer=index_writer,
+    )
+    log_memory_action(
+        actor_id=actor_id,
+        actor_role=actor_role,
+        action="template_deactivated",
+        template_id=template_id,
+        previous_status=old_status,
+        new_status="disabled",
+        scenario=scenario_id,
+        comment=disabled_reason,
+    )
+    return {
+        "template": template,
+        "template_path": str(path),
+        "index": index_data,
+        "index_path": str(master_index_path(scenario_id, resolved_memory_dir)),
+    }
+
+
+def reactivate_approved_template(
+    template_id: str,
+    *,
+    actor_id: str,
+    actor_role: str,
+    scenario: str,
+    memory_dir: Path | None = None,
+    index_writer: IndexWriter = write_master_index,
+) -> dict[str, Any]:
+    require_permission(actor_role, TemplateAction.REACTIVATE_TEMPLATE)
+    scenario_id = normalize_scenario_id(scenario)
+    resolved_memory_dir = scenario_memory_dir(scenario_id, memory_dir)
+    path = _approved_template_path_by_id(
+        scenario_id,
+        template_id,
+        memory_dir=resolved_memory_dir,
+    )
+    validation = load_and_validate_template(path, expected_scenario=scenario_id)
+    if not validation.is_valid:
+        raise MemoryLifecycleError(
+            "Approved template schema validation failed: " + "; ".join(validation.errors)
+        )
+    template = validation.template
+    old_status = str(template.get("status", ""))
+    if old_status != "disabled":
+        raise MemoryLifecycleError("Only disabled templates can be reactivated.")
+
+    timestamp = now_iso()
+    template["status"] = "approved"
+    template["is_active"] = True
+    template["reactivated_at"] = timestamp
+    template["reactivated_by"] = actor_id
+    _write_existing_approved_template(path, template, scenario_id)
+    index_data = rebuild_scenario_master_index(
+        scenario_id,
+        memory_dir=resolved_memory_dir,
+        index_writer=index_writer,
+    )
+    log_memory_action(
+        actor_id=actor_id,
+        actor_role=actor_role,
+        action="template_reactivated",
+        template_id=template_id,
+        previous_status=old_status,
+        new_status="approved",
+        scenario=scenario_id,
+    )
+    return {
+        "template": template,
+        "template_path": str(path),
+        "index": index_data,
+        "index_path": str(master_index_path(scenario_id, resolved_memory_dir)),
     }
 
 

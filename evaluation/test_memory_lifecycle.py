@@ -23,6 +23,9 @@ from src.config.scenarios import (
 )
 
 
+REVIEWER_ACTOR = {"actor_id": "template_reviewer", "actor_role": "reviewer"}
+
+
 def approved_template(
     *,
     scenario: str,
@@ -154,6 +157,7 @@ class MemoryLifecycleTests(unittest.TestCase):
                 "cand_test_1",
                 candidate["proposed_template"],
                 scenario="demo",
+                **REVIEWER_ACTOR,
             )
 
             template = result["template"]
@@ -230,6 +234,7 @@ class MemoryLifecycleTests(unittest.TestCase):
                 "cand_test_1",
                 candidate["proposed_template"],
                 scenario="wuerth_local",
+                **REVIEWER_ACTOR,
             )
             smoke = run_retrieval_smoke_test(
                 "wuerth_local",
@@ -317,6 +322,7 @@ class MemoryLifecycleTests(unittest.TestCase):
                     candidate["proposed_template"],
                     scenario="demo",
                     index_writer=failing_index_writer,
+                    **REVIEWER_ACTOR,
                 )
 
             approved_dir = memory_dir / "approved"

@@ -1,8 +1,8 @@
-# Local TPC-H DuckDB Database
+# Local TPC-H Data
 
-This folder contains a small local TPC-H database for testing SQL queries before connecting an LLM agent.
+This folder contains the TPC-H demo data generation/export helpers and PostgreSQL load scripts used by the local prototype.
 
-DuckDB is used to generate the local sample data. Optional PostgreSQL scripts are included so the same data can be loaded into a local PostgreSQL database. There is no Docker, frontend, LangGraph, or agent code in this setup.
+DuckDB is still useful as a local data-generation tool. The active Streamlit demo runs against PostgreSQL through the root-level Docker Compose workflow and the agent code under `src/`.
 
 ## Files
 
@@ -17,7 +17,6 @@ database/
   postgres_test_queries.sql
   test_queries.sql
   README.md
-  tpch.duckdb
 requirements.txt
 ```
 
@@ -132,7 +131,7 @@ PY
 
 ## Move TPC-H from DuckDB to PostgreSQL
 
-DuckDB is used to generate the local TPC-H sample data. PostgreSQL is the later target database because it is closer to the final agent setup. Docker will be added later, not now.
+DuckDB is used to generate the local TPC-H sample data. PostgreSQL is the active app database for the demo scenario. The root-level Docker Compose workflow loads committed CSV exports through `docker/postgres/init/`.
 
 Install PostgreSQL on macOS if needed:
 

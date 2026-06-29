@@ -77,8 +77,10 @@ def sql_result(**overrides: object) -> dict[str, object]:
 class FakeRouter:
     def __init__(self, output: dict[str, object]) -> None:
         self.output = output
+        self.inputs: list[dict[str, object]] = []
 
     def invoke(self, _input: dict[str, object], _config: dict[str, object]) -> dict[str, object]:
+        self.inputs.append(_input)
         return self.output
 
 
@@ -160,6 +162,35 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(sql_mock.call_args.kwargs["use_legacy_memory"], False)
         self.assertEqual(result["selected_model"], "fallback-model")
 
+    def test_force_fallback_keeps_existing_retry_context_format_for_sql_agent(self) -> None:
+        retry_context = {
+            "original_question": "bitte gib mir Customer mit orders und region und liniertem und Umsatz",
+            "previous_assistant_answer": "Was bedeutet 'liniertem' in Ihrer Anfrage?",
+            "previous_status": "clarification_needed",
+            "user_comment": "lieferant",
+        }
+        sql_mock = Mock(return_value=sql_result(model_used="fallback-model", selected_model="fallback-model"))
+
+        with patch("src.agent.orchestrator._get_compiled_router") as router_factory, patch(
+            "src.agent.orchestrator.run_sql_agent",
+            sql_mock,
+        ):
+            orchestrator.run_orchestrator(
+                "bitte gib mir Customer mit orders und region und liniertem und Umsatz",
+                config=test_config(),
+                force_fallback=True,
+                retry_context=retry_context,
+                user_correction="lieferant",
+                log_to_query_log=False,
+            )
+
+        router_factory.assert_not_called()
+        self.assertTrue(sql_mock.call_args.kwargs["force_fallback"])
+        agent_chat_context = str(sql_mock.call_args.kwargs["chat_context"])
+        self.assertIn("RETRY CONTEXT:", agent_chat_context)
+        self.assertIn("User correction/comment: lieferant", agent_chat_context)
+        self.assertNotIn("RÜCKFRAGE-KONTEXT FÜR ERNEUTE AUSFÜHRUNG", agent_chat_context)
+
     def test_retry_context_is_forwarded_to_sql_agent(self) -> None:
         _, sql_mock = self.run_with_fake_router(
             router_state(),
@@ -174,6 +205,63 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(kwargs["previous_sql_error"], "syntax error")
         self.assertEqual(kwargs["previous_final_answer"], "old answer")
         self.assertEqual(kwargs["user_correction"], "use revenue instead")
+
+    def test_retry_context_is_visible_to_router(self) -> None:
+        fake_router = FakeRouter(router_state())
+        retry_context = {
+            "original_question": "bitte gib mir Customer mit orders und region und liniertem und Umsatz",
+            "previous_assistant_answer": "Was bedeutet 'liniertem' in Ihrer Anfrage?",
+            "previous_status": "clarification_needed",
+            "previous_router_decision": {
+                "intent": "aggregation",
+                "needs_clarification": True,
+            },
+            "user_comment": "Mit liniertem meine ich lineitem.",
+            "scenario": "demo",
+            "role_profile": "business_analyst",
+            "permission_role": "contributor",
+        }
+
+        with patch("src.agent.orchestrator._get_compiled_router", return_value=fake_router), patch(
+            "src.agent.orchestrator.run_sql_agent",
+            Mock(return_value=sql_result()),
+        ):
+            orchestrator.run_orchestrator(
+                "bitte gib mir Customer mit orders und region und liniertem und Umsatz",
+                config=test_config(),
+                retry_context=retry_context,
+                user_correction="Mit liniertem meine ich lineitem.",
+                log_to_query_log=False,
+            )
+
+        router_chat_context = str(fake_router.inputs[0]["chat_context"])
+        self.assertIn("RÜCKFRAGE-KONTEXT FÜR ERNEUTE AUSFÜHRUNG:", router_chat_context)
+        self.assertIn("URSPRÜNGLICHE NUTZERFRAGE:", router_chat_context)
+        self.assertIn("bitte gib mir Customer", router_chat_context)
+        self.assertIn("RÜCKFRAGE DES SYSTEMS:", router_chat_context)
+        self.assertIn("Was bedeutet 'liniertem'", router_chat_context)
+        self.assertIn("ANTWORT DES NUTZERS AUF DIE RÜCKFRAGE:", router_chat_context)
+        self.assertIn("Mit liniertem meine ich lineitem.", router_chat_context)
+        self.assertIn("Behandle die Antwort nicht als neue eigenständige Frage.", router_chat_context)
+
+    def test_normal_chat_without_retry_context_keeps_chat_context_unchanged(self) -> None:
+        fake_router = FakeRouter(router_state())
+
+        with patch("src.agent.orchestrator._get_compiled_router", return_value=fake_router), patch(
+            "src.agent.orchestrator.run_sql_agent",
+            Mock(return_value=sql_result()),
+        ):
+            orchestrator.run_orchestrator(
+                "Wie viele Bestellungen gibt es?",
+                config=test_config(),
+                chat_context="Bisheriger Gesprächsverlauf:\nF: Hallo",
+                log_to_query_log=False,
+            )
+
+        self.assertEqual(
+            fake_router.inputs[0]["chat_context"],
+            "Bisheriger Gesprächsverlauf:\nF: Hallo",
+        )
 
     def test_needs_clarification_stops_before_sql_execution(self) -> None:
         result, sql_mock = self.run_with_fake_router(
@@ -546,6 +634,79 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(rows[0]["run_id"], result["run_id"])
         self.assertEqual(rows[0]["template_candidate_ids"], "")
         self.assertEqual(rows[0]["template_candidate_scores"], "")
+
+    def test_single_month_time_series_is_refined_to_daily_for_chart_only(self) -> None:
+        semantic = {
+            "columns": {
+                "calendar_yearmonth": {"semantic_type": "date_period"},
+                "calendar_day": {"semantic_type": "date"},
+            }
+        }
+        chart_plan = {
+            "render_allowed": True,
+            "chart_type": "area",
+            "x_axis": "calendar_yearmonth",
+            "y_axis": "revenue",
+            "note": "",
+        }
+        result = {
+            "row_count": 1,
+            "source_tables": ["t"],
+            "final_sql": (
+                "SELECT i.calendar_yearmonth, SUM(i.turnover_inv) AS revenue FROM t "
+                "WHERE i.calendar_day >= '2025-12-01' AND i.calendar_day <= '2025-12-31' "
+                "GROUP BY i.calendar_yearmonth"
+            ),
+        }
+        daily = {
+            "columns": ["calendar_day", "revenue"],
+            "rows": [("2025-12-01", 100.0), ("2025-12-05", 250.0), ("2025-12-20", 400.0)],
+            "row_count": 3,
+            "executed_sql": "",
+        }
+        with patch("src.agent.orchestrator.execute_read_only_sql", return_value=daily):
+            out = orchestrator._maybe_upgrade_chart_to_daily(
+                {"chart_plan": dict(chart_plan)},
+                result=result,
+                semantic_metadata=semantic,
+                user_question="Umsatz im Zeitverlauf",
+                router_context={"output_mode": "chart_plus_table"},
+            )
+
+        self.assertEqual(out["chart_plan"]["chart_type"], "area")
+        self.assertEqual(out["chart_plan"]["x_axis"], "calendar_day")
+        self.assertEqual(out["chart_query_result"]["row_count"], 3)
+        self.assertIn("Tagesverlauf", out["chart_plan"]["note"])
+
+    def test_multi_month_time_series_is_not_refined(self) -> None:
+        semantic = {
+            "columns": {
+                "calendar_yearmonth": {"semantic_type": "date_period"},
+                "calendar_day": {"semantic_type": "date"},
+            }
+        }
+        reporting_result = {
+            "chart_plan": {
+                "render_allowed": True,
+                "chart_type": "area",
+                "x_axis": "calendar_yearmonth",
+                "y_axis": "revenue",
+                "note": "",
+            }
+        }
+        result = {"row_count": 5, "source_tables": ["t"], "final_sql": "SELECT calendar_yearmonth ..."}
+        with patch("src.agent.orchestrator.execute_read_only_sql") as db_mock:
+            out = orchestrator._maybe_upgrade_chart_to_daily(
+                reporting_result,
+                result=result,
+                semantic_metadata=semantic,
+                user_question="Umsatz pro Monat",
+                router_context={"output_mode": "chart_plus_table"},
+            )
+
+        db_mock.assert_not_called()
+        self.assertEqual(out["chart_plan"]["x_axis"], "calendar_yearmonth")
+        self.assertNotIn("chart_query_result", out)
 
 
 if __name__ == "__main__":
