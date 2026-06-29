@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+import os
 import re
 from typing import Any
 
 import pandas as pd
 
+from src.agent.profiles import ResponseProfile, coerce_response_profile
 from src.agent.visualization_spec import build_visualization_spec
+from src.llm.model_adapter import get_provider, invoke_model
 
 
 _IDENTIFIER_NAME_PATTERN = re.compile(
@@ -33,11 +36,16 @@ def build_reporting_result(
     language: str = "de",
     chart_plan: dict[str, Any] | None = None,
     semantic_metadata: dict[str, Any] | None = None,
+    response_profile: ResponseProfile | str | None = None,
 ) -> dict[str, Any]:
-    """Build deterministic post-SQL reporting output.
+    """Build post-SQL reporting output.
 
-    The reporting layer does not generate SQL, modify SQL, call a database, or
-    call an LLM. It only inspects the already returned SQL result and metadata.
+    The reporting layer never generates SQL, modifies SQL, or queries a database.
+    It inspects the already returned SQL result and metadata to derive the facts
+    deterministically. The natural-language summary is then re-rendered for the
+    target audience (``response_profile``) with an LLM that may only rephrase the
+    derived facts — it must not introduce new numbers or causes. If the LLM is
+    unavailable or returns an invalid response, the deterministic summary is used.
     """
 
     router_state = router_state or {}
@@ -82,15 +90,30 @@ def build_reporting_result(
         metadata=metadata,
         audit=audit,
     )
+    effective_profile = coerce_response_profile(response_profile or ResponseProfile.MANAGEMENT)
+    effective_language = language or str(router_state.get("language") or "de")
+    summary_source = "deterministic"
+    if summary_parts.get("llm_eligible") and summary_parts.get("facts"):
+        rendered = _render_summary_with_llm(
+            facts=summary_parts["facts"],
+            response_profile=effective_profile,
+            language=effective_language,
+        )
+        if rendered:
+            summary_parts = {**summary_parts, **rendered}
+            summary_source = "llm"
     caveats = summary_parts["caveats"]
     audit["display_notes"] = display_notes
     audit["summary_generated"] = bool(summary_parts["summary"])
+    audit["summary_source"] = summary_source
+    audit["response_profile"] = effective_profile.value
     audit["warnings"] = [*audit.get("warnings", []), *chart_plan.get("warnings", [])]
 
     return {
         "summary": summary_parts["summary"],
         "interpretation": summary_parts["interpretation"],
         "caveats": caveats,
+        "summary_facts": summary_parts.get("facts"),
         "chart_plan": chart_plan,
         "table_plan": {
             "render_allowed": bool(not df.empty),
@@ -225,7 +248,7 @@ def _build_german_summary(
             "Auffälligkeit: Ohne erfolgreiches Ergebnis ist keine fachliche Interpretation möglich.\n\n"
             f"Einschränkungen: {' '.join(caveats)}"
         )
-        return {"summary": summary, "interpretation": "Keine Interpretation ohne erfolgreiches SQL Ergebnis.", "caveats": caveats}
+        return {"summary": summary, "interpretation": "Keine Interpretation ohne erfolgreiches SQL Ergebnis.", "caveats": caveats, "facts": None, "llm_eligible": False}
 
     if df.empty:
         summary = (
@@ -234,7 +257,7 @@ def _build_german_summary(
             "Auffälligkeit: Ohne Ergebniszeilen ist keine Mustererkennung möglich.\n\n"
             f"Einschränkungen: {' '.join(caveats)}"
         )
-        return {"summary": summary, "interpretation": "Keine sichtbare Auffälligkeit, da keine Zeilen zurückgegeben wurden.", "caveats": caveats}
+        return {"summary": summary, "interpretation": "Keine sichtbare Auffälligkeit, da keine Zeilen zurückgegeben wurden.", "caveats": caveats, "facts": None, "llm_eligible": False}
 
     metric = _first(metadata.get("metric_columns", []))
     grouping = _first(metadata.get("grouping_columns", []))
@@ -259,7 +282,159 @@ def _build_german_summary(
         f"Auffälligkeit: {interpretation}\n\n"
         f"Einschränkungen: {' '.join(caveats)}"
     )
-    return {"summary": summary, "interpretation": interpretation, "caveats": caveats}
+    facts = {
+        "metric_label": metric_label,
+        "grouping_label": grouping_label,
+        "source_tables": list(source_tables),
+        "applied_filters": metadata.get("applied_filters", ""),
+        "sort_order": metadata.get("sort_order", ""),
+        "limit": metadata.get("limit"),
+        "baseline_summary": summary,
+        "baseline_interpretation": interpretation,
+    }
+    return {"summary": summary, "interpretation": interpretation, "caveats": caveats, "facts": facts, "llm_eligible": True}
+
+
+_SUMMARY_HEADINGS = ["Kurzantwort", "Berechnungslogik", "Auffälligkeit", "Einschränkungen"]
+
+_PROFILE_DEPTH_INSTRUCTIONS: dict[ResponseProfile, str] = {
+    ResponseProfile.MANAGEMENT: (
+        "Management-Ebene: maximal knapp und aggregiert, in klarer Geschäftssprache. "
+        "Vermeide technische Spaltennamen, SQL-Begriffe und Detailparameter (Filter, Sortierung, Limit). "
+        "Höchstens ein bis zwei Sätze pro Abschnitt, Fokus auf die geschäftliche Kernaussage."
+    ),
+    ResponseProfile.ANALYST: (
+        "Business-Analyst-Ebene: operativer Detailgrad. Nenne konkrete Werte, die Gruppierungsdimension, "
+        "angewendete Filter, Sortierung, Limit und Quelltabellen, sofern vorhanden. "
+        "Zwei bis vier präzise Sätze pro Abschnitt."
+    ),
+    ResponseProfile.TECHNICAL: (
+        "Technische Ebene: wie für Analysten, zusätzlich technisch präzise mit Spaltennamen und Aggregationslogik. "
+        "Ausführlichste Variante, weiterhin ohne erfundene Fakten oder Ursachen."
+    ),
+}
+
+
+def _get_reporting_model(provider: str) -> str | None:
+    """Pick a cheap/fast model for the summary rendering; fall back to the provider primary."""
+    if provider == "anthropic":
+        return os.getenv("ANTHROPIC_REPORTING_MODEL") or "claude-haiku-4-5-20251001"
+    if provider == "gemini":
+        return os.getenv("GEMINI_REPORTING_MODEL") or None
+    if provider == "ollama":
+        return os.getenv("OLLAMA_REPORTING_MODEL") or None
+    return None
+
+
+def _build_summary_prompt(*, facts: dict[str, Any], depth_instruction: str, language: str) -> str:
+    lang_name = "Deutsch" if str(language).lower().startswith("de") else "Englisch"
+    fact_lines: list[str] = []
+    if facts.get("metric_label"):
+        fact_lines.append(f"- Kennzahl: {facts['metric_label']}")
+    if facts.get("grouping_label"):
+        fact_lines.append(f"- Gruppierung: {facts['grouping_label']}")
+    if facts.get("source_tables"):
+        fact_lines.append(f"- Quelltabellen: {', '.join(str(t) for t in facts['source_tables'])}")
+    if facts.get("applied_filters"):
+        fact_lines.append(f"- Filter (SQL WHERE): {facts['applied_filters']}")
+    if facts.get("sort_order"):
+        fact_lines.append(f"- Sortierung (SQL ORDER BY): {facts['sort_order']}")
+    if facts.get("limit") is not None:
+        fact_lines.append(f"- LIMIT: {facts['limit']}")
+    facts_block = "\n".join(fact_lines) if fact_lines else "- (keine zusätzlichen strukturierten Fakten)"
+    return (
+        "Du bist ein Reporting-Assistent für eine Logistik-Datenanalyse. "
+        "Formuliere die folgende faktische Basiszusammenfassung für eine bestimmte Zielgruppe um.\n\n"
+        "STRIKTE REGELN:\n"
+        "- Verwende ausschließlich die unten gegebenen Fakten. Erfinde KEINE Zahlen, Werte, Ursachen oder Trends.\n"
+        "- Leite keine fachlichen Ursachen ab, die nicht in der Basis stehen.\n"
+        f"- Antworte auf {lang_name}.\n"
+        "- Behalte exakt diese vier Abschnitte mit genau diesen Überschriften, jeweils durch eine Leerzeile getrennt:\n"
+        "  Kurzantwort:\n  Berechnungslogik:\n  Auffälligkeit:\n  Einschränkungen:\n"
+        "- Gib NUR diese vier Abschnitte aus, ohne Vor- oder Nachtext.\n\n"
+        f"ZIELGRUPPEN-TIEFE:\n{depth_instruction}\n\n"
+        f"STRUKTURIERTE FAKTEN:\n{facts_block}\n\n"
+        f"FAKTISCHE BASISZUSAMMENFASSUNG:\n{facts.get('baseline_summary', '')}\n\n"
+        "Umformulierte Zusammenfassung:"
+    )
+
+
+def _parse_four_part(text: str) -> dict[str, str] | None:
+    if not text:
+        return None
+    alternation = "|".join(_SUMMARY_HEADINGS)
+    sections: dict[str, str] = {}
+    for heading in _SUMMARY_HEADINGS:
+        pattern = rf"{heading}\s*:\s*(.+?)(?=\n\s*(?:{alternation})\s*:|$)"
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if not match or not match.group(1).strip():
+            return None
+        sections[heading] = match.group(1).strip()
+    summary = (
+        f"Kurzantwort: {sections['Kurzantwort']}\n\n"
+        f"Berechnungslogik: {sections['Berechnungslogik']}\n\n"
+        f"Auffälligkeit: {sections['Auffälligkeit']}\n\n"
+        f"Einschränkungen: {sections['Einschränkungen']}"
+    )
+    return {"summary": summary, "interpretation": sections["Auffälligkeit"]}
+
+
+def _render_summary_with_llm(
+    *,
+    facts: dict[str, Any],
+    response_profile: ResponseProfile | str,
+    language: str,
+) -> dict[str, str] | None:
+    """Re-render the deterministic 4-part summary for the target audience via the LLM.
+
+    Returns None on any failure (no API key, provider error, unparseable output) so
+    the caller can fall back to the deterministic text.
+    """
+    profile = coerce_response_profile(response_profile or ResponseProfile.MANAGEMENT)
+    depth = _PROFILE_DEPTH_INSTRUCTIONS.get(profile, _PROFILE_DEPTH_INSTRUCTIONS[ResponseProfile.MANAGEMENT])
+    prompt = _build_summary_prompt(facts=facts, depth_instruction=depth, language=language)
+    try:
+        provider = get_provider()
+        response = invoke_model(prompt, model_name=_get_reporting_model(provider), provider=provider)
+    except Exception:
+        return None
+    return _parse_four_part(response.response_text)
+
+
+def rerender_summary(
+    reporting_result: dict[str, Any],
+    *,
+    response_profile: ResponseProfile | str | None,
+    language: str = "de",
+) -> dict[str, Any]:
+    """Re-render only the natural-language summary of an existing reporting result.
+
+    Reuses the facts derived at query time (``summary_facts``) to call the reporting
+    LLM again for a different audience — no SQL is run and the chart/table/KPI parts
+    are untouched. Returns a new reporting-result dict; falls back to the stored
+    deterministic baseline when the LLM is unavailable or the summary is not
+    eligible (failed/empty SQL result).
+    """
+    profile = coerce_response_profile(response_profile or ResponseProfile.MANAGEMENT)
+    updated = dict(reporting_result)
+    audit = dict(updated.get("audit") or {})
+    audit["response_profile"] = profile.value
+    facts = updated.get("summary_facts")
+    if not facts:
+        updated["audit"] = audit
+        return updated
+
+    rendered = _render_summary_with_llm(facts=facts, response_profile=profile, language=language)
+    if rendered:
+        updated["summary"] = rendered["summary"]
+        updated["interpretation"] = rendered["interpretation"]
+        audit["summary_source"] = "llm"
+    else:
+        updated["summary"] = facts.get("baseline_summary", updated.get("summary", ""))
+        updated["interpretation"] = facts.get("baseline_interpretation", updated.get("interpretation", ""))
+        audit["summary_source"] = "deterministic"
+    updated["audit"] = audit
+    return updated
 
 
 def _calculation_logic(

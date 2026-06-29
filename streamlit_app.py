@@ -50,6 +50,7 @@ from src.agent.profiles import (
     UserProfile,
     get_demo_profile,
 )
+from src.agent.reporting_agent import rerender_summary
 from src.agent.response_profiles import display_policy_for_response_profile
 from src.config.scenarios import (
     LOCAL_SCENARIO_OPTIONS,
@@ -568,6 +569,29 @@ def render_chart_from_spec(record: dict, df: pd.DataFrame) -> None:
             tooltip=tooltip,
         )
         st.altair_chart(chart, use_container_width=True)
+
+
+def _ensure_summary_matches_profile(record: dict, profile: UserProfile) -> None:
+    """Re-render the stored summary if it was generated for a different profile.
+
+    Switching the Demo-Nutzerprofil triggers a Streamlit rerun; here we lazily
+    regenerate only the natural-language summary (one reporting-LLM call, no SQL)
+    for the newly selected audience and persist it back into the record.
+    """
+    reporting = record.get("reporting_result")
+    if not isinstance(reporting, dict):
+        return
+    target = profile.response_profile.value
+    current = str((reporting.get("audit") or {}).get("response_profile") or "")
+    if current == target:
+        return
+    language = str(record.get("language") or "de")
+    with st.spinner("Zusammenfassung wird für das gewählte Profil neu erstellt..."):
+        record["reporting_result"] = rerender_summary(
+            reporting,
+            response_profile=target,
+            language=language,
+        )
 
 
 def render_reporting_summary(record: dict, heading: str = "Management-Zusammenfassung") -> None:
@@ -1243,6 +1267,7 @@ def retry_with_comment(
             user_correction=comment.strip(),
             retry_context=retry_context,
             step_callback=_retry_on_step,
+            response_profile=current_profile().response_profile.value,
         )
         _retry_status.update(label="Fertig ✓", state="complete", expanded=False)
     corrected_record["agent_step_log"] = _steps_log
@@ -1279,6 +1304,7 @@ def rerun_with_fallback(
             user_correction=comment.strip(),
             retry_context=retry_context or None,
             step_callback=_fb_on_step,
+            response_profile=current_profile().response_profile.value,
         )
         _fb_status.update(label="Fertig ✓", state="complete", expanded=False)
     fallback_record["agent_step_log"] = _steps_log
@@ -2349,6 +2375,7 @@ def render_record(record: dict, index: int, config: SQLAgentConfig, profile: Use
 
         st.subheader(policy.answer_heading)
         st.write(record.get("final_answer") or "Es wurde keine Antwort erzeugt.")
+        _ensure_summary_matches_profile(record, profile)
         render_reporting_summary(record, heading=policy.summary_heading)
         if profile.response_profile.value == "management":
             render_management_decision_support(record)
@@ -2524,7 +2551,13 @@ def main() -> None:
                     "metadata": metadata,
                 })
 
-            record = run_orchestrator(question, config=config, chat_context=chat_context, step_callback=_on_step)
+            record = run_orchestrator(
+                question,
+                config=config,
+                chat_context=chat_context,
+                step_callback=_on_step,
+                response_profile=current_profile().response_profile.value,
+            )
             token_line = _format_token_usage(record.get("token_usage"))
             if token_line:
                 status.write(token_line)

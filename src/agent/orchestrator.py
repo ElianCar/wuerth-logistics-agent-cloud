@@ -75,6 +75,7 @@ class OrchestratorState(TypedDict, total=False):
     user_question: str
     chat_context: str
     retry_context: dict[str, Any]
+    response_profile: str
     llm_provider: str
     ollama_host: str
 
@@ -422,6 +423,7 @@ def _build_reporting_result(
     user_question: str,
     router_context: dict[str, Any],
     result: dict[str, Any],
+    response_profile: str | None = None,
 ) -> dict[str, Any]:
     try:
         semantic_metadata = _semantic_column_metadata_cached(str(get_active_scenario().semantic_layer_path))
@@ -436,6 +438,7 @@ def _build_reporting_result(
             validation_success=bool(result.get("validation_success", result.get("sql_valid", False))),
             language=str(router_context.get("language") or "de"),
             semantic_metadata=semantic_metadata,
+            response_profile=response_profile,
         )
         try:  # chart-only daily refinement; must never break the reporting result
             reporting_result = _maybe_upgrade_chart_to_daily(
@@ -767,6 +770,7 @@ def _run_sql_agent_node_impl(state: OrchestratorState, step_callback: StepCallba
         user_question=state.get("user_question", ""),
         router_context=router_context,
         result=result,
+        response_profile=state.get("response_profile"),
     )
 
     return {
@@ -824,6 +828,7 @@ def terminal_response(state: OrchestratorState) -> dict[str, Any]:
         user_question=state.get("user_question", ""),
         router_context=router_context,
         result=terminal_result,
+        response_profile=state.get("response_profile"),
     )
     return {
         **terminal_result,
@@ -864,6 +869,7 @@ def data_overview_response(state: OrchestratorState) -> dict[str, Any]:
         user_question=state.get("user_question", ""),
         router_context=router_context,
         result=overview_result,
+        response_profile=state.get("response_profile"),
     )
     return {
         **overview_result,
@@ -1035,12 +1041,14 @@ def _initial_state(
     log_to_query_log: bool,
     chat_context: str = "",
     retry_context: dict[str, Any] | None = None,
+    response_profile: str | None = None,
 ) -> OrchestratorState:
     return {
         "run_id": run_id,
         "user_question": user_question,
         "chat_context": chat_context,
         "retry_context": dict(retry_context or {}),
+        "response_profile": response_profile or "",
         "llm_provider": config.llm_provider,
         "ollama_host": config.ollama_host,
         "trace_steps": [],
@@ -1131,6 +1139,7 @@ def _run_forced_fallback(
         user_question=user_question,
         router_context=forced_router_context,
         result=result,
+        response_profile=initial.get("response_profile"),
     )
     trace = [
         "Router skipped because force_fallback=True.",
@@ -1177,6 +1186,7 @@ def run_orchestrator(
     step_callback: StepCallback | None = None,
     chat_context: str = "",
     retry_context: dict[str, Any] | None = None,
+    response_profile: str | None = None,
 ) -> OrchestratorState:
     sql_config = _coerce_sql_config(config)
     run_id = generate_run_id()
@@ -1197,6 +1207,7 @@ def run_orchestrator(
         log_to_query_log=log_to_query_log,
         chat_context=chat_context,
         retry_context=retry_context,
+        response_profile=response_profile,
     )
 
     if force_fallback:
