@@ -15,7 +15,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pptx import Presentation
+from pptx.enum.chart import XL_CHART_TYPE
 from pptx.enum.dml import MSO_FILL
+from pptx.util import Inches, Pt
 
 from src.agent.presentation_export import (
     DEFAULT_TEMPLATE_PATH,
@@ -23,6 +25,10 @@ from src.agent.presentation_export import (
     PRESENTATION_PLANNER_LOG_NAME,
     SlideDeckSpec,
     SlideSpec,
+    TABLE_BODY_FONT_SIZE,
+    TABLE_HEADER_FONT_SIZE,
+    TABLE_MARGIN_LEFT_RIGHT_INCHES,
+    TABLE_MARGIN_TOP_BOTTOM_INCHES,
     FIXED_PPTX_TIMESTAMP,
     build_claude_presentation_export,
     build_deterministic_presentation_export,
@@ -45,6 +51,7 @@ from src.agent.presentation_planner import (
     derive_presentation_title,
     format_management_number,
 )
+from src.agent.reporting_agent import build_management_decision_support
 
 
 def query_result(columns: list[str], rows: list[tuple[object, ...]]) -> dict[str, object]:
@@ -447,6 +454,69 @@ class PresentationPlannerEvidenceTests(unittest.TestCase):
         chart_shapes = pptx_shapes_for_slide_containing(export.content, "Auftraege je Monat")
         self.assertTrue(any(getattr(shape, "has_chart", False) for shape in chart_shapes))
 
+    def test_reporting_area_and_pie_chart_plans_create_native_ppt_charts(self) -> None:
+        cases = [
+            ("area", XL_CHART_TYPE.AREA, [("2026-01", 10), ("2026-02", 14), ("2026-03", 12)]),
+            ("pie", XL_CHART_TYPE.PIE, [("Express", 7), ("Standard", 15), ("Returns", 3)]),
+        ]
+        for chart_type, expected_type, rows in cases:
+            with self.subTest(chart_type=chart_type):
+                result = query_result(["category", "shipment_count"], rows)
+                reporting = reporting_result(result)
+                reporting["chart_plan"] = {
+                    "chart_type": chart_type,
+                    "title": f"{chart_type.title()} Evidence",
+                    "render_allowed": True,
+                    "x_axis": "category",
+                    "y_axis": "shipment_count",
+                    "x_label": "Kategorie",
+                    "y_label": "Sendungen",
+                }
+                record = orchestrator_record(query_result=result, row_count=len(rows), reporting_result=reporting)
+
+                spec = build_slide_deck_spec(record=record)
+                chart_slide = next(slide for slide in spec.slides if slide.slide_type == "chart_evidence")
+                self.assertEqual(chart_slide.metadata["chart_type"], chart_type)
+                self.assertEqual(chart_slide.table_rows[0], [str(rows[0][0]), str(rows[0][1])])
+
+                export = build_deterministic_presentation_export(record=record)
+                self.assertTrue(export.available, export.warnings)
+                chart_shapes = [
+                    shape
+                    for shape in pptx_shapes_for_slide_containing(export.content, f"{chart_type.title()} Evidence")
+                    if getattr(shape, "has_chart", False)
+                ]
+                self.assertTrue(chart_shapes)
+                self.assertEqual(chart_shapes[0].chart.chart_type, expected_type)
+
+    def test_ppt_chart_uses_refined_chart_query_result_without_changing_table_evidence(self) -> None:
+        main_result = query_result(["month", "shipment_count"], [("2026-06", 30)])
+        chart_result = query_result(
+            ["day", "shipment_count"],
+            [("2026-06-01", 7), ("2026-06-02", 11), ("2026-06-03", 12)],
+        )
+        reporting = reporting_result(main_result)
+        reporting["chart_plan"] = {
+            "chart_type": "line",
+            "title": "Sendungen je Tag",
+            "render_allowed": True,
+            "x_axis": "day",
+            "y_axis": "shipment_count",
+            "x_label": "Tag",
+            "y_label": "Sendungen",
+        }
+        reporting["chart_query_result"] = chart_result
+        record = orchestrator_record(query_result=main_result, row_count=1, reporting_result=reporting)
+
+        spec = build_slide_deck_spec(record=record)
+        chart_slide = next(slide for slide in spec.slides if slide.slide_type == "chart_evidence")
+        self.assertEqual(chart_slide.table_columns, ["Tag", "Sendungen"])
+        self.assertEqual(chart_slide.table_rows, [["2026-06-01", "7"], ["2026-06-02", "11"], ["2026-06-03", "12"]])
+
+        table_slide = next(slide for slide in spec.slides if slide.slide_type == "table_evidence")
+        self.assertEqual(table_slide.table_columns, ["month", "shipment_count"])
+        self.assertEqual(table_slide.table_rows, [["2026-06", "30"]])
+
     def test_empty_result_planning_is_deterministic_while_export_eligibility_stays_separate(self) -> None:
         result = {"columns": ["region", "shipment_count"], "rows": [], "row_count": 0}
         record = orchestrator_record(query_result=result, row_count=0)
@@ -822,7 +892,7 @@ class PresentationExportPlanRenderingTests(unittest.TestCase):
         self.assertTrue(export.available, export.warnings)
         rendered_text = pptx_text(export.content)
         self.assertIn("Management-Zusammenfassung", rendered_text)
-        self.assertIn("Kennzahlen", rendered_text)
+        self.assertNotIn("Kennzahlen", rendered_text)
         self.assertIn("Evidenz", rendered_text)
         self.assertIn("Datenbasis und Grenzen", rendered_text)
         self.assertIn("Technischer Anhang", rendered_text)
@@ -920,8 +990,11 @@ class PresentationExportRichEvidenceTests(unittest.TestCase):
                         bold_text.append(run.text)
 
         joined_text = "".join(full_text)
-        self.assertIn("Auftraege ohne passende Rechnung", joined_text)
-        self.assertTrue(any(text.strip() in {"3", "4", "10", "45001", "MAT-A", "SHIP-A"} for text in bold_text))
+        self.assertIn("Frage:", joined_text)
+        self.assertIn("Business Summary:", joined_text)
+        self.assertIn("Business Implication:", joined_text)
+        self.assertIn("Recommended Next Step:", joined_text)
+        self.assertTrue(any(text.strip() == "Business Summary:" for text in bold_text), bold_text)
 
     def test_top_n_categorical_record_produces_editable_chart_and_sonstige_metadata(self) -> None:
         record = w05_record(w05_many_category_rows())
@@ -1052,7 +1125,7 @@ class PresentationExportRegressionTests(unittest.TestCase):
         self.assertIn("Sendungen ohne passende Rechnung", slide_texts[0])
         self.assertNotIn(raw_question, slide_texts[0])
         self.assertIn("Management-Zusammenfassung", rendered_text)
-        self.assertIn("Kennzahlen", rendered_text)
+        self.assertNotIn("Kennzahlen", rendered_text)
         self.assertIn("Zeilen 1-10 von 50", rendered_text)
         self.assertIn("Weitere Spalten ausgeblendet", rendered_text)
         self.assertIn("Diagramm aus validierten Ergebnisdaten.", rendered_text)
@@ -1070,7 +1143,7 @@ class PresentationExportRegressionTests(unittest.TestCase):
             for run in paragraph.runs
             if run.font.bold and run.text.strip()
         ]
-        self.assertTrue(any(text == "25" for text in bold_runs), bold_runs)
+        self.assertTrue(any(text == "Business Summary:" for text in bold_runs), bold_runs)
 
     def test_empty_result_export_remains_unavailable_with_existing_reason(self) -> None:
         result = {"columns": ["region", "shipment_count"], "rows": [], "row_count": 0}
@@ -1286,10 +1359,10 @@ class PresentationExportSuccessTests(unittest.TestCase):
 
         rendered_text = "\n".join(text_values)
         self.assertIn("Management-Zusammenfassung", rendered_text)
-        self.assertIn("Kennzahlen", rendered_text)
+        self.assertNotIn("Kennzahlen", rendered_text)
         self.assertIn("Evidenz", rendered_text)
         self.assertIn("Lieferungen nach Region", rendered_text)
-        self.assertNotIn("Zeige Lieferungen nach Region als Praesentation", rendered_text)
+        self.assertIn("Frage: Zeige Lieferungen nach Region als Praesentation", rendered_text)
         self.assertTrue(has_table)
         for stale_fragment in (
             "Click to add",
@@ -1301,6 +1374,44 @@ class PresentationExportSuccessTests(unittest.TestCase):
             "Erlaeuterung",
         ):
             self.assertNotIn(stale_fragment, rendered_text)
+
+    def test_generated_tables_use_compact_font_and_cell_padding(self) -> None:
+        export = build_deterministic_presentation_export(record=valid_record())
+
+        self.assertTrue(export.available, export.warnings)
+        presentation = Presentation(BytesIO(export.content))
+        table = next(
+            shape.table
+            for slide in presentation.slides
+            for shape in slide.shapes
+            if getattr(shape, "has_table", False)
+        )
+
+        header_cell = table.cell(0, 0)
+        body_cell = table.cell(1, 0)
+        self.assertEqual(int(header_cell.margin_left), int(Inches(TABLE_MARGIN_LEFT_RIGHT_INCHES)))
+        self.assertEqual(int(header_cell.margin_right), int(Inches(TABLE_MARGIN_LEFT_RIGHT_INCHES)))
+        self.assertEqual(int(header_cell.margin_top), int(Inches(TABLE_MARGIN_TOP_BOTTOM_INCHES)))
+        self.assertEqual(int(header_cell.margin_bottom), int(Inches(TABLE_MARGIN_TOP_BOTTOM_INCHES)))
+        self.assertEqual(int(body_cell.margin_left), int(Inches(TABLE_MARGIN_LEFT_RIGHT_INCHES)))
+        self.assertEqual(int(body_cell.margin_top), int(Inches(TABLE_MARGIN_TOP_BOTTOM_INCHES)))
+
+        header_runs = [
+            run
+            for paragraph in header_cell.text_frame.paragraphs
+            for run in paragraph.runs
+            if run.text.strip()
+        ]
+        body_runs = [
+            run
+            for paragraph in body_cell.text_frame.paragraphs
+            for run in paragraph.runs
+            if run.text.strip()
+        ]
+        self.assertTrue(header_runs)
+        self.assertTrue(body_runs)
+        self.assertEqual(int(header_runs[0].font.size), int(Pt(TABLE_HEADER_FONT_SIZE)))
+        self.assertEqual(int(body_runs[0].font.size), int(Pt(TABLE_BODY_FONT_SIZE)))
 
     def test_cover_footer_date_uses_run_id_date_when_generated_at_is_missing(self) -> None:
         record = orchestrator_record(run_id="run_20260622_100044_c595", generated_at="")
@@ -1322,6 +1433,18 @@ class PresentationExportSuccessTests(unittest.TestCase):
         self.assertEqual(int(cover_footer_date.text_frame.margin_right), 0)
         self.assertEqual(int(cover_footer_date.text_frame.margin_top), 0)
         self.assertEqual(int(cover_footer_date.text_frame.margin_bottom), 0)
+        all_footer_dates = [
+            shape
+            for slide in presentation.slides
+            for shape in slide.shapes
+            if getattr(shape, "has_text_frame", False) and shape.name == "footer_date"
+        ]
+        self.assertGreaterEqual(len(all_footer_dates), 2)
+        for footer_date in all_footer_dates:
+            self.assertEqual(int(footer_date.text_frame.margin_left), 0)
+            self.assertEqual(int(footer_date.text_frame.margin_right), 0)
+            self.assertEqual(int(footer_date.text_frame.margin_top), 0)
+            self.assertEqual(int(footer_date.text_frame.margin_bottom), 0)
         date_runs = [
             run
             for paragraph in cover_footer_date.text_frame.paragraphs
@@ -1342,6 +1465,71 @@ class PresentationExportSuccessTests(unittest.TestCase):
         metadata_slide = next(slide for slide in spec.slides if slide.layout_name == "agent_08_appendix_metadata")
         self.assertIn("Erstellt am: nicht erfasst", metadata_slide.body)
 
+    def test_management_summary_slide_uses_frontend_decision_support_text(self) -> None:
+        record = valid_record()
+        support = build_management_decision_support(record)
+
+        spec = build_slide_deck_spec(record=record)
+        summary_slide = next(slide for slide in spec.slides if slide.slide_type == "executive_summary")
+        summary_text = "\n".join(summary_slide.body)
+
+        self.assertIn("Frage:", summary_text)
+        self.assertIn(str(record["user_question"]), summary_text)
+        self.assertIn("Business Summary:", summary_text)
+        self.assertIn(support["business_summary"], summary_text)
+        self.assertIn("Business Implication:", summary_text)
+        self.assertIn(support["business_implication"], summary_text)
+        self.assertIn("Recommended Next Step:", summary_text)
+        self.assertIn(support["recommended_next_step"], summary_text)
+
+        export = build_deterministic_presentation_export(record=record)
+        self.assertTrue(export.available, export.warnings)
+        rendered_text = pptx_text(export.content)
+        self.assertIn("Frage:", rendered_text)
+        self.assertIn(str(record["user_question"]), rendered_text)
+        self.assertIn("Business Summary:", rendered_text)
+        self.assertIn("Business Implication:", rendered_text)
+        self.assertIn("Recommended Next Step:", rendered_text)
+
+    def test_sql_appendix_is_separate_from_metadata_appendix_and_uses_final_sql(self) -> None:
+        record = valid_record()
+
+        spec = build_slide_deck_spec(record=record)
+        metadata_index = next(index for index, slide in enumerate(spec.slides) if slide.title == "Technischer Anhang")
+        sql_index = next(index for index, slide in enumerate(spec.slides) if slide.title == "Technischer Anhang 2: SQL-Abfrage")
+
+        self.assertEqual(sql_index, metadata_index + 1)
+        self.assertEqual(spec.slides[sql_index].slide_type, "sql_appendix")
+        self.assertEqual(spec.slides[sql_index].body, [str(record["final_sql"])])
+
+        export = build_deterministic_presentation_export(record=record)
+        self.assertTrue(export.available, export.warnings)
+        slide_texts = pptx_slide_texts(export.content)
+        self.assertTrue(any("Technischer Anhang\n" in f"{text}\n" for text in slide_texts))
+        sql_slide_text = next(text for text in slide_texts if "Technischer Anhang 2: SQL-Abfrage" in text)
+        self.assertIn(str(record["final_sql"]), sql_slide_text)
+
+    def test_sql_appendix_falls_back_to_generated_sql(self) -> None:
+        record = orchestrator_record(final_sql="", generated_sql="SELECT COUNT(*) FROM wuerth.shipments")
+
+        spec = build_slide_deck_spec(record=record)
+        sql_slide = next(slide for slide in spec.slides if slide.slide_type == "sql_appendix")
+
+        self.assertEqual(sql_slide.body, ["SELECT COUNT(*) FROM wuerth.shipments"])
+
+    def test_long_sql_appendix_is_truncated_with_visible_note(self) -> None:
+        long_sql = "SELECT * FROM wuerth.shipments WHERE " + " OR ".join(
+            f"plant = '{index:04d}'" for index in range(500)
+        )
+        record = orchestrator_record(final_sql=long_sql)
+
+        export = build_deterministic_presentation_export(record=record)
+
+        self.assertTrue(export.available, export.warnings)
+        sql_slide_text = next(text for text in pptx_slide_texts(export.content) if "Technischer Anhang 2: SQL-Abfrage" in text)
+        self.assertIn("SQL wurde fuer die Folie auf", sql_slide_text)
+        self.assertIn("SELECT * FROM wuerth.shipments", sql_slide_text)
+
     def test_slide_deck_spec_is_ordered_dynamic_and_excludes_default_closing(self) -> None:
         spec = build_slide_deck_spec(record=valid_record())
 
@@ -1349,8 +1537,8 @@ class PresentationExportSuccessTests(unittest.TestCase):
 
         self.assertEqual(layout_names[0], "agent_01_cover")
         self.assertIn("agent_02_summary", layout_names)
-        self.assertIn("agent_03_three_cards", layout_names)
-        self.assertEqual(layout_names.count("agent_05_full_content"), 2)
+        self.assertNotIn("agent_03_three_cards", layout_names)
+        self.assertEqual(layout_names.count("agent_05_full_content"), 3)
         self.assertIn("agent_07_caveats_sources", layout_names)
         self.assertIn("agent_08_appendix_metadata", layout_names)
         self.assertNotIn("agent_09_closing", layout_names)

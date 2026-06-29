@@ -23,6 +23,20 @@ CSV_DIR_CANDIDATES = (
     PROJECT_ROOT / "database" / "exports" / "wuerth",
     PROJECT_ROOT / "database" / "exports" / "Wuerth",
 )
+INVOICE_CSV_CANDIDATES = (
+    "Wuerth_invoices.csv",
+    "wuerth_invoices.csv",
+    "Invoices.csv",
+    "invoices.csv",
+    "datenabzug_projekt_tum_invoices.csv",
+)
+SHIPMENT_CSV_CANDIDATES = (
+    "Wuerth_shipments.csv",
+    "wuerth_shipments.csv",
+    "Shipments.csv",
+    "shipments.csv",
+    "datenabzug_projekt_tum_shipments.csv",
+)
 DEMO_TABLES = ("region", "nation", "supplier", "customer", "part", "partsupp", "orders", "lineitem")
 WUERTH_TABLES = ("wuerth.invoices", "wuerth.shipments")
 
@@ -45,6 +59,14 @@ def find_csv_dir() -> Path:
         if path.exists():
             return path
     raise ValidationError("Würth CSV directory not found under database/exports/wuerth or database/exports/Wuerth.")
+
+
+def find_csv_file(csv_dir: Path, candidates: tuple[str, ...], label: str) -> Path:
+    for file_name in candidates:
+        path = csv_dir / file_name
+        if path.exists():
+            return path
+    raise ValidationError(f"Missing {label} CSV in {csv_dir}. Checked: {', '.join(candidates)}")
 
 
 def normalize_column(column: str) -> str:
@@ -105,10 +127,8 @@ def load_wuerth_semantic_layer() -> dict[str, Any]:
 
 def validate_csv_files() -> tuple[set[str], set[str]]:
     csv_dir = find_csv_dir()
-    invoices_path = csv_dir / "Wuerth_invoices.csv"
-    shipments_path = csv_dir / "Wuerth_shipments.csv"
-    require(invoices_path.exists(), f"Missing invoices CSV: {invoices_path}")
-    require(shipments_path.exists(), f"Missing shipments CSV: {shipments_path}")
+    invoices_path = find_csv_file(csv_dir, INVOICE_CSV_CANDIDATES, "invoices")
+    shipments_path = find_csv_file(csv_dir, SHIPMENT_CSV_CANDIDATES, "shipments")
 
     invoice_columns = {normalize_column(column) for column in read_csv_header(invoices_path)}
     shipment_columns = {normalize_column(column) for column in read_csv_header(shipments_path)}
@@ -160,18 +180,17 @@ def validate_semantic_layer(invoice_csv_columns: set[str], shipment_csv_columns:
     condition_pairs = {(item.get("left_column"), item.get("right_column")) for item in conditions if isinstance(item, dict)}
     require(("order_number", "order_number") in condition_pairs, "Join mapping for Order Number is missing.")
     require(("customer", "shiptoparty") in condition_pairs, "Join mapping for Customer to Ship to Party is missing.")
-    require(("material_price", "customer_material") in condition_pairs, "Join mapping for material key candidate is missing.")
+    require(("product", "customer_material") in condition_pairs, "Join mapping for product key candidate is missing.")
 
     invoice_kpis = ((semantic.get("kpis") or {}).get("invoice_kpis") or {})
     shipment_kpis = ((semantic.get("kpis") or {}).get("shipment_kpis") or {})
+    require(invoice_kpis.get("revenue", {}).get("formula_sql") == "SUM(turnover_inv)", "Revenue KPI formula is wrong.")
+    require("turnover_inv" in invoice_semantic_columns, "Revenue column must be present in invoice semantic layer.")
     require(
-        invoice_kpis.get("revenue", {}).get("status") == "not_supported_with_current_local_csv",
-        "Revenue must be marked unsupported until a real invoice revenue column exists.",
+        shipment_kpis.get("packing_costs", {}).get("formula_sql") == "SUM(packing_costs)",
+        "Packing costs KPI formula is wrong.",
     )
-    require(
-        shipment_kpis.get("packing_costs", {}).get("status") == "not_supported_with_current_local_csv",
-        "Packing costs must be marked unsupported until a real shipment packing cost column exists.",
-    )
+    require("packing_costs" in shipment_semantic_columns, "Packing cost column must be present in shipment semantic layer.")
     require("freight_costs" in shipment_semantic_columns, "Freight cost column must be present in shipment semantic layer.")
 
 

@@ -127,6 +127,56 @@ def build_reporting_result(
     }
 
 
+def build_management_decision_support(record: dict[str, Any]) -> dict[str, str]:
+    """Return the management-facing text shared by Streamlit and PPT export."""
+
+    reporting = record.get("reporting_result") if isinstance(record.get("reporting_result"), dict) else {}
+    caveats = reporting.get("caveats", [])
+    question = str(record.get("user_question") or "").strip()
+    summary = str(reporting.get("summary") or "").strip()
+    business_summary = _extract_summary_section(summary, "Kurzantwort")
+    if not business_summary:
+        business_summary = _first_summary_paragraph(summary)
+    if not business_summary:
+        business_summary = str(record.get("final_answer") or "").strip()
+
+    business_implication = str(reporting.get("interpretation") or "").strip()
+    if not business_implication:
+        business_implication = "Keine fachliche Interpretation verfuegbar."
+
+    return {
+        "question": question,
+        "business_summary": business_summary,
+        "business_implication": business_implication,
+        "recommended_next_step": recommended_next_step(caveats),
+    }
+
+
+def recommended_next_step(caveats: Any) -> str:
+    if isinstance(caveats, list) and caveats:
+        return "Nutze das Ergebnis als Entscheidungsgrundlage und pruefe die genannten Einschraenkungen vor operativen Massnahmen."
+    return "Nutze das Ergebnis als Entscheidungsgrundlage und vergleiche es bei Bedarf mit weiteren Segmenten oder Zeitraeumen."
+
+
+def _extract_summary_section(summary: str, label: str) -> str:
+    if not summary:
+        return ""
+    label_prefix = f"{label}:"
+    for paragraph in re.split(r"\n\s*\n", summary):
+        text = paragraph.strip()
+        if text.casefold().startswith(label_prefix.casefold()):
+            return text[len(label_prefix):].strip()
+    return ""
+
+
+def _first_summary_paragraph(summary: str) -> str:
+    for paragraph in re.split(r"\n\s*\n", summary):
+        text = paragraph.strip()
+        if text:
+            return text
+    return ""
+
+
 def _dataframe_from_query_result(query_result: dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(query_result.get("rows", []) or [], columns=query_result.get("columns", []) or [])
 

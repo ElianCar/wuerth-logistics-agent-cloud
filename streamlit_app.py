@@ -44,6 +44,7 @@ from src.agent.presentation_export import (
     build_presentation_export,
     can_export_presentation,
 )
+from src.agent.reporting_agent import build_management_decision_support
 from src.agent.profiles import (
     DEFAULT_PROFILE_ID,
     DEMO_PROFILES,
@@ -659,7 +660,7 @@ def render_technical_debug(record: dict) -> None:
         st.json(debug_payload, expanded=False)
 
 
-def render_management_decision_support(record: dict) -> None:
+def _legacy_render_management_decision_support(record: dict) -> None:
     reporting = record.get("reporting_result")
     if not isinstance(reporting, dict):
         return
@@ -673,6 +674,18 @@ def render_management_decision_support(record: dict) -> None:
         st.write("Nutze das Ergebnis als Entscheidungsgrundlage und prüfe die genannten Einschränkungen vor operativen Maßnahmen.")
     else:
         st.write("Nutze das Ergebnis als Entscheidungsgrundlage und vergleiche es bei Bedarf mit weiteren Segmenten oder Zeiträumen.")
+
+
+def render_management_decision_support(record: dict) -> None:
+    support = build_management_decision_support(record)
+    if support.get("business_summary"):
+        st.subheader("Business Summary")
+        st.write(support["business_summary"])
+    if support.get("business_implication"):
+        st.subheader("Business Implication")
+        st.write(support["business_implication"])
+    st.subheader("Recommended Next Step")
+    st.write(support["recommended_next_step"])
 
 
 def render_collapsed_technical_details(record: dict) -> None:
@@ -690,16 +703,7 @@ def _presentation_export_warnings(export: object) -> list[str]:
 
 
 def render_presentation_export_feedback(export: object, container=st) -> None:
-    warnings = _presentation_export_warnings(export)
     slide_count = int(getattr(export, "slide_count", 0) or 0)
-    if warnings:
-        container.warning("PPT created with warnings.")
-        if slide_count:
-            container.caption(f"Slides: {slide_count}")
-        with container.expander("PPT warnings", expanded=False):
-            for warning in warnings:
-                st.write(format_presentation_warning(warning))
-        return
     container.caption("PPT ready.")
     if slide_count:
         container.caption(f"Slides: {slide_count}")

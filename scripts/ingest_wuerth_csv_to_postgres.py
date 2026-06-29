@@ -78,13 +78,25 @@ TABLE_SPECS = (
     CsvTableSpec(
         logical_name="Invoices",
         table_name="invoices",
-        file_candidates=("Wuerth_invoices.csv", "wuerth_invoices.csv", "Invoices.csv", "invoices.csv"),
+        file_candidates=(
+            "Wuerth_invoices.csv",
+            "wuerth_invoices.csv",
+            "Invoices.csv",
+            "invoices.csv",
+            "datenabzug_projekt_tum_invoices.csv",
+        ),
         expected_key_columns=("order_number", "customer", "material_price"),
     ),
     CsvTableSpec(
         logical_name="Shipments",
         table_name="shipments",
-        file_candidates=("Wuerth_shipments.csv", "wuerth_shipments.csv", "Shipments.csv", "shipments.csv"),
+        file_candidates=(
+            "Wuerth_shipments.csv",
+            "wuerth_shipments.csv",
+            "Shipments.csv",
+            "shipments.csv",
+            "datenabzug_projekt_tum_shipments.csv",
+        ),
         expected_key_columns=("order_number", "shiptoparty", "customer_material"),
     ),
 )
@@ -279,7 +291,7 @@ def log_metadata(spec: CsvTableSpec, metadata: CsvMetadata) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Load local Würth CSV exports into PostgreSQL.")
-    parser.add_argument("--export-dir", help="Directory containing Wuerth_invoices.csv and Wuerth_shipments.csv.")
+    parser.add_argument("--export-dir", help="Directory containing the local Wuerth invoice and shipment CSV exports.")
     parser.add_argument("--schema", default="wuerth", help="Target PostgreSQL schema. Defaults to wuerth.")
     parser.add_argument(
         "--if-present",

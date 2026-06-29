@@ -21,6 +21,7 @@ from pptx.util import Inches, Pt
 
 from src.agent.logging_utils import current_timestamp, get_log_dir
 from src.llm.model_adapter import record_token_usage
+from src.agent.reporting_agent import build_management_decision_support
 from src.agent.presentation_planner import (
     PlannerInvocation,
     PresentationPlanningConfig,
@@ -78,6 +79,7 @@ SLIDE_TYPE_LAYOUTS = {
     "comparison": {LAYOUT_COMPARISON},
     "caveats_sources": {LAYOUT_CAVEATS},
     "appendix_metadata": {LAYOUT_METADATA},
+    "sql_appendix": {LAYOUT_FULL_CONTENT},
     "closing": {LAYOUT_CLOSING},
 }
 BODY_REQUIRED_SLIDE_TYPES = {
@@ -88,13 +90,20 @@ BODY_REQUIRED_SLIDE_TYPES = {
     "comparison",
     "caveats_sources",
     "appendix_metadata",
+    "sql_appendix",
     "closing",
 }
 TABLE_REQUIRED_SLIDE_TYPES = {"table_evidence"}
-SUPPORTED_CHART_TYPES = {"bar", "line", "top_n_bar"}
+SUPPORTED_CHART_TYPES = {"area", "bar", "line", "pie", "top_n_bar"}
 DEFAULT_FOOTER_SOURCE = "Wuerth Logistics Analysis"
 MAX_EVIDENCE_ROWS = 10
 MAX_EVIDENCE_COLUMNS = 5
+TABLE_HEADER_FONT_SIZE = 7
+TABLE_BODY_FONT_SIZE = 7
+TABLE_MARGIN_LEFT_RIGHT_INCHES = 0.02
+TABLE_MARGIN_TOP_BOTTOM_INCHES = 0.015
+SQL_APPENDIX_MAX_CHARS = 2400
+SQL_APPENDIX_FONT_SIZE = 8
 
 
 @dataclass(frozen=True)
@@ -531,7 +540,9 @@ def build_slide_deck_spec(
         )
     ]
 
-    summary_body = [bullet.text for bullet in plan.executive_bullets if bullet.text]
+    management_summary = _management_summary_body(record)
+    management_rich_body = _management_summary_rich_body(record)
+    summary_body = management_summary or [bullet.text for bullet in plan.executive_bullets if bullet.text]
     if summary_body:
         slides.append(
             SlideSpec(
@@ -544,27 +555,11 @@ def build_slide_deck_spec(
                     "footer_source": footer_source,
                     "footer_date": _display_date(record),
                 },
-                rich_body=[
+                rich_body=management_rich_body
+                or [
                     [{"text": span.text, "bold": span.bold} for span in bullet.spans]
                     for bullet in plan.executive_bullets
                 ],
-            )
-        )
-
-    kpi_cards = _list_of_dicts(reporting.get("kpi_cards"))
-    if kpi_cards:
-        slides.append(
-            SlideSpec(
-                slide_type="kpi_overview",
-                layout_name=LAYOUT_KPI,
-                title="Kennzahlen",
-                body=_kpi_body(kpi_cards),
-                metadata={
-                    **_kpi_card_metadata(kpi_cards),
-                    "section_label": "ERGEBNISBILD",
-                    "footer_source": footer_source,
-                    "footer_date": _display_date(record),
-                },
             )
         )
 
@@ -675,6 +670,22 @@ def build_slide_deck_spec(
             )
         )
 
+    sql_body = _sql_appendix_body(record)
+    if sql_body:
+        slides.append(
+            SlideSpec(
+                slide_type="sql_appendix",
+                layout_name=LAYOUT_FULL_CONTENT,
+                title="Technischer Anhang 2: SQL-Abfrage",
+                body=sql_body,
+                metadata={
+                    "section_label": "SQL",
+                    "footer_source": footer_source,
+                    "footer_date": _display_date(record),
+                },
+            )
+        )
+
     if include_closing:
         slides.append(
             SlideSpec(
@@ -753,7 +764,8 @@ def validate_slide_deck_spec(
         if len(slide.title) > 140:
             errors.append(f"Slide {index} title exceeds text budget.")
         body_text_size = sum(len(item) for item in slide.body)
-        if body_text_size > MAX_BODY_TEXT_CHARS_PER_SLIDE:
+        body_limit = SQL_APPENDIX_MAX_CHARS + 220 if slide.slide_type == "sql_appendix" else MAX_BODY_TEXT_CHARS_PER_SLIDE
+        if body_text_size > body_limit:
             errors.append(f"Slide {index} body exceeds text budget.")
         if len(slide.body) > MAX_BODY_ITEMS_PER_SLIDE:
             errors.append(f"Slide {index} body exceeds item budget.")
@@ -1431,6 +1443,7 @@ def _render_cover_slide(slide: Any, slide_spec: SlideSpec) -> None:
         slide_spec.metadata.get("footer_date", ""),
         font_size=14,
         color=cover_text_color,
+        zero_margins=True,
     )
 
 
@@ -1455,6 +1468,11 @@ def _render_content_slide(slide: Any, slide_spec: SlideSpec) -> None:
             *slide_spec.body,
         ]
         _set_shape_bullets(content_shape, fallback_body, font_size=16)
+        return
+    if slide_spec.slide_type == "sql_appendix":
+        sql_text = slide_spec.body[0] if slide_spec.body else ""
+        notes = slide_spec.body[1:]
+        _set_shape_code_text(content_shape, sql_text, notes=notes)
         return
     if slide_spec.table_rows:
         _replace_shape_with_table(
@@ -1524,7 +1542,14 @@ def _render_common_header(slide: Any, slide_spec: SlideSpec) -> None:
 def _render_common_footer(slide: Any, slide_spec: SlideSpec, *, slide_number: int, deck_title: str) -> None:
     footer_source = slide_spec.metadata.get("footer_source") or deck_title or DEFAULT_FOOTER_SOURCE
     _set_named_text(slide, "footer_source", footer_source, font_size=7, color=RGBColor(0, 0, 0))
-    _set_named_text(slide, "footer_date", slide_spec.metadata.get("footer_date", ""), font_size=7, color=RGBColor(0, 0, 0))
+    _set_named_text(
+        slide,
+        "footer_date",
+        slide_spec.metadata.get("footer_date", ""),
+        font_size=7,
+        color=RGBColor(0, 0, 0),
+        zero_margins=True,
+    )
     _set_named_text(slide, "footer_slide_number", str(slide_number), font_size=7, color=RGBColor(0, 0, 0))
 
 
@@ -1596,13 +1621,14 @@ def _set_named_text(
     bold: bool = False,
     center: bool = False,
     color: RGBColor | None = None,
+    zero_margins: bool = False,
 ) -> None:
     shape = _shape_by_name(slide, name)
     if shape is None and name.startswith("footer_") and str(text).strip():
         shape = _add_layout_overlay_textbox(slide, name)
     if shape is None:
         return
-    _set_shape_text(shape, text, font_size=font_size, bold=bold, center=center, color=color)
+    _set_shape_text(shape, text, font_size=font_size, bold=bold, center=center, color=color, zero_margins=zero_margins)
 
 
 def _set_named_bullets(slide: Any, name: str, items: list[str], *, font_size: int) -> None:
@@ -1620,6 +1646,7 @@ def _set_shape_text(
     bold: bool = False,
     center: bool = False,
     color: RGBColor | None = None,
+    zero_margins: bool = False,
 ) -> None:
     if not getattr(shape, "has_text_frame", False):
         return
@@ -1627,6 +1654,11 @@ def _set_shape_text(
     frame.clear()
     frame.word_wrap = True
     frame.vertical_anchor = MSO_ANCHOR.TOP
+    if zero_margins:
+        frame.margin_left = 0
+        frame.margin_right = 0
+        frame.margin_top = 0
+        frame.margin_bottom = 0
     paragraph = frame.paragraphs[0]
     paragraph.text = _trim_text(text, 350)
     paragraph.alignment = PP_ALIGN.CENTER if center else PP_ALIGN.LEFT
@@ -1653,6 +1685,39 @@ def _set_shape_bullets(shape: Any, items: list[str], *, font_size: int) -> None:
         paragraph.level = 0
         for run in paragraph.runs:
             run.font.size = Pt(font_size)
+
+
+def _set_shape_code_text(shape: Any, code: str, *, notes: list[str] | None = None) -> None:
+    if not getattr(shape, "has_text_frame", False):
+        return
+    frame = shape.text_frame
+    frame.clear()
+    frame.word_wrap = True
+    frame.vertical_anchor = MSO_ANCHOR.TOP
+    frame.margin_left = Inches(0.06)
+    frame.margin_right = Inches(0.06)
+    frame.margin_top = Inches(0.04)
+    frame.margin_bottom = Inches(0.04)
+
+    paragraph = frame.paragraphs[0]
+    paragraph.text = str(code or "").strip()
+    paragraph.alignment = PP_ALIGN.LEFT
+    for run in paragraph.runs:
+        run.font.name = "Courier New"
+        run.font.size = Pt(SQL_APPENDIX_FONT_SIZE)
+        run.font.color.rgb = RGBColor(0, 0, 0)
+
+    for note in notes or []:
+        text = str(note).strip()
+        if not text:
+            continue
+        note_paragraph = frame.add_paragraph()
+        note_paragraph.text = _trim_text(text, 220)
+        note_paragraph.alignment = PP_ALIGN.LEFT
+        for run in note_paragraph.runs:
+            run.font.size = Pt(9)
+            run.font.italic = True
+            run.font.color.rgb = RGBColor(210, 0, 0)
 
 
 def _set_shape_rich_bullets(shape: Any, rich_items: list[list[dict[str, Any]]], *, font_size: int) -> None:
@@ -1814,8 +1879,12 @@ def _native_chart_payload(slide_spec: SlideSpec) -> _NativeChartPayload | None:
 
 def _native_chart_type(slide_spec: SlideSpec) -> Any | None:
     chart_type = str(slide_spec.metadata.get("chart_type", "bar") or "bar").lower()
+    if chart_type == "area":
+        return XL_CHART_TYPE.AREA
     if chart_type == "line":
         return XL_CHART_TYPE.LINE_MARKERS
+    if chart_type == "pie":
+        return XL_CHART_TYPE.PIE
     if chart_type in {"bar", "top_n_bar"} and slide_spec.metadata.get("chart_orientation") == "horizontal":
         return XL_CHART_TYPE.BAR_CLUSTERED
     if chart_type in {"bar", "top_n_bar"}:
@@ -1824,8 +1893,9 @@ def _native_chart_type(slide_spec: SlideSpec) -> Any | None:
 
 
 def _format_native_chart(chart: Any, slide_spec: SlideSpec) -> None:
+    chart_type = str(slide_spec.metadata.get("chart_type") or "").lower()
     try:
-        chart.has_legend = False
+        chart.has_legend = chart_type == "pie"
         chart.has_title = True
         chart.chart_title.text_frame.text = slide_spec.title
         chart.chart_title.text_frame.paragraphs[0].runs[0].font.size = Pt(12)
@@ -1835,9 +1905,11 @@ def _format_native_chart(chart: Any, slide_spec: SlideSpec) -> None:
 
     try:
         series = chart.series[0]
-        if str(slide_spec.metadata.get("chart_type") or "").lower() == "line":
+        if chart_type == "line":
             series.format.line.color.rgb = RGBColor(210, 0, 0)
             series.format.line.width = Pt(2.25)
+        elif chart_type == "pie":
+            pass
         else:
             series.format.fill.solid()
             series.format.fill.fore_color.rgb = RGBColor(210, 0, 0)
@@ -1872,7 +1944,7 @@ def _add_table(
         cell.text = _display_column_name(column_name)
         cell.fill.solid()
         cell.fill.fore_color.rgb = RGBColor(210, 0, 0)
-        _format_cell_text(cell, font_size=8, bold=True, color=RGBColor(255, 255, 255))
+        _format_cell_text(cell, font_size=TABLE_HEADER_FONT_SIZE, bold=True, color=RGBColor(255, 255, 255))
     for row_index, row in enumerate(visible_rows, start=1):
         for column_index, value in enumerate(row[:len(columns)]):
             cell = table.cell(row_index, column_index)
@@ -1880,14 +1952,14 @@ def _add_table(
             if row_index % 2 == 1:
                 cell.fill.solid()
                 cell.fill.fore_color.rgb = RGBColor(242, 222, 222)
-            _format_cell_text(cell, font_size=8, bold=False, color=RGBColor(0, 0, 0))
+            _format_cell_text(cell, font_size=TABLE_BODY_FONT_SIZE, bold=False, color=RGBColor(0, 0, 0))
 
 
 def _format_cell_text(cell: Any, *, font_size: int, bold: bool, color: RGBColor) -> None:
-    cell.margin_left = Inches(0.04)
-    cell.margin_right = Inches(0.04)
-    cell.margin_top = Inches(0.03)
-    cell.margin_bottom = Inches(0.03)
+    cell.margin_left = Inches(TABLE_MARGIN_LEFT_RIGHT_INCHES)
+    cell.margin_right = Inches(TABLE_MARGIN_LEFT_RIGHT_INCHES)
+    cell.margin_top = Inches(TABLE_MARGIN_TOP_BOTTOM_INCHES)
+    cell.margin_bottom = Inches(TABLE_MARGIN_TOP_BOTTOM_INCHES)
     for paragraph in cell.text_frame.paragraphs:
         paragraph.alignment = PP_ALIGN.LEFT
         for run in paragraph.runs:
@@ -2033,6 +2105,60 @@ def _summary_body(reporting: dict[str, Any]) -> list[str]:
         body.append(_trim_text(interpretation, 220))
     body.extend(_extract_summary_lines(summary, limit=4))
     return _unique([item for item in body if item])[:MAX_BODY_ITEMS_PER_SLIDE]
+
+
+def _management_summary_body(record: dict[str, Any]) -> list[str]:
+    support = build_management_decision_support(record)
+    items = [
+        ("Frage", support.get("question", "")),
+        ("Business Summary", support.get("business_summary", "")),
+        ("Business Implication", support.get("business_implication", "")),
+        ("Recommended Next Step", support.get("recommended_next_step", "")),
+    ]
+    return [
+        f"{label}: {_trim_text(str(value), 190)}"
+        for label, value in items
+        if str(value).strip()
+    ][:MAX_BODY_ITEMS_PER_SLIDE]
+
+
+def _management_summary_rich_body(record: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    support = build_management_decision_support(record)
+    items = [
+        ("Frage", support.get("question", "")),
+        ("Business Summary", support.get("business_summary", "")),
+        ("Business Implication", support.get("business_implication", "")),
+        ("Recommended Next Step", support.get("recommended_next_step", "")),
+    ]
+    rich_items: list[list[dict[str, Any]]] = []
+    for label, value in items:
+        text = _trim_text(str(value), 190)
+        if not text:
+            continue
+        rich_items.append(
+            [
+                {"text": f"{label}: ", "bold": True},
+                {"text": text, "bold": False},
+            ]
+        )
+    return rich_items[:MAX_BODY_ITEMS_PER_SLIDE]
+
+
+def _sql_appendix_body(record: dict[str, Any]) -> list[str]:
+    sql_text = _final_sql_text(record)
+    if not sql_text:
+        return []
+    if len(sql_text) <= SQL_APPENDIX_MAX_CHARS:
+        return [sql_text]
+    visible_sql = sql_text[:SQL_APPENDIX_MAX_CHARS].rstrip()
+    return [
+        visible_sql,
+        f"SQL wurde fuer die Folie auf {SQL_APPENDIX_MAX_CHARS} Zeichen gekuerzt.",
+    ]
+
+
+def _final_sql_text(record: dict[str, Any]) -> str:
+    return str(record.get("final_sql") or record.get("generated_sql") or "").strip()
 
 
 def _cover_subtitle(record: dict[str, Any], reporting: dict[str, Any]) -> str:
