@@ -327,6 +327,21 @@ def _find_template_index(templates: list[dict[str, Any]], template_id: str) -> i
     raise MemoryStoreError(f"Template not found: {template_id}")
 
 
+def _require_successful_candidate_source_run(record: dict[str, Any]) -> None:
+    query_result = record.get("query_result") if isinstance(record.get("query_result"), dict) else {}
+    generated_sql = str(record.get("generated_sql") or "").strip()
+    final_sql = str(record.get("final_sql") or query_result.get("executed_sql") or generated_sql).strip()
+    validation_success = as_bool(record.get("validation_success", record.get("sql_valid")))
+    execution_success = as_bool(record.get("execution_success"))
+
+    if not validation_success:
+        raise MemoryStoreError("Cannot create a candidate unless SQL validation succeeded.")
+    if not execution_success:
+        raise MemoryStoreError("Cannot create a candidate unless SQL execution succeeded.")
+    if not final_sql:
+        raise MemoryStoreError("Cannot create a candidate without final SQL from the successful run.")
+
+
 def create_candidate_from_run(
     record: dict[str, Any],
     *,
@@ -342,6 +357,7 @@ def create_candidate_from_run(
     run_id = str(record.get("run_id", "")).strip()
     if not run_id:
         raise MemoryStoreError("Cannot create a candidate without run_id.")
+    _require_successful_candidate_source_run(record)
 
     for candidate in candidates:
         if (

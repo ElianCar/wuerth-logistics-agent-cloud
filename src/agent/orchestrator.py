@@ -265,6 +265,23 @@ def _format_memory_candidate_trace(memory_retrieval: dict[str, Any]) -> str:
     return "Memory candidates: " + "; ".join(parts)
 
 
+def _format_memory_match_trace(memory_retrieval: dict[str, Any]) -> str:
+    matches = memory_retrieval.get("top_matches", [])
+    if not isinstance(matches, list) or not matches:
+        return "Memory top matches: none"
+
+    parts = []
+    for match in matches[:3]:
+        if not isinstance(match, dict):
+            continue
+        status = "included" if match.get("included") else "excluded"
+        parts.append(
+            f"{match.get('template_id', '-')}"
+            f"(score={match.get('score', '-')}, {status})"
+        )
+    return "Memory top matches: " + "; ".join(parts)
+
+
 def _memory_trace_steps(memory_retrieval: dict[str, Any]) -> list[str]:
     if not memory_retrieval:
         return ["Memory retrieval: not present"]
@@ -279,6 +296,7 @@ def _memory_trace_steps(memory_retrieval: dict[str, Any]) -> list[str]:
             f"ambiguous={memory_retrieval.get('ambiguous', False)}"
         ),
         f"Memory scenario isolation: active scenario index only ({scenario}).",
+        _format_memory_match_trace(memory_retrieval),
         _format_memory_candidate_trace(memory_retrieval),
     ]
 
@@ -915,6 +933,7 @@ def build_orchestrator_graph(step_callback: StepCallback | None = None):
             "intent": result.get("intent", ""),
             "complexity_tier": result.get("complexity_tier", ""),
             "complexity_reason": result.get("complexity_reason", ""),
+            "memory_retrieval": result.get("memory_retrieval", {}),
         })
         return result
 

@@ -1,0 +1,179 @@
+schema_version: 1
+scenario: databricks
+generated_at: '2026-06-30T08:00:15Z'
+template_count: 4
+templates:
+- id: delivery_positions_by_delivery_type_from_plant_period
+  path: memory/databricks/approved/delivery_positions_by_delivery_type_from_plant_period.yaml
+  status: approved
+  is_active: true
+  scenario: databricks
+  intent: delivery_positions_by_delivery_type_from_plant_period
+  title: Delivery positions by delivery type from plant in a date period
+  searchable_text: delivery_positions_by_delivery_type_from_plant_period databricks
+    Delivery positions by delivery type from plant in a date period delivery_positions_by_delivery_type_from_plant_period
+    Count delivery positions grouped by delivery_type for a plant/Lager/Vertriebszentrum
+    and shipment date period. Wie verteilen sich die Lieferpositionen aus Lager 9981
+    im Dezember 2025 nach Lieferart? Lieferpositionen Lager 9981 Dezember 2025 nach
+    Lieferart Lieferpositionen nach Lieferart aus Lager 9981 Lieferpositionen je Delivery
+    Type für Vertriebszentrum 9981 Aufteilung Lieferpositionen nach Lieferart im Dezember
+    2025 Welche Lieferarten hatten die meisten Lieferpositionen in Lager 9981? Delivery
+    positions by delivery type for plant 9981 Shipment row count by delivery_type
+    for one plant lieferpositionen delivery_position delivery_type lieferart aufteilung
+    breakdown shipment lager plant vertriebszentrum 9981 dezember december 2025 shipment_date
+    workspace.default.datenabzug_projekt_tum_shipments plant shipment_date delivery_type
+    aufteilung breakdown delivery type delivery_type lager plant lieferart delivery_type
+    lieferpositionen delivery_position vertriebszentrum plant werk plant
+  tables:
+  - workspace.default.datenabzug_projekt_tum_shipments
+  columns:
+  - plant
+  - shipment_date
+  - delivery_type
+  tags:
+  - lieferpositionen
+  - delivery_position
+  - delivery_type
+  - lieferart
+  - aufteilung
+  - breakdown
+  - shipment
+  - lager
+  - plant
+  - vertriebszentrum
+  - '9981'
+  - dezember
+  - december
+  - '2025'
+  - shipment_date
+  checksum: sha256:0a288e66dd75f3d69bcad0233d1dad5d4e0849e647947c916e078ed1230e48e1
+  version: 1
+- id: delivery_positions_by_plant_period
+  path: memory/databricks/approved/delivery_positions_by_plant_period.yaml
+  status: approved
+  is_active: true
+  scenario: databricks
+  intent: delivery_positions_by_plant_period
+  title: Delivery positions by plant in a date period
+  searchable_text: delivery_positions_by_plant_period databricks Delivery positions
+    by plant in a date period delivery_positions_by_plant_period Count delivery positions
+    grouped by plant/Lager/Vertriebszentrum for a date period. Wie viele Lieferpositionen
+    wurden im Dezember 2025 je Lager geliefert? Lieferpositionen je Lager Dezember
+    2025 Lieferpositionen je Lager im Dezember 2025 Lieferpositionen pro Vertriebszentrum
+    im Zeitraum Delivery positions by plant for a period lieferpositionen delivery_position
+    je_lager pro_lager by_plant lager plant vertriebszentrum dezember december 2025
+    shipment_date workspace.default.datenabzug_projekt_tum_shipments plant shipment_date
+    je lager by_plant je vertriebszentrum by_plant lager plant lieferpositionen delivery_position
+    pro lager by_plant pro vertriebszentrum by_plant vertriebszentrum plant werk plant
+  tables:
+  - workspace.default.datenabzug_projekt_tum_shipments
+  columns:
+  - plant
+  - shipment_date
+  tags:
+  - lieferpositionen
+  - delivery_position
+  - je_lager
+  - pro_lager
+  - by_plant
+  - lager
+  - plant
+  - vertriebszentrum
+  - dezember
+  - december
+  - '2025'
+  - shipment_date
+  checksum: sha256:1a0bc513f3b23e549d9424e29a7a5a8f1a315946e1f79c5be87b569b09489b62
+  version: 1
+- id: delivery_positions_from_plant_period
+  path: memory/databricks/approved/delivery_positions_from_plant_period.yaml
+  status: approved
+  is_active: true
+  scenario: databricks
+  intent: delivery_positions_from_plant_period
+  title: Delivery positions from plant in a date period
+  searchable_text: delivery_positions_from_plant_period databricks Delivery positions
+    from plant in a date period delivery_positions_from_plant_period Count delivery
+    positions by querying shipment rows directly for a plant/Lager/Vertriebszentrum
+    and shipment date period. Wie viele Lieferpositionen wurden im Dezember 2025 aus
+    dem Lager 9981 geliefert? Anzahl Lieferpositionen aus Lager 9981 im Dezember 2025
+    Lieferpositionen Vertriebszentrum 9981 Zeitraum Lieferpositionen Werk 9981 Dezember
+    2025 Delivery positions shipped from plant 9981 in December 2025 Count shipment
+    rows for a plant and shipment date period lieferpositionen lieferposition delivery_position
+    delivery_positions shipment shipments lager plant werk vertriebszentrum 9981 dezember
+    december 2025 zeitraum shipment_date count_rows workspace.default.datenabzug_projekt_tum_shipments
+    plant shipment_date delivery positions delivery_position geliefert shipment lager
+    plant lieferposition delivery_position lieferpositionen delivery_position lieferung
+    shipment lieferzeilen delivery_position plant plant shipment rows delivery_position
+    vertriebszentrum plant werk plant
+  tables:
+  - workspace.default.datenabzug_projekt_tum_shipments
+  columns:
+  - plant
+  - shipment_date
+  tags:
+  - lieferpositionen
+  - lieferposition
+  - delivery_position
+  - delivery_positions
+  - shipment
+  - shipments
+  - lager
+  - plant
+  - werk
+  - vertriebszentrum
+  - '9981'
+  - dezember
+  - december
+  - '2025'
+  - zeitraum
+  - shipment_date
+  - count_rows
+  checksum: sha256:b7b035d1ebc086658b4216a0b2e58e90d1e1f181d3e3635caa8999e9a24dbb53
+  version: 1
+- id: delivery_positions_time_series_from_plant_period
+  path: memory/databricks/approved/delivery_positions_time_series_from_plant_period.yaml
+  status: approved
+  is_active: true
+  scenario: databricks
+  intent: delivery_positions_time_series_from_plant_period
+  title: Delivery positions time series from plant in a date period
+  searchable_text: delivery_positions_time_series_from_plant_period databricks Delivery
+    positions time series from plant in a date period delivery_positions_time_series_from_plant_period
+    Count delivery positions per shipment day for a plant/Lager/Vertriebszentrum over
+    a date period, suitable for a line or bar chart over time. Lieferpositionen aus
+    Lager 9981 im Dezember 2025 im Zeitverlauf Zeitverlauf Lieferpositionen Lager
+    9981 Dezember 2025 Lieferpositionen im Zeitverlauf aus Lager 9981 Lieferpositionen
+    pro Tag aus Vertriebszentrum 9981 Tagesverlauf der Lieferpositionen für Werk 9981
+    Zeige Lieferpositionen aus Lager 9981 als Diagramm im Zeitverlauf Daily delivery
+    position count from plant 9981 Time series of shipment rows for one plant lieferpositionen
+    delivery_position time_series zeitverlauf tagesverlauf pro_tag diagramm chart
+    shipment lager plant vertriebszentrum 9981 dezember december 2025 shipment_date
+    workspace.default.datenabzug_projekt_tum_shipments plant shipment_date diagramm
+    chart lager plant lieferpositionen delivery_position pro tag daily tagesverlauf
+    time_series vertriebszentrum plant werk plant zeitverlauf time_series
+  tables:
+  - workspace.default.datenabzug_projekt_tum_shipments
+  columns:
+  - plant
+  - shipment_date
+  tags:
+  - lieferpositionen
+  - delivery_position
+  - time_series
+  - zeitverlauf
+  - tagesverlauf
+  - pro_tag
+  - diagramm
+  - chart
+  - shipment
+  - lager
+  - plant
+  - vertriebszentrum
+  - '9981'
+  - dezember
+  - december
+  - '2025'
+  - shipment_date
+  checksum: sha256:ad0fc9bf5040451f1554cc94cf7b088a11c083e052c3e9dbf0cb5b7b84b33e21
+  version: 1
