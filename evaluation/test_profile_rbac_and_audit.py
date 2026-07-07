@@ -18,6 +18,7 @@ from src.agent.memory_lifecycle import (
     write_approved_template,
 )
 from src.agent.memory_store import (
+    MemoryStoreError,
     create_candidate_from_run,
     load_candidates,
     mark_candidate_needs_changes,
@@ -228,6 +229,24 @@ class ProfileRbacAndAuditTests(unittest.TestCase):
                 self.assertEqual(audit_rows[-1]["candidate_id"], candidate["candidate_id"])
                 self.assertEqual(audit_rows[-1]["scenario"], "demo")
                 self.assertTrue(audit_rows[-1]["timestamp"])
+
+    def test_contributor_cannot_create_candidate_from_unsuccessful_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ScenarioPatch(self, "demo", Path(temp_dir) / "demo")
+            with patch.dict("os.environ", {"LOG_DIR": str(Path(temp_dir) / "logs")}, clear=False):
+                cases = [
+                    ("unvalidated", {"validation_success": False}),
+                    ("not_executed", {"execution_success": False}),
+                    ("missing_sql", {"generated_sql": "", "final_sql": ""}),
+                ]
+                for suffix, updates in cases:
+                    with self.subTest(suffix=suffix):
+                        record = run_record(f"run_{suffix}")
+                        record.update(updates)
+                        with self.assertRaises(MemoryStoreError):
+                            create_candidate_from_run(record, **CONTRIBUTOR)
+
+                self.assertEqual(load_candidates(), [])
 
     def test_reviewer_can_review_candidates_but_cannot_deactivate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

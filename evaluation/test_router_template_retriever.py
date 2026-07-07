@@ -65,8 +65,27 @@ def enabled_retrieval(scenario: str, query: str, memory_dir: Path) -> dict[str, 
 
 
 class RouterTemplateRetrieverTests(unittest.TestCase):
-    def test_disabled_memory_returns_enabled_false(self) -> None:
+    def test_memory_retrieval_defaults_to_enabled_for_supported_scenarios(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {}, clear=True):
+            for scenario in ("demo", "wuerth_local", "databricks"):
+                with self.subTest(scenario=scenario):
+                    result = retrieve_memory_for_router(
+                        "Revenue by customer",
+                        scenario=scenario,
+                        memory_dir=Path(temp_dir) / scenario,
+                    )
+
+                    self.assertTrue(result["enabled"])
+                    self.assertEqual(result["method"], "tfidf_vector_space")
+                    self.assertEqual(result["scenario"], scenario)
+                    self.assertEqual(result["no_match_reason"], "master_index_missing_or_empty")
+
+    def test_disabled_memory_returns_enabled_false(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {"MEMORY_RETRIEVAL_ENABLED": "false"},
+            clear=True,
+        ):
             result = retrieve_memory_for_router(
                 "Revenue by customer",
                 scenario="demo",

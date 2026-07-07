@@ -1,4 +1,5 @@
 import io
+import os
 import uuid
 from pathlib import Path
 
@@ -53,6 +54,7 @@ from src.agent.profiles import (
 )
 from src.agent.reporting_agent import rerender_summary
 from src.agent.response_profiles import display_policy_for_response_profile
+from src.agent.router_template_retriever import memory_retrieval_enabled
 from src.config.scenarios import (
     LOCAL_SCENARIO_OPTIONS,
     SCENARIOS,
@@ -803,6 +805,7 @@ def render_presentation_unavailable_compact(record: dict) -> None:
 
 def initialize_state() -> None:
     st.session_state.setdefault("selected_profile_id", DEFAULT_PROFILE_ID)
+    st.session_state.setdefault("memory_retrieval_enabled", memory_retrieval_enabled())
     if "data_scenario" in st.session_state:
         set_active_scenario_id(st.session_state.data_scenario)
     if "chats" not in st.session_state:
@@ -882,6 +885,21 @@ def scenario_display_label(scenario_id: str) -> str:
         "databricks": "Würth Databricks",
     }
     return labels.get(scenario_id, SCENARIOS[scenario_id].label)
+
+
+def apply_memory_retrieval_toggle() -> bool:
+    enabled = bool(
+        st.toggle(
+            "TF-IDF Memory aktivieren",
+            key="memory_retrieval_enabled",
+            help=(
+                "Wenn aktiv, sucht der Router scenario-spezifisch in freigegebenen, "
+                "aktiven Memory-Templates und gibt sie nur als SQL-Prompt-Guidance weiter."
+            ),
+        )
+    )
+    os.environ["MEMORY_RETRIEVAL_ENABLED"] = "true" if enabled else "false"
+    return enabled
 
 
 def build_streamlit_llm_config() -> SQLAgentConfig:
@@ -1123,6 +1141,7 @@ def render_sidebar() -> tuple[str, SQLAgentConfig, UserProfile]:
         set_active_scenario_id(selected_scenario_id)
         initialize_memory_files()
         scenario = get_active_scenario()
+        memory_enabled = apply_memory_retrieval_toggle()
 
         config = build_streamlit_llm_config()
         try:
@@ -1135,6 +1154,7 @@ def render_sidebar() -> tuple[str, SQLAgentConfig, UserProfile]:
             st.error(f"Datenbank-Backend ist nicht korrekt konfiguriert: {error}")
 
         st.write(f"Aktives Datenszenario: `{scenario_display_label(scenario.scenario_id)}`")
+        st.write(f"TF-IDF Memory: `{'aktiv' if memory_enabled else 'inaktiv'}`")
         st.write(f"Backend: `{backend_metadata.get('backend_display_name', backend_metadata.get('backend_name', ''))}`")
         st.write(f"SQL-Dialekt: `{backend_metadata.get('sql_dialect', '')}`")
         st.write(f"Semantischer Layer: `{backend_metadata.get('semantic_layer', scenario.semantic_layer_filename)}`")
@@ -1259,6 +1279,7 @@ def retry_with_comment(
                     _retry_status.write(f"  Intent: {intent}")
                 if tier or reason:
                     _retry_status.write(f"  Complexity: {tier} – {reason}")
+                _write_memory_step_status(_retry_status, metadata)
             _steps_log.append({"node": node, "label": label, "symbol": symbol,
                                 "duration": duration, "metadata": metadata})
 
@@ -1295,6 +1316,8 @@ def rerun_with_fallback(
             symbol = _STEP_SYMBOLS.get(node, "·")
             label = _STEP_LABELS.get(node, node)
             _fb_status.write(f"{symbol} {label}   {duration:.1f}s")
+            if node == "run_router":
+                _write_memory_step_status(_fb_status, metadata)
             _steps_log.append({"node": node, "label": label, "symbol": symbol,
                                 "duration": duration, "metadata": metadata})
 
@@ -2323,6 +2346,58 @@ def _format_token_usage(token_usage: dict | None) -> str:
     return f"Σ Tokens: {total:,} (Input: {input_tokens:,} · Output: {output_tokens:,})".replace(",", ".")
 
 
+def _memory_step_lines(metadata: dict) -> list[str]:
+    memory = metadata.get("memory_retrieval")
+    if not isinstance(memory, dict) or not memory:
+        return ["Memory: keine Retrieval-Metadaten verfügbar."]
+
+    enabled = bool(memory.get("enabled", False))
+    method = str(memory.get("method") or "-")
+    scenario = str(memory.get("scenario") or "-")
+    reason = str(memory.get("no_match_reason") or "").strip()
+    ambiguous = bool(memory.get("ambiguous", False))
+    candidates = memory.get("candidates", [])
+    included_count = len(candidates) if isinstance(candidates, list) else 0
+    top_matches = memory.get("top_matches", [])
+    if not isinstance(top_matches, list):
+        top_matches = []
+
+    lines = [
+        (
+            "Memory: "
+            f"{'aktiv' if enabled else 'inaktiv'} · "
+            f"Methode: {method} · Szenario: {scenario} · "
+            f"Inkludiert: {included_count}"
+        )
+    ]
+    if reason:
+        lines.append(f"Memory reason: {reason}")
+    if ambiguous:
+        lines.append("Memory ambiguous: ja")
+    if top_matches:
+        lines.append("Top-3 Memory Matches:")
+        for index, match in enumerate(top_matches[:3], start=1):
+            if not isinstance(match, dict):
+                continue
+            status = "inkludiert" if match.get("included") else "exkludiert"
+            score = match.get("score", "-")
+            template_id = match.get("template_id") or match.get("id") or "-"
+            lines.append(f"{index}. {template_id} · Score: {score} · {status}")
+    else:
+        lines.append("Top-3 Memory Matches: keine")
+    return lines
+
+
+def _write_memory_step_status(container, metadata: dict) -> None:
+    for line in _memory_step_lines(metadata):
+        container.write(f"  {line}")
+
+
+def _render_memory_step_details(metadata: dict) -> None:
+    for line in _memory_step_lines(metadata):
+        st.caption(line)
+
+
 def render_step_log(record: dict) -> None:
     step_log = record.get("agent_step_log", [])
     if not step_log:
@@ -2354,6 +2429,7 @@ def render_step_log(record: dict) -> None:
                     st.caption(f"Intent: {intent}")
                 if tier or reason:
                     st.caption(f"Complexity: {tier} – {reason}")
+                _render_memory_step_details(meta)
             if step.get("node") == "select_model":
                 primary = meta.get("primary", "")
                 tier = meta.get("tier", "")
@@ -2541,6 +2617,7 @@ def main() -> None:
                         status.write(f"  Intent: {intent}")
                     if tier or reason:
                         status.write(f"  Complexity: {tier} – {reason}")
+                    _write_memory_step_status(status, metadata)
                 if node_name == "select_model":
                     primary = metadata.get("primary", "")
                     tier = metadata.get("tier", "")

@@ -1,0 +1,75 @@
+id: delivery_positions_by_plant_period
+scenario: databricks
+status: approved
+is_active: true
+title: Delivery positions by plant in a date period
+intent: delivery_positions_by_plant_period
+trigger_phrases:
+  - Wie viele Lieferpositionen wurden im Dezember 2025 je Lager geliefert?
+  - Lieferpositionen je Lager Dezember 2025
+  - Lieferpositionen je Lager im Dezember 2025
+  - Lieferpositionen pro Vertriebszentrum im Zeitraum
+  - Delivery positions by plant for a period
+searchable_summary: Count delivery positions grouped by plant/Lager/Vertriebszentrum for a date period.
+searchable_terms:
+  - lieferpositionen
+  - delivery_position
+  - je_lager
+  - pro_lager
+  - by_plant
+  - lager
+  - plant
+  - vertriebszentrum
+  - dezember
+  - december
+  - "2025"
+  - shipment_date
+synonyms:
+  lieferpositionen: delivery_position
+  je lager: by_plant
+  pro lager: by_plant
+  je vertriebszentrum: by_plant
+  pro vertriebszentrum: by_plant
+  lager: plant
+  werk: plant
+  vertriebszentrum: plant
+required_tables:
+  - workspace.default.datenabzug_projekt_tum_shipments
+required_columns:
+  - plant
+  - shipment_date
+business_rules:
+  - Lieferpositionen are shipment rows; use COUNT(*) on workspace.default.datenabzug_projekt_tum_shipments.
+  - Group by plant when the user asks for counts per Lager, Werk, or Vertriebszentrum.
+  - Use shipment_date for shipment-side period filters.
+  - Do not join invoices for pure shipment counts.
+  - Order descending by delivery_position_count for ranking questions.
+sql_pattern: |
+  SELECT plant,
+         COUNT(*) AS delivery_position_count
+  FROM workspace.default.datenabzug_projekt_tum_shipments
+  WHERE shipment_date >= DATE '<start_date>'
+    AND shipment_date < DATE '<exclusive_end_date>'
+  GROUP BY plant
+  ORDER BY delivery_position_count DESC
+do_not_use_when:
+  - The user asks for a single specified plant/Lager and wants only one total number.
+  - The user asks for revenue, turnover, gross profit, or invoice-side metrics.
+  - The user explicitly asks for Versandstelle/shipping_point instead of Lager/Werk/Vertriebszentrum.
+validation_checks:
+  - SQL must be read-only SELECT.
+  - SQL must use only workspace.default.datenabzug_projekt_tum_shipments for this pure shipment-count question.
+  - SQL must group by plant.
+  - SQL must use COUNT(*) for Lieferpositionen.
+source_question: Wie viele Lieferpositionen wurden im Dezember 2025 je Lager geliefert?
+source_sql: |
+  SELECT plant,
+         COUNT(*) AS delivery_position_count
+  FROM workspace.default.datenabzug_projekt_tum_shipments
+  WHERE shipment_date >= DATE '2025-12-01'
+    AND shipment_date < DATE '2026-01-01'
+  GROUP BY plant
+  ORDER BY delivery_position_count DESC
+approved_by: manual_databricks_memory_seed
+approved_at: "2026-06-30T00:00:00Z"
+version: 1
