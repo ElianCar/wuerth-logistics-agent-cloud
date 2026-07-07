@@ -1,0 +1,83 @@
+id: delivery_positions_by_delivery_type_from_plant_period
+scenario: databricks
+status: approved
+is_active: true
+title: Delivery positions by delivery type from plant in a date period
+intent: delivery_positions_by_delivery_type_from_plant_period
+trigger_phrases:
+  - Wie verteilen sich die Lieferpositionen aus Lager 9981 im Dezember 2025 nach Lieferart?
+  - Lieferpositionen Lager 9981 Dezember 2025 nach Lieferart
+  - Lieferpositionen nach Lieferart aus Lager 9981
+  - Lieferpositionen je Delivery Type für Vertriebszentrum 9981
+  - Aufteilung Lieferpositionen nach Lieferart im Dezember 2025
+  - Welche Lieferarten hatten die meisten Lieferpositionen in Lager 9981?
+  - Delivery positions by delivery type for plant 9981
+  - Shipment row count by delivery_type for one plant
+searchable_summary: Count delivery positions grouped by delivery_type for a plant/Lager/Vertriebszentrum and shipment date period.
+searchable_terms:
+  - lieferpositionen
+  - delivery_position
+  - delivery_type
+  - lieferart
+  - aufteilung
+  - breakdown
+  - shipment
+  - lager
+  - plant
+  - vertriebszentrum
+  - "9981"
+  - dezember
+  - december
+  - "2025"
+  - shipment_date
+synonyms:
+  lieferpositionen: delivery_position
+  lieferart: delivery_type
+  delivery type: delivery_type
+  aufteilung: breakdown
+  lager: plant
+  werk: plant
+  vertriebszentrum: plant
+required_tables:
+  - workspace.default.datenabzug_projekt_tum_shipments
+required_columns:
+  - plant
+  - shipment_date
+  - delivery_type
+business_rules:
+  - Lieferpositionen are shipment rows; use COUNT(*) on workspace.default.datenabzug_projekt_tum_shipments.
+  - Group by delivery_type only when the user asks for Lieferart, delivery type, split, Aufteilung, or breakdown.
+  - For Lager, Werk, or Vertriebszentrum use the shipment column plant.
+  - Use shipment_date for shipment-side period filters.
+  - Do not translate delivery_type codes without a verified code dictionary.
+sql_pattern: |
+  SELECT delivery_type,
+         COUNT(*) AS delivery_position_count
+  FROM workspace.default.datenabzug_projekt_tum_shipments
+  WHERE plant = '<plant_id>'
+    AND shipment_date >= DATE '<start_date>'
+    AND shipment_date < DATE '<exclusive_end_date>'
+  GROUP BY delivery_type
+  ORDER BY delivery_position_count DESC
+do_not_use_when:
+  - The user asks only for one total number and does not request delivery type/Lieferart breakdown.
+  - The user asks for revenue, turnover, gross profit, or invoice-side metrics.
+  - The user asks for distinct deliveries/Lieferungen instead of delivery positions/Lieferpositionen.
+validation_checks:
+  - SQL must be read-only SELECT.
+  - SQL must use only workspace.default.datenabzug_projekt_tum_shipments for this pure shipment-count question.
+  - SQL must group by delivery_type.
+  - SQL must use COUNT(*) for Lieferpositionen.
+source_question: Wie verteilen sich die Lieferpositionen aus Lager 9981 im Dezember 2025 nach Lieferart?
+source_sql: |
+  SELECT delivery_type,
+         COUNT(*) AS delivery_position_count
+  FROM workspace.default.datenabzug_projekt_tum_shipments
+  WHERE plant = '9981'
+    AND shipment_date >= DATE '2025-12-01'
+    AND shipment_date < DATE '2026-01-01'
+  GROUP BY delivery_type
+  ORDER BY delivery_position_count DESC
+approved_by: manual_databricks_memory_seed
+approved_at: "2026-06-30T00:00:00Z"
+version: 1

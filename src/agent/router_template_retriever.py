@@ -14,7 +14,7 @@ ERROR_REASON = "memory_retrieval_error"
 
 
 def memory_retrieval_enabled() -> bool:
-    value = os.getenv("MEMORY_RETRIEVAL_ENABLED", "false").strip().lower()
+    value = os.getenv("MEMORY_RETRIEVAL_ENABLED", "true").strip().lower()
     return value in {"1", "true", "yes", "y", "on"}
 
 
@@ -33,6 +33,8 @@ def empty_memory_retrieval(
         "query_original": query_original,
         "query_preprocessed": query_preprocessed,
         "candidates": [],
+        "top_matches": [],
+        "min_score": None,
         "no_match_reason": no_match_reason,
         "ambiguous": False,
     }
@@ -89,6 +91,8 @@ def retrieve_memory_for_router(
         "query_original": result.get("query_original", user_question),
         "query_preprocessed": result.get("query_preprocessed", query_preprocessed),
         "candidates": list(result.get("candidates", []) or []),
+        "top_matches": list(result.get("top_matches", []) or []),
+        "min_score": result.get("min_score"),
         "no_match_reason": result.get("no_match_reason", ""),
         "ambiguous": bool(result.get("ambiguous", False)),
     }

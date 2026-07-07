@@ -338,6 +338,8 @@ def _memory_retrieval_result(
     query_original: str,
     query_preprocessed: str,
     candidates: list[dict[str, Any]] | None = None,
+    top_matches: list[dict[str, Any]] | None = None,
+    min_score: float = DEFAULT_MIN_SCORE,
     no_match_reason: str = "",
     ambiguous: bool = False,
 ) -> dict[str, Any]:
@@ -349,6 +351,8 @@ def _memory_retrieval_result(
             "query_original": query_original,
             "query_preprocessed": query_preprocessed,
             "candidates": candidates or [],
+            "top_matches": top_matches or [],
+            "min_score": min_score,
             "no_match_reason": no_match_reason,
             "ambiguous": ambiguous,
         }
@@ -441,17 +445,37 @@ def retrieve_memory_templates(
     for record, tokens in zip(records, template_tokens):
         score = _cosine_similarity(query_vector, _tfidf_vector(tokens, idf))
         matched_terms = [token for token in query_tokens if token in set(tokens)]
-        if score >= min_score:
-            scored.append((score, record, matched_terms))
+        scored.append((score, record, matched_terms))
 
     scored.sort(key=lambda item: (-item[0], str(item[1].get("id", ""))))
-    selected = scored[: max(0, top_k)]
+    top_display_matches = [
+        {
+            "template_id": record.get("id", ""),
+            "score": round(score, 6),
+            "path": record.get("path", ""),
+            "intent": record.get("intent", ""),
+            "title": record.get("title", ""),
+            "matched_terms": matched_terms,
+            "required_tables": record.get("tables", []),
+            "required_columns": record.get("columns", []),
+            "included": score >= min_score,
+            "passed_threshold": score >= min_score,
+        }
+        for score, record, matched_terms in scored[: max(0, top_k)]
+    ]
+    selected = [
+        (score, record, matched_terms)
+        for score, record, matched_terms in scored
+        if score >= min_score
+    ][: max(0, top_k)]
     if not selected:
         return _memory_retrieval_result(
             enabled=True,
             scenario=scenario_id,
             query_original=user_question,
             query_preprocessed=query_preprocessed,
+            top_matches=top_display_matches,
+            min_score=min_score,
             no_match_reason="no_template_above_threshold",
         )
 
@@ -480,5 +504,7 @@ def retrieve_memory_templates(
         query_original=user_question,
         query_preprocessed=query_preprocessed,
         candidates=candidates,
+        top_matches=top_display_matches,
+        min_score=min_score,
         ambiguous=ambiguous,
     )

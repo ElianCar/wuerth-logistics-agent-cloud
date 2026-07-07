@@ -46,7 +46,7 @@ def fake_router_payload(**overrides: object) -> str:
 class RouterTests(unittest.TestCase):
     def setUp(self) -> None:
         self._original_memory_enabled = os.environ.get("MEMORY_RETRIEVAL_ENABLED")
-        os.environ.pop("MEMORY_RETRIEVAL_ENABLED", None)
+        os.environ["MEMORY_RETRIEVAL_ENABLED"] = "false"
         set_active_scenario_id("demo")
 
     def tearDown(self) -> None:

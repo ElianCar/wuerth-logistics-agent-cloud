@@ -185,6 +185,23 @@ class MemoryVectorRetrieverTests(unittest.TestCase):
 
         self.assertEqual(result["candidates"], [])
         self.assertEqual(result["no_match_reason"], "no_template_above_threshold")
+        self.assertGreaterEqual(len(result["top_matches"]), 1)
+        self.assertFalse(result["top_matches"][0]["included"])
+
+    def test_top_matches_show_included_and_excluded_without_changing_candidates(self) -> None:
+        temp, memory_dir = self.build_index()
+        with temp:
+            result = retrieval(
+                memory_dir,
+                "Revenue by shipping point freight",
+                top_k=3,
+                min_score=0.20,
+            )
+
+        self.assertLessEqual(len(result["candidates"]), len(result["top_matches"]))
+        self.assertEqual(len(result["top_matches"]), 3)
+        self.assertTrue(any(match["included"] for match in result["top_matches"]))
+        self.assertTrue(any(not match["included"] for match in result["top_matches"]))
 
     def test_top_k_limits_number_of_candidates(self) -> None:
         temp, memory_dir = self.build_index()
