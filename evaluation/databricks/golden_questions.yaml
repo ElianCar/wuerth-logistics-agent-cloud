@@ -1,0 +1,42 @@
+questions:
+  - question_id: Q01
+    title: Lieferpositionen aus Lager 8240 im Dezember 2025
+    question: >
+      Wie viele Lieferpositionen wurden zwischen 01.12.2025 und 31.12.2025 aus dem Lager 8240 geliefert?
+    solution_sql_file: q01.sql
+    tags: [databricks, shipments, count, plant, period]
+    compare:
+      numeric_tolerance: 0.01
+    max_preview_rows: 20
+
+  - question_id: Q02
+    title: Top-3 Produkte je Vertriebszentrum nach Umsatz und Lieferpositionen
+    question: >
+      Welche Produkte sind jeweils gemessen an Lieferpositionen und Umsatz die Top 3 je Vertriebszentrum?
+    solution_sql_file: q02.sql
+    tags: [databricks, invoices, shipments, ranking, faceted]
+    compare:
+      numeric_tolerance: 0.01
+    max_preview_rows: 50
+
+  - question_id: Q03
+    title: Umsatz Vertriebszentrum 9981 im Dezember 2025
+    question: >
+      Wie viel Umsatz lief über Vertriebszentrum 9981 im Zeitraum Dezember 2025? Zeige mir den
+      Umsatz der Lieferung zusätzlich in einem Diagramm im Zeitlaufverlauf.
+    solution_sql_file: q03.sql
+    tags: [databricks, invoices, revenue, plant, period]
+    compare:
+      numeric_tolerance: 0.01
+    max_preview_rows: 20
+
+  - question_id: Q04
+    title: Aufträge in mehr als einem Vertriebszentrum inkl. Anteil
+    question: >
+      Wie viele Aufträge wurden im Zeitraum 01.07.2025 – 31.12.2025 in mehr als einem
+      Vertriebszentrum bearbeitet und verschickt, inklusive des Anteils an allen Aufträgen?
+    solution_sql_file: q04.sql
+    tags: [databricks, shipments, distinct_count, share]
+    compare:
+      numeric_tolerance: 0.01
+    max_preview_rows: 20

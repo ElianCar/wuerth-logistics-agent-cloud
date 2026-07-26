@@ -1,0 +1,70 @@
+id: tmpl_welche_produkte_sind_jeweils_gemessen_an_lieferp_20260725_140457_5b6a
+scenario: databricks
+status: approved
+is_active: true
+title: Welche Produkte sind jeweils gemessen an Lieferpositionen und Umsatz die Top
+  3 je Vertriebszentrum
+intent: Welche Produkte sind jeweils gemessen an Lieferpositionen und Umsatz die Top
+  3 je Vertriebszentrum
+trigger_phrases:
+- Welche Produkte sind jeweils gemessen an Lieferpositionen und Umsatz die Top 3 je
+  Vertriebszentrum?
+- welche produkte sind jeweils gemessen an lieferpositionen und umsatz die top 3 je
+  vertriebszentrum
+searchable_summary: 'Welche Produkte sind jeweils gemessen an Lieferpositionen und
+  Umsatz die Top 3 je Vertriebszentrum. Source question: Welche Produkte sind jeweils
+  gemessen an Lieferpositionen und Umsatz die Top 3 je Vertriebszentrum?. Required
+  tables: workspace.default.datenabzug_projekt_tum_invoices, workspace.default.datenabzug_projekt_tum_shipments.'
+searchable_terms:
+- welche
+- produkte
+- sind
+- jeweils
+- gemessen
+- an
+- lieferpositionen
+- und
+- umsatz
+- die
+- top
+- '3'
+- je
+- vertriebszentrum
+- workspace.default.datenabzug_projekt_tum_invoices
+- workspace.default.datenabzug_projekt_tum_shipments
+synonyms: {}
+required_tables:
+- workspace.default.datenabzug_projekt_tum_invoices
+- workspace.default.datenabzug_projekt_tum_shipments
+required_columns: []
+business_rules:
+- Automatically generated candidate from successful run. Requires manual review.
+sql_pattern: Automatically generated candidate from successful run. Requires manual
+  review.
+do_not_use_when:
+- The current question asks for different tables, metrics, filters, or scenario data.
+validation_checks:
+- Final SQL must be read-only SELECT/WITH.
+- Final SQL must use only known schema tables and columns.
+- Final SQL must still pass validation before execution.
+source_question: Welche Produkte sind jeweils gemessen an Lieferpositionen und Umsatz
+  die Top 3 je Vertriebszentrum?
+source_sql: WITH lieferpositionen AS ( SELECT plant, customer_material AS product,
+  COUNT(*) AS lieferpositionen, ROW_NUMBER() OVER (PARTITION BY plant ORDER BY COUNT(*)
+  DESC) AS rn FROM workspace.default.datenabzug_projekt_tum_shipments GROUP BY plant,
+  customer_material ), umsatz AS ( SELECT s.plant, i.product, SUM(i.turnover_inv)
+  AS revenue, ROW_NUMBER() OVER (PARTITION BY s.plant ORDER BY SUM(i.turnover_inv)
+  DESC) AS rn FROM workspace.default.datenabzug_projekt_tum_invoices i JOIN (SELECT
+  DISTINCT order_number, plant FROM workspace.default.datenabzug_projekt_tum_shipments)
+  s ON i.order_number = s.order_number GROUP BY s.plant, i.product ) SELECT l.plant
+  AS plant, 'Lieferpositionen' AS metric, l.product AS product, CAST(l.lieferpositionen
+  AS DOUBLE) AS metric_value, l.rn AS rank FROM lieferpositionen l WHERE l.rn <= 3
+  UNION ALL SELECT u.plant AS plant, 'Umsatz' AS metric, u.product AS product, CAST(u.revenue
+  AS DOUBLE) AS metric_value, u.rn AS rank FROM umsatz u WHERE u.rn <= 3 ORDER BY
+  plant, metric, rank LIMIT 50
+approved_by: template_reviewer
+approved_at: '2026-07-25T14:04:57'
+version: 1
+created_from_candidate_id: cand_20260725_140040_a42b
+source_run_id: run_20260725_135609_e27c
+dataset_id: wuerth_shipment_invoice_v1

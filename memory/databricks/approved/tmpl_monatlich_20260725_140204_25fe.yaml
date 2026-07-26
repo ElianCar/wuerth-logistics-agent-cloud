@@ -1,0 +1,41 @@
+id: tmpl_monatlich_20260725_140204_25fe
+scenario: databricks
+status: approved
+is_active: true
+title: Monatlich
+intent: Monatlich
+trigger_phrases:
+- Monatlich
+- monatlich
+searchable_summary: 'Monatlich. Source question: Monatlich. Required tables: workspace.default.datenabzug_projekt_tum_invoices,
+  workspace.default.datenabzug_projekt_tum_shipments.'
+searchable_terms:
+- monatlich
+- workspace.default.datenabzug_projekt_tum_invoices
+- workspace.default.datenabzug_projekt_tum_shipments
+synonyms: {}
+required_tables:
+- workspace.default.datenabzug_projekt_tum_invoices
+- workspace.default.datenabzug_projekt_tum_shipments
+required_columns: []
+business_rules:
+- Automatically generated candidate from successful run. Requires manual review.
+sql_pattern: Automatically generated candidate from successful run. Requires manual
+  review.
+do_not_use_when:
+- The current question asks for different tables, metrics, filters, or scenario data.
+validation_checks:
+- Final SQL must be read-only SELECT/WITH.
+- Final SQL must use only known schema tables and columns.
+- Final SQL must still pass validation before execution.
+source_question: Monatlich
+source_sql: SELECT i.calendar_yearmonth, SUM(i.turnover_inv) AS revenue FROM workspace.default.datenabzug_projekt_tum_invoices
+  i WHERE i.calendar_yearmonth = '202512' AND i.order_number IN ( SELECT order_number
+  FROM workspace.default.datenabzug_projekt_tum_shipments WHERE plant = '9981' ) GROUP
+  BY i.calendar_yearmonth ORDER BY i.calendar_yearmonth
+approved_by: template_reviewer
+approved_at: '2026-07-25T14:02:04'
+version: 1
+created_from_candidate_id: cand_20260630_102247_5959
+source_run_id: run_20260630_102019_d983
+dataset_id: wuerth_shipment_invoice_v1

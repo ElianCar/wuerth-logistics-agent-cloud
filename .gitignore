@@ -10,6 +10,8 @@ database/tpch.duckdb
 evaluation/evaluation_results.csv
 evaluation/**/evaluation_results.csv
 evaluation/**/golden_results.jsonl
+evaluation/**/golden_report_runs.jsonl
+evaluation/**/reports/
 logs/*.bak_*
 logs/*.log
 logs/*.csv

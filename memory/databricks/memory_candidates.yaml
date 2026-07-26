@@ -1,1 +1,363 @@
-candidates: []
+candidates:
+- candidate_id: cand_20260630_102247_5959
+  scenario: databricks
+  dataset_id: wuerth_shipment_invoice_v1
+  run_id: run_20260630_102019_d983
+  feedback_id: null
+  status: approved
+  is_active: false
+  candidate_type: solution_template
+  created_at: '2026-06-30T10:22:47'
+  updated_at: '2026-07-25T14:02:05'
+  original_question: Monatlich
+  generated_answer: Die Abfrage lieferte 1 Zeilen.
+  generated_sql: "SELECT i.calendar_yearmonth, SUM(i.turnover_inv) AS revenue\nFROM\
+    \ workspace.default.datenabzug_projekt_tum_invoices i\nWHERE i.calendar_yearmonth\
+    \ = '202512'\n  AND i.order_number IN (\n    SELECT order_number\n    FROM workspace.default.datenabzug_projekt_tum_shipments\n\
+    \    WHERE plant = '9981'\n  )\nGROUP BY i.calendar_yearmonth\nORDER BY i.calendar_yearmonth"
+  final_sql: "SELECT i.calendar_yearmonth, SUM(i.turnover_inv) AS revenue\nFROM workspace.default.datenabzug_projekt_tum_invoices\
+    \ i\nWHERE i.calendar_yearmonth = '202512'\n  AND i.order_number IN (\n    SELECT\
+    \ order_number\n    FROM workspace.default.datenabzug_projekt_tum_shipments\n\
+    \    WHERE plant = '9981'\n  )\nGROUP BY i.calendar_yearmonth\nORDER BY i.calendar_yearmonth"
+  model_primary: claude-opus-4-8
+  model_used: claude-opus-4-8
+  fallback_used: false
+  validation_success: true
+  execution_success: true
+  error_type: null
+  error_message: null
+  row_count: 1
+  source_tables:
+  - workspace.default.datenabzug_projekt_tum_invoices
+  - workspace.default.datenabzug_projekt_tum_shipments
+  created_from_positive_feedback: false
+  feedback:
+    rating: null
+    comment: null
+    corrected_sql: null
+    expected_answer: null
+  proposed_template:
+    scenario: databricks
+    dataset_id: wuerth_shipment_invoice_v1
+    intent: Monatlich
+    trigger_phrases:
+    - Monatlich
+    - monatlich
+    required_tables:
+    - workspace.default.datenabzug_projekt_tum_invoices
+    - workspace.default.datenabzug_projekt_tum_shipments
+    metric_definitions: {}
+    join_logic: []
+    sql_skeleton: "SELECT i.calendar_yearmonth, SUM(i.turnover_inv) AS revenue\nFROM\
+      \ workspace.default.datenabzug_projekt_tum_invoices i\nWHERE i.calendar_yearmonth\
+      \ = '202512'\n  AND i.order_number IN (\n    SELECT order_number\n    FROM workspace.default.datenabzug_projekt_tum_shipments\n\
+      \    WHERE plant = '9981'\n  )\nGROUP BY i.calendar_yearmonth\nORDER BY i.calendar_yearmonth"
+    notes: Automatically generated candidate from successful run. Requires manual
+      review.
+  review:
+    reviewed_by: template_reviewer
+    reviewed_at: '2026-07-25T14:02:05'
+    review_comment: null
+    rejection_reason: null
+    approved_template_id: tmpl_monatlich_20260725_140204_25fe
+    runtime_memory_target: approved_yaml
+- candidate_id: cand_20260630_102638_3b1e
+  scenario: databricks
+  dataset_id: wuerth_shipment_invoice_v1
+  run_id: run_20260630_094454_f3ca
+  feedback_id: null
+  status: approved
+  is_active: false
+  candidate_type: solution_template
+  created_at: '2026-06-30T10:26:38'
+  updated_at: '2026-06-30T10:27:22'
+  original_question: Wie viele Lieferpositionen wurden zwischen 01.12.2025 und 31.12.2025
+    aus dem Lager 8240 geliefert?
+  generated_answer: Die Antwort ist 9345.
+  generated_sql: "SELECT COUNT(*) AS lieferpositionen\nFROM workspace.default.datenabzug_projekt_tum_shipments\n\
+    WHERE plant = '8240'\n  AND shipment_date >= '2025-12-01'\n  AND shipment_date\
+    \ <= '2025-12-31'"
+  final_sql: "SELECT COUNT(*) AS lieferpositionen\nFROM workspace.default.datenabzug_projekt_tum_shipments\n\
+    WHERE plant = '8240'\n  AND shipment_date >= '2025-12-01'\n  AND shipment_date\
+    \ <= '2025-12-31'"
+  model_primary: claude-haiku-4-5-20251001
+  model_used: claude-haiku-4-5-20251001
+  fallback_used: false
+  validation_success: true
+  execution_success: true
+  error_type: null
+  error_message: null
+  row_count: 1
+  source_tables:
+  - workspace.default.datenabzug_projekt_tum_shipments
+  created_from_positive_feedback: false
+  feedback:
+    rating: null
+    comment: null
+    corrected_sql: null
+    expected_answer: null
+  proposed_template:
+    scenario: databricks
+    dataset_id: wuerth_shipment_invoice_v1
+    intent: Wie viele Lieferpositionen wurden zwischen 01.12.2025 und 31.12.2025 aus
+      dem Lager 8240 geliefert
+    trigger_phrases:
+    - Wie viele Lieferpositionen wurden zwischen 01.12.2025 und 31.12.2025 aus dem
+      Lager 8240 geliefert?
+    - wie viele lieferpositionen wurden zwischen 01122025 und 31122025 aus dem lager
+      8240 geliefert
+    required_tables:
+    - workspace.default.datenabzug_projekt_tum_shipments
+    metric_definitions: {}
+    join_logic: []
+    sql_skeleton: "SELECT COUNT(*) AS lieferpositionen\nFROM workspace.default.datenabzug_projekt_tum_shipments\n\
+      WHERE plant = '8240'\n  AND shipment_date >= '2025-12-01'\n  AND shipment_date\
+      \ <= '2025-12-31'"
+    notes: Automatically generated candidate from successful run. Requires manual
+      review.
+  review:
+    reviewed_by: template_reviewer
+    reviewed_at: '2026-06-30T10:27:22'
+    review_comment: null
+    rejection_reason: null
+    approved_template_id: tmpl_wie_viele_lieferpositionen_wurden_zwischen_01_12_20260630_102721_5ccf
+    runtime_memory_target: approved_yaml
+- candidate_id: cand_20260630_153139_2ab3
+  scenario: databricks
+  dataset_id: wuerth_shipment_invoice_v1
+  run_id: run_20260630_111707_955c
+  feedback_id: null
+  status: pending_review
+  is_active: false
+  candidate_type: solution_template
+  created_at: '2026-06-30T15:31:39'
+  updated_at: '2026-06-30T15:31:39'
+  original_question: Monatlich
+  generated_answer: Die Abfrage lieferte 1 Zeilen.
+  generated_sql: "SELECT i.calendar_yearmonth, SUM(i.turnover_inv) AS revenue\nFROM\
+    \ workspace.default.datenabzug_projekt_tum_invoices i\nWHERE i.calendar_day >=\
+    \ '2025-12-01'\n  AND i.calendar_day <= '2025-12-31'\n  AND i.order_number IN\
+    \ (\n    SELECT order_number\n    FROM workspace.default.datenabzug_projekt_tum_shipments\n\
+    \    WHERE plant = '9981'\n  )\nGROUP BY i.calendar_yearmonth\nORDER BY i.calendar_yearmonth"
+  final_sql: "SELECT i.calendar_yearmonth, SUM(i.turnover_inv) AS revenue\nFROM workspace.default.datenabzug_projekt_tum_invoices\
+    \ i\nWHERE i.calendar_day >= '2025-12-01'\n  AND i.calendar_day <= '2025-12-31'\n\
+    \  AND i.order_number IN (\n    SELECT order_number\n    FROM workspace.default.datenabzug_projekt_tum_shipments\n\
+    \    WHERE plant = '9981'\n  )\nGROUP BY i.calendar_yearmonth\nORDER BY i.calendar_yearmonth"
+  model_primary: claude-opus-4-8
+  model_used: claude-opus-4-8
+  fallback_used: false
+  validation_success: true
+  execution_success: true
+  error_type: null
+  error_message: null
+  row_count: 1
+  source_tables: &id001
+  - workspace.default.datenabzug_projekt_tum_invoices
+  - workspace.default.datenabzug_projekt_tum_shipments
+  created_from_positive_feedback: false
+  feedback:
+    rating: null
+    comment: null
+    corrected_sql: null
+    expected_answer: null
+  proposed_template:
+    scenario: databricks
+    dataset_id: wuerth_shipment_invoice_v1
+    intent: Monatlich
+    trigger_phrases:
+    - Monatlich
+    - monatlich
+    required_tables: *id001
+    metric_definitions: {}
+    join_logic: []
+    sql_skeleton: "SELECT i.calendar_yearmonth, SUM(i.turnover_inv) AS revenue\nFROM\
+      \ workspace.default.datenabzug_projekt_tum_invoices i\nWHERE i.calendar_day\
+      \ >= '2025-12-01'\n  AND i.calendar_day <= '2025-12-31'\n  AND i.order_number\
+      \ IN (\n    SELECT order_number\n    FROM workspace.default.datenabzug_projekt_tum_shipments\n\
+      \    WHERE plant = '9981'\n  )\nGROUP BY i.calendar_yearmonth\nORDER BY i.calendar_yearmonth"
+    notes: Automatically generated candidate from successful run. Requires manual
+      review.
+  review:
+    reviewed_by: null
+    reviewed_at: null
+    review_comment: null
+    rejection_reason: null
+    approved_template_id: null
+- candidate_id: cand_20260708_084008_629f
+  scenario: databricks
+  dataset_id: wuerth_shipment_invoice_v1
+  run_id: run_20260708_083625_5912
+  feedback_id: null
+  status: pending_review
+  is_active: false
+  candidate_type: solution_template
+  created_at: '2026-07-08T08:40:08'
+  updated_at: '2026-07-08T08:40:08'
+  original_question: Welche Produkte sind jeweils gemessen an Umsatz und Lieferpositionen
+    die Top 3 je Vertriebszentrum?
+  generated_answer: Die Abfrage lieferte 50 Zeilen.
+  generated_sql: "SELECT plant, product, revenue, lieferpositionen, rank_revenue,\
+    \ rank_lieferpositionen\nFROM (\n  SELECT plant, product, revenue, lieferpositionen,\n\
+    \         RANK() OVER (PARTITION BY plant ORDER BY revenue DESC) AS rank_revenue,\n\
+    \         RANK() OVER (PARTITION BY plant ORDER BY lieferpositionen DESC) AS rank_lieferpositionen\n\
+    \  FROM (\n    SELECT sp.plant, i.product,\n           SUM(i.turnover_inv) AS\
+    \ revenue,\n           COUNT(*) AS lieferpositionen\n    FROM workspace.default.datenabzug_projekt_tum_invoices\
+    \ i\n    JOIN (\n      SELECT DISTINCT order_number, plant\n      FROM workspace.default.datenabzug_projekt_tum_shipments\n\
+    \    ) sp\n      ON i.order_number = sp.order_number\n    GROUP BY sp.plant, i.product\n\
+    \  ) agg\n) ranked\nWHERE rank_revenue <= 3 OR rank_lieferpositionen <= 3\nORDER\
+    \ BY plant, rank_revenue, rank_lieferpositionen\nLIMIT 50"
+  final_sql: "SELECT plant, product, revenue, lieferpositionen, rank_revenue, rank_lieferpositionen\n\
+    FROM (\n  SELECT plant, product, revenue, lieferpositionen,\n         RANK() OVER\
+    \ (PARTITION BY plant ORDER BY revenue DESC) AS rank_revenue,\n         RANK()\
+    \ OVER (PARTITION BY plant ORDER BY lieferpositionen DESC) AS rank_lieferpositionen\n\
+    \  FROM (\n    SELECT sp.plant, i.product,\n           SUM(i.turnover_inv) AS\
+    \ revenue,\n           COUNT(*) AS lieferpositionen\n    FROM workspace.default.datenabzug_projekt_tum_invoices\
+    \ i\n    JOIN (\n      SELECT DISTINCT order_number, plant\n      FROM workspace.default.datenabzug_projekt_tum_shipments\n\
+    \    ) sp\n      ON i.order_number = sp.order_number\n    GROUP BY sp.plant, i.product\n\
+    \  ) agg\n) ranked\nWHERE rank_revenue <= 3 OR rank_lieferpositionen <= 3\nORDER\
+    \ BY plant, rank_revenue, rank_lieferpositionen\nLIMIT 50"
+  model_primary: claude-opus-4-8
+  model_used: claude-opus-4-8
+  fallback_used: false
+  validation_success: true
+  execution_success: true
+  error_type: null
+  error_message: null
+  row_count: 50
+  source_tables: &id002
+  - workspace.default.datenabzug_projekt_tum_invoices
+  - workspace.default.datenabzug_projekt_tum_shipments
+  created_from_positive_feedback: false
+  feedback:
+    rating: null
+    comment: null
+    corrected_sql: null
+    expected_answer: null
+  proposed_template:
+    scenario: databricks
+    dataset_id: wuerth_shipment_invoice_v1
+    intent: Welche Produkte sind jeweils gemessen an Umsatz und Lieferpositionen die
+      Top 3 je Vertriebszentrum
+    trigger_phrases:
+    - Welche Produkte sind jeweils gemessen an Umsatz und Lieferpositionen die Top
+      3 je Vertriebszentrum?
+    - welche produkte sind jeweils gemessen an umsatz und lieferpositionen die top
+      3 je vertriebszentrum
+    required_tables: *id002
+    metric_definitions: {}
+    join_logic: []
+    sql_skeleton: "SELECT plant, product, revenue, lieferpositionen, rank_revenue,\
+      \ rank_lieferpositionen\nFROM (\n  SELECT plant, product, revenue, lieferpositionen,\n\
+      \         RANK() OVER (PARTITION BY plant ORDER BY revenue DESC) AS rank_revenue,\n\
+      \         RANK() OVER (PARTITION BY plant ORDER BY lieferpositionen DESC) AS\
+      \ rank_lieferpositionen\n  FROM (\n    SELECT sp.plant, i.product,\n       \
+      \    SUM(i.turnover_inv) AS revenue,\n           COUNT(*) AS lieferpositionen\n\
+      \    FROM workspace.default.datenabzug_projekt_tum_invoices i\n    JOIN (\n\
+      \      SELECT DISTINCT order_number, plant\n      FROM workspace.default.datenabzug_projekt_tum_shipments\n\
+      \    ) sp\n      ON i.order_number = sp.order_number\n    GROUP BY sp.plant,\
+      \ i.product\n  ) agg\n) ranked\nWHERE rank_revenue <= 3 OR rank_lieferpositionen\
+      \ <= 3\nORDER BY plant, rank_revenue, rank_lieferpositionen\nLIMIT 50"
+    notes: Automatically generated candidate from successful run. Requires manual
+      review.
+  review:
+    reviewed_by: null
+    reviewed_at: null
+    review_comment: null
+    rejection_reason: null
+    approved_template_id: null
+- candidate_id: cand_20260725_140040_a42b
+  scenario: databricks
+  dataset_id: wuerth_shipment_invoice_v1
+  run_id: run_20260725_135609_e27c
+  feedback_id: fb_20260725_140012_d4cd
+  status: approved
+  is_active: false
+  candidate_type: solution_template
+  created_at: '2026-07-25T14:00:40'
+  updated_at: '2026-07-25T14:04:57'
+  original_question: Welche Produkte sind jeweils gemessen an Lieferpositionen und
+    Umsatz die Top 3 je Vertriebszentrum?
+  generated_answer: Die Abfrage lieferte 50 Zeilen.
+  generated_sql: "WITH lieferpositionen AS (\n  SELECT plant, customer_material AS\
+    \ product, COUNT(*) AS lieferpositionen,\n    ROW_NUMBER() OVER (PARTITION BY\
+    \ plant ORDER BY COUNT(*) DESC) AS rn\n  FROM workspace.default.datenabzug_projekt_tum_shipments\n\
+    \  GROUP BY plant, customer_material\n),\numsatz AS (\n  SELECT s.plant, i.product,\
+    \ SUM(i.turnover_inv) AS revenue,\n    ROW_NUMBER() OVER (PARTITION BY s.plant\
+    \ ORDER BY SUM(i.turnover_inv) DESC) AS rn\n  FROM workspace.default.datenabzug_projekt_tum_invoices\
+    \ i\n  JOIN (SELECT DISTINCT order_number, plant FROM workspace.default.datenabzug_projekt_tum_shipments)\
+    \ s\n    ON i.order_number = s.order_number\n  GROUP BY s.plant, i.product\n)\n\
+    SELECT\n  l.plant AS plant,\n  'Lieferpositionen' AS metric,\n  l.product AS product,\n\
+    \  CAST(l.lieferpositionen AS DOUBLE) AS metric_value,\n  l.rn AS rank\nFROM lieferpositionen\
+    \ l\nWHERE l.rn <= 3\nUNION ALL\nSELECT\n  u.plant AS plant,\n  'Umsatz' AS metric,\n\
+    \  u.product AS product,\n  CAST(u.revenue AS DOUBLE) AS metric_value,\n  u.rn\
+    \ AS rank\nFROM umsatz u\nWHERE u.rn <= 3\nORDER BY plant, metric, rank\nLIMIT\
+    \ 50"
+  final_sql: "WITH lieferpositionen AS (\n  SELECT plant, customer_material AS product,\
+    \ COUNT(*) AS lieferpositionen,\n    ROW_NUMBER() OVER (PARTITION BY plant ORDER\
+    \ BY COUNT(*) DESC) AS rn\n  FROM workspace.default.datenabzug_projekt_tum_shipments\n\
+    \  GROUP BY plant, customer_material\n),\numsatz AS (\n  SELECT s.plant, i.product,\
+    \ SUM(i.turnover_inv) AS revenue,\n    ROW_NUMBER() OVER (PARTITION BY s.plant\
+    \ ORDER BY SUM(i.turnover_inv) DESC) AS rn\n  FROM workspace.default.datenabzug_projekt_tum_invoices\
+    \ i\n  JOIN (SELECT DISTINCT order_number, plant FROM workspace.default.datenabzug_projekt_tum_shipments)\
+    \ s\n    ON i.order_number = s.order_number\n  GROUP BY s.plant, i.product\n)\n\
+    SELECT\n  l.plant AS plant,\n  'Lieferpositionen' AS metric,\n  l.product AS product,\n\
+    \  CAST(l.lieferpositionen AS DOUBLE) AS metric_value,\n  l.rn AS rank\nFROM lieferpositionen\
+    \ l\nWHERE l.rn <= 3\nUNION ALL\nSELECT\n  u.plant AS plant,\n  'Umsatz' AS metric,\n\
+    \  u.product AS product,\n  CAST(u.revenue AS DOUBLE) AS metric_value,\n  u.rn\
+    \ AS rank\nFROM umsatz u\nWHERE u.rn <= 3\nORDER BY plant, metric, rank\nLIMIT\
+    \ 50"
+  model_primary: claude-opus-4-8
+  model_used: claude-opus-4-8
+  fallback_used: false
+  validation_success: true
+  execution_success: true
+  error_type: null
+  error_message: null
+  row_count: 50
+  source_tables:
+  - workspace.default.datenabzug_projekt_tum_invoices
+  - workspace.default.datenabzug_projekt_tum_shipments
+  created_from_positive_feedback: true
+  feedback:
+    rating: thumbs_up
+    comment: null
+    corrected_sql: null
+    expected_answer: null
+  proposed_template:
+    scenario: databricks
+    dataset_id: wuerth_shipment_invoice_v1
+    intent: Welche Produkte sind jeweils gemessen an Lieferpositionen und Umsatz die
+      Top 3 je Vertriebszentrum
+    trigger_phrases:
+    - Welche Produkte sind jeweils gemessen an Lieferpositionen und Umsatz die Top
+      3 je Vertriebszentrum?
+    - welche produkte sind jeweils gemessen an lieferpositionen und umsatz die top
+      3 je vertriebszentrum
+    required_tables:
+    - workspace.default.datenabzug_projekt_tum_invoices
+    - workspace.default.datenabzug_projekt_tum_shipments
+    metric_definitions: {}
+    join_logic: []
+    sql_skeleton: "WITH lieferpositionen AS (\n  SELECT plant, customer_material AS\
+      \ product, COUNT(*) AS lieferpositionen,\n    ROW_NUMBER() OVER (PARTITION BY\
+      \ plant ORDER BY COUNT(*) DESC) AS rn\n  FROM workspace.default.datenabzug_projekt_tum_shipments\n\
+      \  GROUP BY plant, customer_material\n),\numsatz AS (\n  SELECT s.plant, i.product,\
+      \ SUM(i.turnover_inv) AS revenue,\n    ROW_NUMBER() OVER (PARTITION BY s.plant\
+      \ ORDER BY SUM(i.turnover_inv) DESC) AS rn\n  FROM workspace.default.datenabzug_projekt_tum_invoices\
+      \ i\n  JOIN (SELECT DISTINCT order_number, plant FROM workspace.default.datenabzug_projekt_tum_shipments)\
+      \ s\n    ON i.order_number = s.order_number\n  GROUP BY s.plant, i.product\n\
+      )\nSELECT\n  l.plant AS plant,\n  'Lieferpositionen' AS metric,\n  l.product\
+      \ AS product,\n  CAST(l.lieferpositionen AS DOUBLE) AS metric_value,\n  l.rn\
+      \ AS rank\nFROM lieferpositionen l\nWHERE l.rn <= 3\nUNION ALL\nSELECT\n  u.plant\
+      \ AS plant,\n  'Umsatz' AS metric,\n  u.product AS product,\n  CAST(u.revenue\
+      \ AS DOUBLE) AS metric_value,\n  u.rn AS rank\nFROM umsatz u\nWHERE u.rn <=\
+      \ 3\nORDER BY plant, metric, rank\nLIMIT 50"
+    notes: Automatically generated candidate from successful run. Requires manual
+      review.
+  review:
+    reviewed_by: template_reviewer
+    reviewed_at: '2026-07-25T14:04:57'
+    review_comment: null
+    rejection_reason: null
+    approved_template_id: tmpl_welche_produkte_sind_jeweils_gemessen_an_lieferp_20260725_140457_5b6a
+    runtime_memory_target: approved_yaml

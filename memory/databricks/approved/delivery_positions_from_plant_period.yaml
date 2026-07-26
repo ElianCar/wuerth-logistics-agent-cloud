@@ -1,35 +1,36 @@
 id: delivery_positions_from_plant_period
 scenario: databricks
-status: approved
-is_active: true
+status: disabled
+is_active: false
 title: Delivery positions from plant in a date period
 intent: delivery_positions_from_plant_period
 trigger_phrases:
-  - Wie viele Lieferpositionen wurden im Dezember 2025 aus dem Lager 9981 geliefert?
-  - Anzahl Lieferpositionen aus Lager 9981 im Dezember 2025
-  - Lieferpositionen Vertriebszentrum 9981 Zeitraum
-  - Lieferpositionen Werk 9981 Dezember 2025
-  - Delivery positions shipped from plant 9981 in December 2025
-  - Count shipment rows for a plant and shipment date period
-searchable_summary: Count delivery positions by querying shipment rows directly for a plant/Lager/Vertriebszentrum and shipment date period.
+- Wie viele Lieferpositionen wurden im Dezember 2025 aus dem Lager 9981 geliefert?
+- Anzahl Lieferpositionen aus Lager 9981 im Dezember 2025
+- Lieferpositionen Vertriebszentrum 9981 Zeitraum
+- Lieferpositionen Werk 9981 Dezember 2025
+- Delivery positions shipped from plant 9981 in December 2025
+- Count shipment rows for a plant and shipment date period
+searchable_summary: Count delivery positions by querying shipment rows directly for
+  a plant/Lager/Vertriebszentrum and shipment date period.
 searchable_terms:
-  - lieferpositionen
-  - lieferposition
-  - delivery_position
-  - delivery_positions
-  - shipment
-  - shipments
-  - lager
-  - plant
-  - werk
-  - vertriebszentrum
-  - "9981"
-  - dezember
-  - december
-  - "2025"
-  - zeitraum
-  - shipment_date
-  - count_rows
+- lieferpositionen
+- lieferposition
+- delivery_position
+- delivery_positions
+- shipment
+- shipments
+- lager
+- plant
+- werk
+- vertriebszentrum
+- '9981'
+- dezember
+- december
+- '2025'
+- zeitraum
+- shipment_date
+- count_rows
 synonyms:
   lieferpositionen: delivery_position
   lieferposition: delivery_position
@@ -43,42 +44,45 @@ synonyms:
   geliefert: shipment
   lieferung: shipment
 required_tables:
-  - workspace.default.datenabzug_projekt_tum_shipments
+- workspace.default.datenabzug_projekt_tum_shipments
 required_columns:
-  - plant
-  - shipment_date
+- plant
+- shipment_date
 business_rules:
-  - Lieferpositionen are shipment rows; use COUNT(*) on workspace.default.datenabzug_projekt_tum_shipments.
-  - For Lager, Werk, or Vertriebszentrum use the shipment column plant.
-  - For delivered/shipped questions use shipment_date for the date filter.
-  - "For a full calendar month use a half-open date range: shipment_date >= DATE 'YYYY-MM-01' and shipment_date < DATE 'next-month-01'."
-  - Do not join invoices for pure shipment counts.
-  - Do not use COUNT(DISTINCT delivery_number) unless the user explicitly asks for distinct deliveries/Lieferungen.
-  - Do not use number_delivery_items as the count of Lieferpositionen.
-sql_pattern: |
-  SELECT COUNT(*) AS delivery_position_count
-  FROM workspace.default.datenabzug_projekt_tum_shipments
-  WHERE plant = '<plant_id>'
-    AND shipment_date >= DATE '<start_date>'
-    AND shipment_date < DATE '<exclusive_end_date>'
+- Lieferpositionen are shipment rows; use COUNT(*) on workspace.default.datenabzug_projekt_tum_shipments.
+- For Lager, Werk, or Vertriebszentrum use the shipment column plant.
+- For delivered/shipped questions use shipment_date for the date filter.
+- 'For a full calendar month use a half-open date range: shipment_date >= DATE ''YYYY-MM-01''
+  and shipment_date < DATE ''next-month-01''.'
+- Do not join invoices for pure shipment counts.
+- Do not use COUNT(DISTINCT delivery_number) unless the user explicitly asks for distinct
+  deliveries/Lieferungen.
+- Do not use number_delivery_items as the count of Lieferpositionen.
+sql_pattern: "SELECT COUNT(*) AS delivery_position_count\nFROM workspace.default.datenabzug_projekt_tum_shipments\n\
+  WHERE plant = '<plant_id>'\n  AND shipment_date >= DATE '<start_date>'\n  AND shipment_date\
+  \ < DATE '<exclusive_end_date>'\n"
 do_not_use_when:
-  - The user asks for revenue, turnover, gross profit, or invoice-side metrics.
-  - The user asks for distinct deliveries/Lieferungen instead of delivery positions/Lieferpositionen.
-  - The user explicitly asks for Versandstelle/shipping_point instead of Lager/Werk/Vertriebszentrum.
-  - The user asks for product, customer, or order grouping without also asking for delivery position counts.
+- The user asks for revenue, turnover, gross profit, or invoice-side metrics.
+- The user asks for distinct deliveries/Lieferungen instead of delivery positions/Lieferpositionen.
+- The user explicitly asks for Versandstelle/shipping_point instead of Lager/Werk/Vertriebszentrum.
+- The user asks for product, customer, or order grouping without also asking for delivery
+  position counts.
 validation_checks:
-  - SQL must be read-only SELECT.
-  - SQL must use only workspace.default.datenabzug_projekt_tum_shipments for this pure shipment-count question.
-  - SQL must filter plant = '9981' for the example question.
-  - SQL must filter December 2025 as shipment_date >= DATE '2025-12-01' and shipment_date < DATE '2026-01-01'.
-  - SQL must use COUNT(*) for Lieferpositionen.
-source_question: Wie viele Lieferpositionen wurden im Dezember 2025 aus dem Lager 9981 geliefert?
-source_sql: |
-  SELECT COUNT(*) AS delivery_position_count
-  FROM workspace.default.datenabzug_projekt_tum_shipments
-  WHERE plant = '9981'
-    AND shipment_date >= DATE '2025-12-01'
-    AND shipment_date < DATE '2026-01-01'
+- SQL must be read-only SELECT.
+- SQL must use only workspace.default.datenabzug_projekt_tum_shipments for this pure
+  shipment-count question.
+- SQL must filter plant = '9981' for the example question.
+- SQL must filter December 2025 as shipment_date >= DATE '2025-12-01' and shipment_date
+  < DATE '2026-01-01'.
+- SQL must use COUNT(*) for Lieferpositionen.
+source_question: Wie viele Lieferpositionen wurden im Dezember 2025 aus dem Lager
+  9981 geliefert?
+source_sql: "SELECT COUNT(*) AS delivery_position_count\nFROM workspace.default.datenabzug_projekt_tum_shipments\n\
+  WHERE plant = '9981'\n  AND shipment_date >= DATE '2025-12-01'\n  AND shipment_date\
+  \ < DATE '2026-01-01'\n"
 approved_by: manual_databricks_memory_seed
-approved_at: "2026-06-30T00:00:00Z"
+approved_at: '2026-06-30T00:00:00Z'
 version: 1
+disabled_at: '2026-07-25T10:54:22'
+disabled_by: admin_developer
+disabled_reason: FYI
