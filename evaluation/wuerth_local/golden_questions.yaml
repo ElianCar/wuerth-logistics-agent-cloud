@@ -1,4 +1,51 @@
 questions:
+  # Q01-Q04 mirror the databricks golden questions so results can be compared
+  # directly across scenarios. Adapted to PostgreSQL: wuerth.* tables,
+  # DOUBLE PRECISION casts, and half-open ranges because shipment_date and
+  # calendar_day are TIMESTAMP locally (a closed <= '2025-12-31' would drop rows
+  # that carry a time component on that day).
+  - question_id: Q01
+    title: Lieferpositionen aus Lager 8240 im Dezember 2025
+    question: >
+      Wie viele Lieferpositionen wurden zwischen 01.12.2025 und 31.12.2025 aus dem Lager 8240 geliefert?
+    solution_sql_file: q01_delivery_positions_plant_8240_december.sql
+    tags: [wuerth_local, shipments, count, plant, period]
+    compare:
+      numeric_tolerance: 0.01
+    max_preview_rows: 20
+
+  - question_id: Q02
+    title: Top-3 Produkte je Vertriebszentrum nach Umsatz und Lieferpositionen
+    question: >
+      Welche Produkte sind jeweils gemessen an Lieferpositionen und Umsatz die Top 3 je Vertriebszentrum?
+    solution_sql_file: q02_top_products_per_plant.sql
+    tags: [wuerth_local, invoices, shipments, ranking]
+    compare:
+      numeric_tolerance: 0.01
+    max_preview_rows: 50
+
+  - question_id: Q03
+    title: Umsatz Vertriebszentrum 9981 im Dezember 2025
+    question: >
+      Wie viel Umsatz lief über Vertriebszentrum 9981 im Zeitraum Dezember 2025? Zeige mir den
+      Umsatz der Lieferung zusätzlich in einem Diagramm im Zeitlaufverlauf.
+    solution_sql_file: q03_revenue_plant_9981_december.sql
+    tags: [wuerth_local, invoices, revenue, plant, period]
+    compare:
+      numeric_tolerance: 0.01
+    max_preview_rows: 20
+
+  - question_id: Q04
+    title: Aufträge in mehr als einem Vertriebszentrum inkl. Anteil
+    question: >
+      Wie viele Aufträge wurden im Zeitraum 01.07.2025 – 31.12.2025 in mehr als einem
+      Vertriebszentrum bearbeitet und verschickt, inklusive des Anteils an allen Aufträgen?
+    solution_sql_file: q04_orders_multiple_plants_share.sql
+    tags: [wuerth_local, shipments, distinct_count, share]
+    compare:
+      numeric_tolerance: 0.01
+    max_preview_rows: 20
+
   - question_id: W01
     title: Total revenue from invoices
     question: What is the total revenue from invoices?

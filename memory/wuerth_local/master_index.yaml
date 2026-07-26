@@ -1,7 +1,7 @@
 schema_version: 1
 scenario: wuerth_local
-generated_at: '2026-06-10T17:22:03Z'
-template_count: 9
+generated_at: '2026-07-26T09:39:40Z'
+template_count: 10
 templates:
 - id: delivered_quantity_by_customer
   path: memory/wuerth_local/approved/delivered_quantity_by_customer.yaml
@@ -30,7 +30,7 @@ templates:
   - shiptoparty
   - liefermenge
   - kunde
-  checksum: sha256:e215d06f15c829f72c5417fe2197e7857f92abc623ed555e16e9224c695ea42f
+  checksum: sha256:31e06ce9df1589d627224d09a65eae8809d397283b90a888ae6f95f34e0614b7
   version: 1
 - id: delivered_quantity_by_delivery_type
   path: memory/wuerth_local/approved/delivered_quantity_by_delivery_type.yaml
@@ -59,7 +59,7 @@ templates:
   - shipment
   - liefermenge
   - lieferart
-  checksum: sha256:ca391a027789b25ee6055c53a9f623b2c9737e2abab062541ebd90f13e5d9a1a
+  checksum: sha256:d5fb7efd3fff60afe9039082da4f39d05e2bbc226e780e281102263fd2fee683
   version: 1
 - id: freight_cost_by_customer
   path: memory/wuerth_local/approved/freight_cost_by_customer.yaml
@@ -87,7 +87,7 @@ templates:
   - fracht
   - frachtkosten
   - kunde
-  checksum: sha256:8f23aa2b03b175338872e3d19a1bcc0317c8bee8af083a29a26fa7ab91bde8b9
+  checksum: sha256:1899befec6108bdb6d61fa8fd3377537a6fc2fc702d5a9bca98301fa1b6acef0
   version: 1
 - id: invoice_order_count_by_customer
   path: memory/wuerth_local/approved/invoice_order_count_by_customer.yaml
@@ -115,7 +115,7 @@ templates:
   - rechnung
   - auftrag
   - kunde
-  checksum: sha256:b8452542a5a62cdc5f2410ac6977f0f3347900171380876172f6f205664f2fa6
+  checksum: sha256:61a532c7acf45bddc1aa34f9608b475cdb546d3c312ccf00fbbf5eddb2dab996
   version: 1
 - id: invoice_order_count_by_market_segment
   path: memory/wuerth_local/approved/invoice_order_count_by_market_segment.yaml
@@ -142,7 +142,7 @@ templates:
   - order
   - market_segment
   - marktsegment
-  checksum: sha256:e0b8d69105466b2da19d129059b470f862ffa3a0b703a81250b94807447bf62c
+  checksum: sha256:7f9ab69fb9c931b690390ccdf0979b8d7d46e6ba9e170f6cb17f6886380c396d
   version: 1
 - id: invoice_records_without_matching_shipments
   path: memory/wuerth_local/approved/invoice_records_without_matching_shipments.yaml
@@ -181,7 +181,7 @@ templates:
   - rechnung
   - lieferung
   - invoice_without_shipment
-  checksum: sha256:52f0f237b9e3a35bbb5f8ee43f344011860c4b5124f4c2ebf94dc4ede4363e00
+  checksum: sha256:3313f3583c97b6f93e47cce54d493bc4b70c00cb54fc80fdb81696ae7b56ba16
   version: 1
 - id: shipment_delivery_count_by_customer
   path: memory/wuerth_local/approved/shipment_delivery_count_by_customer.yaml
@@ -209,7 +209,7 @@ templates:
   - shiptoparty
   - lieferungen
   - kunde
-  checksum: sha256:8c9511bd7ca6554ffee0dece029fdebf32b3b6da9d95e01295480bce752d5dcd
+  checksum: sha256:3bc0561905176bc4bcf4a22541f0dae9b6913e63b97869a9949220babe967e5d
   version: 1
 - id: shipment_delivery_count_by_delivery_type
   path: memory/wuerth_local/approved/shipment_delivery_count_by_delivery_type.yaml
@@ -236,7 +236,7 @@ templates:
   - delivery_type
   - lieferungen
   - lieferart
-  checksum: sha256:08901f470fa3992e4775b408bbaa5cb52837f8c8588f6f7407e5d2ba1522f12a
+  checksum: sha256:20f4a3265f5f55679b54a09dfb3e35d7e6cfe5890fd1695120d9f4b2bd68a4aa
   version: 1
 - id: shipment_records_without_matching_invoices
   path: memory/wuerth_local/approved/shipment_records_without_matching_invoices.yaml
@@ -275,5 +275,58 @@ templates:
   - lieferung
   - rechnung
   - shipment_without_invoice
-  checksum: sha256:bf291cbfaf620a5c4e6644c2dcccc285e0c51fe889ca21178da61920615d069e
+  checksum: sha256:11ac0885ea93addabe60442d79dd8496e8823df5e5eda6fbfcce84b98318e512
+  version: 1
+- id: top_products_by_plant_revenue_and_delivery_positions
+  path: memory/wuerth_local/approved/top_products_by_plant_revenue_and_delivery_positions.yaml
+  status: approved
+  is_active: true
+  scenario: wuerth_local
+  intent: top_products_by_plant_revenue_and_delivery_positions
+  title: Top-N products per plant by delivery positions and revenue (long format)
+  searchable_text: 'top_products_by_plant_revenue_and_delivery_positions wuerth_local
+    Top-N products per plant by delivery positions and revenue (long format) top_products_by_plant_revenue_and_delivery_positions
+    Top-N products per plant/Lager/Vertriebszentrum ranked separately by delivery
+    positions (COUNT of shipment rows) and by revenue (SUM turnover_inv). Returns
+    LONG format: one row per (plant, metric, product) with a metric label column,
+    ordered plant-first. Welche Produkte sind jeweils gemessen an Lieferpositionen
+    und Umsatz die Top 3 je Vertriebszentrum? Top 3 Produkte je Vertriebszentrum nach
+    Umsatz und Lieferpositionen Top Produkte je Lager nach Umsatz und Lieferpositionen
+    Beste Produkte pro Vertriebszentrum gemessen an Umsatz und Lieferpositionen Top
+    products per plant by revenue and delivery positions top top3 top_3 produkte product
+    je_vertriebszentrum pro_vertriebszentrum per_plant vertriebszentrum plant lager
+    umsatz revenue turnover lieferpositionen delivery_position ranking rank wuerth.invoices
+    wuerth.shipments plant product customer_material turnover_inv order_number je
+    lager per_plant je vertriebszentrum per_plant lager plant lieferpositionen delivery_position
+    pro lager per_plant pro vertriebszentrum per_plant produkt product turnover revenue
+    umsatz revenue vertriebszentrum plant werk plant'
+  tables:
+  - wuerth.invoices
+  - wuerth.shipments
+  columns:
+  - plant
+  - product
+  - customer_material
+  - turnover_inv
+  - order_number
+  tags:
+  - top
+  - top3
+  - top_3
+  - produkte
+  - product
+  - je_vertriebszentrum
+  - pro_vertriebszentrum
+  - per_plant
+  - vertriebszentrum
+  - plant
+  - lager
+  - umsatz
+  - revenue
+  - turnover
+  - lieferpositionen
+  - delivery_position
+  - ranking
+  - rank
+  checksum: sha256:da75198155cacd76053ad50d57049fec030112d6e86bafef7cdf1c535699f301
   version: 1

@@ -1,0 +1,161 @@
+id: top_products_by_plant_revenue_and_delivery_positions
+scenario: wuerth_local
+status: approved
+is_active: true
+title: Top-N products per plant by delivery positions and revenue (long format)
+intent: top_products_by_plant_revenue_and_delivery_positions
+trigger_phrases:
+  - Welche Produkte sind jeweils gemessen an Lieferpositionen und Umsatz die Top 3 je Vertriebszentrum?
+  - Top 3 Produkte je Vertriebszentrum nach Umsatz und Lieferpositionen
+  - Top Produkte je Lager nach Umsatz und Lieferpositionen
+  - Beste Produkte pro Vertriebszentrum gemessen an Umsatz und Lieferpositionen
+  - Top products per plant by revenue and delivery positions
+searchable_summary: >
+  Top-N products per plant/Lager/Vertriebszentrum ranked separately by delivery positions
+  (COUNT of shipment rows) and by revenue (SUM turnover_inv). Returns LONG format: one row
+  per (plant, metric, product) with a metric label column, ordered plant-first.
+searchable_terms:
+  - top
+  - top3
+  - top_3
+  - produkte
+  - product
+  - je_vertriebszentrum
+  - pro_vertriebszentrum
+  - per_plant
+  - vertriebszentrum
+  - plant
+  - lager
+  - umsatz
+  - revenue
+  - turnover
+  - lieferpositionen
+  - delivery_position
+  - ranking
+  - rank
+synonyms:
+  je vertriebszentrum: per_plant
+  pro vertriebszentrum: per_plant
+  je lager: per_plant
+  pro lager: per_plant
+  vertriebszentrum: plant
+  lager: plant
+  werk: plant
+  umsatz: revenue
+  turnover: revenue
+  lieferpositionen: delivery_position
+  produkt: product
+required_tables:
+  - wuerth.invoices
+  - wuerth.shipments
+required_columns:
+  - plant
+  - product
+  - customer_material
+  - turnover_inv
+  - order_number
+business_rules:
+  - Return LONG format with exactly 5 columns in this order - plant, metric, product, metric_value, rank.
+    Each metric produces its own rows via UNION ALL.
+  - Never return WIDE format and never FULL OUTER JOIN the two rankings. The two rankings are
+    independent - pairing delivery-position rank N with revenue rank N in one row invents a
+    relationship that does not exist.
+  - The metric label column must contain exactly the capitalized German strings 'Lieferpositionen'
+    and 'Umsatz'. Do not lowercase them and do not use English labels.
+  - ORDER BY plant first, then metric, then rank. Never order by the metric column first - with a
+    LIMIT this returns only 'Lieferpositionen' rows because it sorts alphabetically before 'Umsatz',
+    so the revenue half of the answer disappears entirely.
+  - Always end the query with LIMIT 50.
+  - Lieferpositionen = COUNT(*) over wuerth.shipments grouped by plant and customer_material; rank with
+    ROW_NUMBER() OVER (PARTITION BY plant ORDER BY COUNT(*) DESC).
+  - Umsatz = SUM(turnover_inv) on the invoice side; attach the plant by joining wuerth.invoices to a
+    DISTINCT (order_number, plant) subquery from wuerth.shipments on order_number, group by plant and
+    invoices.product, and rank with ROW_NUMBER() OVER (PARTITION BY plant ORDER BY SUM(...) DESC).
+  - Filter each ranking separately with rn <= N (default N = 3) before the UNION ALL.
+  - This scenario is PostgreSQL. Cast the shared metric_value column with
+    CAST(... AS DOUBLE PRECISION) - the Databricks type name DOUBLE does not exist in PostgreSQL.
+sql_pattern: |
+  WITH lieferpositionen AS (
+    SELECT plant, customer_material AS product, COUNT(*) AS lieferpositionen,
+      ROW_NUMBER() OVER (PARTITION BY plant ORDER BY COUNT(*) DESC) AS rn
+    FROM wuerth.shipments
+    GROUP BY plant, customer_material
+  ),
+  umsatz AS (
+    SELECT s.plant, i.product, SUM(i.turnover_inv) AS revenue,
+      ROW_NUMBER() OVER (PARTITION BY s.plant ORDER BY SUM(i.turnover_inv) DESC) AS rn
+    FROM wuerth.invoices i
+    JOIN (SELECT DISTINCT order_number, plant FROM wuerth.shipments) s
+      ON i.order_number = s.order_number
+    GROUP BY s.plant, i.product
+  )
+  SELECT
+    l.plant AS plant,
+    'Lieferpositionen' AS metric,
+    l.product AS product,
+    CAST(l.lieferpositionen AS DOUBLE PRECISION) AS metric_value,
+    l.rn AS rank
+  FROM lieferpositionen l
+  WHERE l.rn <= <top_n>
+  UNION ALL
+  SELECT
+    u.plant AS plant,
+    'Umsatz' AS metric,
+    u.product AS product,
+    CAST(u.revenue AS DOUBLE PRECISION) AS metric_value,
+    u.rn AS rank
+  FROM umsatz u
+  WHERE u.rn <= <top_n>
+  ORDER BY plant, metric, rank
+  LIMIT 50
+do_not_use_when:
+  - The user asks for only one metric (only revenue, or only delivery positions).
+  - The user asks for a single specified product or a single plant total.
+  - The user explicitly asks for a wide format with one column per metric.
+validation_checks:
+  - SQL must be a read-only SELECT.
+  - SQL must use only wuerth.invoices and wuerth.shipments.
+  - Result must have exactly 5 columns in the order plant, metric, product, metric_value, rank.
+  - Two independent rankings combined with UNION ALL - no FULL OUTER JOIN between them.
+  - Metric labels must be exactly 'Lieferpositionen' and 'Umsatz'.
+  - Final ORDER BY must start with plant, not with the metric column.
+  - Casts must use DOUBLE PRECISION (PostgreSQL), not DOUBLE.
+  - Query must end with LIMIT 50.
+source_question: Welche Produkte sind jeweils gemessen an Lieferpositionen und Umsatz die Top 3 je Vertriebszentrum?
+source_sql: |
+  WITH lieferpositionen AS (
+    SELECT plant, customer_material AS product, COUNT(*) AS lieferpositionen,
+      ROW_NUMBER() OVER (PARTITION BY plant ORDER BY COUNT(*) DESC) AS rn
+    FROM wuerth.shipments
+    GROUP BY plant, customer_material
+  ),
+  umsatz AS (
+    SELECT s.plant, i.product, SUM(i.turnover_inv) AS revenue,
+      ROW_NUMBER() OVER (PARTITION BY s.plant ORDER BY SUM(i.turnover_inv) DESC) AS rn
+    FROM wuerth.invoices i
+    JOIN (SELECT DISTINCT order_number, plant FROM wuerth.shipments) s
+      ON i.order_number = s.order_number
+    GROUP BY s.plant, i.product
+  )
+  SELECT
+    l.plant AS plant,
+    'Lieferpositionen' AS metric,
+    l.product AS product,
+    CAST(l.lieferpositionen AS DOUBLE PRECISION) AS metric_value,
+    l.rn AS rank
+  FROM lieferpositionen l
+  WHERE l.rn <= 3
+  UNION ALL
+  SELECT
+    u.plant AS plant,
+    'Umsatz' AS metric,
+    u.product AS product,
+    CAST(u.revenue AS DOUBLE PRECISION) AS metric_value,
+    u.rn AS rank
+  FROM umsatz u
+  WHERE u.rn <= 3
+  ORDER BY plant, metric, rank
+  LIMIT 50
+approved_by: manual_wuerth_local_memory_seed
+approved_at: '2026-07-25T16:00:00Z'
+version: 1
