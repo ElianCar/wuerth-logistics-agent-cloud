@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections import Counter
+import csv
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+import io
 import json
 import math
 from pathlib import Path
@@ -318,6 +321,118 @@ def match_unordered_rows(
     return missing_rows, unexpected_rows
 
 
+def row_values_match_as_multiset(
+    expected_row: tuple[Any, ...] | list[Any],
+    actual_row: tuple[Any, ...] | list[Any],
+    *,
+    numeric_tolerance: float,
+) -> bool:
+    """True when both rows contain the same values, regardless of column order.
+
+    Used for the looser "content correct" metric: it catches cases where the agent's
+    SQL returns the right data but with columns in a different order than the
+    reference (e.g. ``plant, metric, ...`` instead of ``metric, plant, ...``), which
+    the strict positional comparison would otherwise flag as a value mismatch.
+    """
+    if len(expected_row) != len(actual_row):
+        return False
+    remaining = list(actual_row)
+    for expected_value in expected_row:
+        matched_index = None
+        for index, actual_value in enumerate(remaining):
+            if values_equal(expected_value, actual_value, numeric_tolerance=numeric_tolerance):
+                matched_index = index
+                break
+        if matched_index is None:
+            return False
+        remaining.pop(matched_index)
+    return True
+
+
+def match_rows_as_multisets(
+    expected_rows: list[tuple[Any, ...]],
+    actual_rows: list[tuple[Any, ...]],
+    *,
+    numeric_tolerance: float,
+) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
+    unmatched_actual_indexes = set(range(len(actual_rows)))
+    missing_rows = []
+
+    for expected_row in expected_rows:
+        matched_index = None
+        for actual_index in sorted(unmatched_actual_indexes):
+            if row_values_match_as_multiset(
+                expected_row,
+                actual_rows[actual_index],
+                numeric_tolerance=numeric_tolerance,
+            ):
+                matched_index = actual_index
+                break
+        if matched_index is None:
+            missing_rows.append(expected_row)
+        else:
+            unmatched_actual_indexes.remove(matched_index)
+
+    unexpected_rows = [actual_rows[index] for index in sorted(unmatched_actual_indexes)]
+    return missing_rows, unexpected_rows
+
+
+def rows_are_multiset_subset(
+    actual_rows: list[tuple[Any, ...]],
+    expected_rows: list[tuple[Any, ...]],
+    *,
+    numeric_tolerance: float,
+) -> bool:
+    """True when every actual row matches a distinct expected row.
+
+    Rows are compared as unordered value sets, so a differing column order still
+    matches. Matched expected rows are consumed, so duplicates must be backed by
+    equally many reference rows.
+    """
+    remaining = list(expected_rows)
+    for actual_row in actual_rows:
+        matched_index = None
+        for index, expected_row in enumerate(remaining):
+            if row_values_match_as_multiset(
+                expected_row, actual_row, numeric_tolerance=numeric_tolerance
+            ):
+                matched_index = index
+                break
+        if matched_index is None:
+            return False
+        remaining.pop(matched_index)
+    return True
+
+
+def is_content_correct(
+    expected: dict[str, Any],
+    actual: dict[str, Any],
+    *,
+    numeric_tolerance: float,
+) -> bool:
+    """Looser correctness check reported alongside the strict ``passed`` verdict.
+
+    Requires the same column count and that every returned row matches a distinct
+    reference row, comparing each row's values without regard to column order. Row
+    counts may differ: a truncated result (e.g. the agent appending ``LIMIT 50`` to a
+    3952-row reference) still counts as content correct as long as every row it did
+    return is genuinely in the reference. An empty result never counts.
+    """
+    expected_columns = list(expected.get("columns", []))
+    actual_columns = list(actual.get("columns", []))
+    if len(expected_columns) != len(actual_columns):
+        return False
+
+    expected_rows = [tuple(row) for row in expected.get("rows", [])]
+    actual_rows = [tuple(row) for row in actual.get("rows", [])]
+    if not actual_rows:
+        return False
+
+    return rows_are_multiset_subset(
+        actual_rows, expected_rows, numeric_tolerance=numeric_tolerance
+    )
+
+
 def normalized_row_key(row: tuple[Any, ...]) -> tuple[Any, ...]:
     normalized = []
     for value in row:
@@ -381,6 +496,10 @@ def compare_query_results(
         "ignore_row_order": config["ignore_row_order"],
         "order_sensitive": not config["ignore_row_order"],
         "compare_column_names": not config["ignore_column_names"],
+        # Looser metric: same column count and every returned row matches a distinct
+        # reference row ignoring column order; a truncated result still counts.
+        # Reported alongside "passed" (strict, positional) — it never changes pass/fail.
+        "content_correct": is_content_correct(expected, actual, numeric_tolerance=numeric_tolerance),
     }
 
     if config["require_same_column_count"] and len(expected_columns) != len(actual_columns):
@@ -536,6 +655,8 @@ def _normalize_golden_runtime_result(
         "secondary_fallback_model": raw_result.get("secondary_fallback_model", ""),
         "model_used": raw_result.get("model_used") or raw_result.get("selected_model", ""),
         "fallback_used": raw_result.get("fallback_used", False),
+        "total_attempts": int(raw_result.get("total_attempts", 0) or 0),
+        "sql_repaired": any("sql-reparatur" in str(step).lower() for step in trace_steps),
         "final_answer": raw_result.get("final_answer") or raw_result.get("answer", ""),
         "generated_sql": generated_sql,
         "source_tables": raw_result.get("source_tables", []),
@@ -576,6 +697,8 @@ def _golden_runtime_metadata(normalized_result: dict[str, Any]) -> dict[str, Any
         "fallback_model": normalized_result.get("fallback_model", ""),
         "secondary_fallback_model": normalized_result.get("secondary_fallback_model", ""),
         "fallback_used": normalized_result.get("fallback_used", False),
+        "total_attempts": normalized_result.get("total_attempts", 0),
+        "sql_repaired": normalized_result.get("sql_repaired", False),
         "source_tables": normalized_result.get("source_tables", []),
         "validation_success": normalized_result.get("validation_success", False),
         "execution_success": normalized_result.get("execution_success", False),
@@ -588,6 +711,26 @@ def _golden_runtime_metadata(normalized_result: dict[str, Any]) -> dict[str, Any
         "memory_candidate_ids": normalized_result.get("memory_candidate_ids", ""),
         "memory_candidate_scores": normalized_result.get("memory_candidate_scores", ""),
     }
+
+
+def _chart_info(agent_state: dict[str, Any] | None) -> tuple[bool, str]:
+    """Extract (chart_rendered, chart_type) from an orchestrator agent result.
+
+    Reads the chart spec attached by the orchestrator (``chart_spec`` or
+    ``reporting_result.chart_plan``). Returns (False, "none") when unavailable,
+    e.g. in direct SQL-agent mode or on failure paths.
+    """
+    if not isinstance(agent_state, dict):
+        return False, "none"
+    chart_spec = agent_state.get("chart_spec")
+    if not isinstance(chart_spec, dict):
+        reporting_result = agent_state.get("reporting_result")
+        chart_spec = reporting_result.get("chart_plan") if isinstance(reporting_result, dict) else None
+    if not isinstance(chart_spec, dict):
+        return False, "none"
+    chart_type = str(chart_spec.get("chart_type") or "none")
+    chart_rendered = bool(chart_spec.get("render_allowed")) and chart_type != "none"
+    return chart_rendered, chart_type
 
 
 def build_error_result(
@@ -622,6 +765,7 @@ def build_error_result(
         "question": question.get("question", ""),
         "status": status,
         "passed": False,
+        "content_correct": False,
         "failure_type": failure_type,
         "failure_reason": failure_reason,
         "runtime_seconds": runtime_seconds,
@@ -631,11 +775,13 @@ def build_error_result(
         "reference_sql": reference_sql,
         "expected_output_preview": preview_result(expected_result or {}, max_preview_rows),
         "actual_output_preview": preview_result(actual_result or {}, max_preview_rows),
-        "diff_summary": {"passed": False, "issues": [failure_type]},
+        "diff_summary": {"passed": False, "content_correct": False, "issues": [failure_type]},
         "validation_errors": [failure_reason] if "validation" in failure_type else [],
         "execution_errors": {failure_type: failure_reason} if "execution" in failure_type else {},
         "model_used": normalized_result.get("model_used", ""),
         "memory_templates_enabled": use_approved_memory,
+        "chart_rendered": _chart_info(agent_state)[0],
+        "chart_type": _chart_info(agent_state)[1],
         "backend": active_backend_name(),
         "timestamp": started_at_iso,
         "agent_result_status": normalized_result.get("result_status", ""),
@@ -865,6 +1011,7 @@ def evaluate_golden_question(
         "question": question.get("question", ""),
         "status": "passed" if passed else "failed",
         "passed": passed,
+        "content_correct": bool(diff_summary.get("content_correct", False)),
         "failure_type": "" if passed else "output_mismatch",
         "failure_reason": failure_reason,
         "runtime_seconds": perf_counter() - started_at,
@@ -879,6 +1026,8 @@ def evaluate_golden_question(
         "execution_errors": {},
         "model_used": normalized_agent_result.get("model_used", ""),
         "memory_templates_enabled": use_approved_memory,
+        "chart_rendered": _chart_info(agent_state)[0],
+        "chart_type": _chart_info(agent_state)[1],
         "backend": active_backend_name(),
         "timestamp": started_at_iso,
         "agent_result_status": normalized_agent_result.get("result_status", ""),
@@ -962,3 +1111,248 @@ def run_golden_tests(
         results.append(result)
 
     return batch_run_id, results, build_result_summary(results)
+
+
+CONDITION_LABELS: dict[bool, str] = {
+    False: "without_template",
+    True: "with_template",
+}
+
+
+def _aggregate_golden_report(
+    raw_runs: list[dict[str, Any]],
+    question_ids: list[str],
+    conditions: tuple[bool, ...],
+    question_map: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    aggregates: list[dict[str, Any]] = []
+    for question_id in question_ids:
+        title = str(question_map.get(question_id, {}).get("title", ""))
+        for condition in conditions:
+            runs = [
+                run
+                for run in raw_runs
+                if run.get("question_id") == question_id
+                and bool(run.get("condition_memory")) == bool(condition)
+            ]
+            total = len(runs)
+            sql_pass = sum(1 for run in runs if run.get("passed"))
+            content_correct = sum(1 for run in runs if run.get("content_correct"))
+            chart_rendered = sum(1 for run in runs if run.get("chart_rendered"))
+            chart_types = Counter(str(run.get("chart_type") or "none") for run in runs)
+            total_runtime = sum(float(run.get("runtime_seconds", 0.0) or 0.0) for run in runs)
+            aggregates.append(
+                {
+                    "question_id": question_id,
+                    "title": title,
+                    "condition_memory": bool(condition),
+                    "condition_label": CONDITION_LABELS.get(bool(condition), str(condition)),
+                    "runs": total,
+                    "sql_correct": sql_pass,
+                    "sql_correct_pct": (sql_pass / total * 100.0) if total else 0.0,
+                    "content_correct": content_correct,
+                    "content_correct_pct": (content_correct / total * 100.0) if total else 0.0,
+                    "chart_rendered": chart_rendered,
+                    "chart_rendered_pct": (chart_rendered / total * 100.0) if total else 0.0,
+                    "chart_type_distribution": dict(chart_types),
+                    "average_runtime": (total_runtime / total) if total else 0.0,
+                }
+            )
+    return aggregates
+
+
+def run_golden_report(
+    question_ids: list[str],
+    *,
+    repetitions: int = 30,
+    conditions: tuple[bool, ...] = (False, True),
+    config: SQLAgentConfig | None = None,
+    runtime_mode: GoldenRuntimeMode | str | None = None,
+    progress_callback: Any = None,
+) -> dict[str, Any]:
+    """Run each golden question ``repetitions`` times per condition and aggregate.
+
+    ``conditions`` is a tuple of ``use_approved_memory`` values, e.g. ``(False, True)``
+    to compare "without template" against "with template". Returns raw per-run rows plus
+    per-(question, condition) aggregates (SQL-correct %, chart-rendered %, chart-type
+    distribution, average runtime). Uses the orchestrator runtime by default so chart
+    generation is exercised.
+    """
+    if repetitions < 1:
+        raise ValueError("repetitions must be >= 1.")
+    resolved_runtime_mode = resolve_golden_runtime_mode(runtime_mode, None)
+    active_scenario = get_active_scenario().scenario_id
+    question_map = load_golden_question_map()
+    selected_ids = [question_id.upper() for question_id in question_ids if question_id.upper() in question_map]
+    if not selected_ids:
+        raise ValueError("No known golden question ids were selected for the report.")
+
+    batch_run_id = f"golden_report_{generate_run_id()}"
+    schema_context = load_schema_context()
+    raw_runs: list[dict[str, Any]] = []
+    total_steps = len(conditions) * repetitions * len(selected_ids)
+    step = 0
+
+    for condition in conditions:
+        for repetition in range(1, repetitions + 1):
+            for question_id in selected_ids:
+                step += 1
+                try:
+                    result = evaluate_golden_question(
+                        question_map[question_id],
+                        batch_run_id=batch_run_id,
+                        schema_context=schema_context,
+                        use_approved_memory=bool(condition),
+                        config=config,
+                        runtime_mode=resolved_runtime_mode,
+                    )
+                except Exception as error:
+                    result = build_error_result(
+                        batch_run_id=batch_run_id,
+                        question=question_map[question_id],
+                        started_at_iso=current_timestamp(),
+                        runtime_seconds=0.0,
+                        failure_type="unexpected_error",
+                        failure_reason=str(error),
+                        use_approved_memory=bool(condition),
+                        runtime_mode=resolved_runtime_mode,
+                        active_scenario=active_scenario,
+                    )
+                result["repetition"] = repetition
+                result["condition_memory"] = bool(condition)
+                result["condition_label"] = CONDITION_LABELS.get(bool(condition), str(condition))
+                raw_runs.append(result)
+                if callable(progress_callback):
+                    progress_callback(step, total_steps, result)
+
+    aggregates = _aggregate_golden_report(raw_runs, selected_ids, tuple(conditions), question_map)
+    return {
+        "batch_run_id": batch_run_id,
+        "scenario": active_scenario,
+        "backend": active_backend_name(),
+        "repetitions": repetitions,
+        "conditions": [bool(condition) for condition in conditions],
+        "question_ids": selected_ids,
+        "raw_runs": raw_runs,
+        "aggregates": aggregates,
+    }
+
+
+CONDITION_DISPLAY_LABELS: dict[str, str] = {
+    "without_template": "ohne Template",
+    "with_template": "mit Template",
+}
+
+GOLDEN_REPORT_CSV_FIELDS = (
+    "question_id",
+    "condition_label",
+    "repetition",
+    "passed",
+    "content_correct",
+    "status",
+    "failure_type",
+    "failure_reason",
+    "chart_rendered",
+    "chart_type",
+    "runtime_seconds",
+    "memory_candidate_ids",
+    "generated_agent_sql",
+    "model_used",
+    "complexity_tier",
+    "intent",
+    "sql_repaired",
+    "total_attempts",
+)
+
+
+def golden_report_dir() -> Path:
+    return evaluation_dir() / "reports"
+
+
+def golden_report_runs_path() -> Path:
+    return evaluation_dir() / "golden_report_runs.jsonl"
+
+
+def build_golden_report_csv(raw_runs: list[dict[str, Any]]) -> str:
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=list(GOLDEN_REPORT_CSV_FIELDS), extrasaction="ignore")
+    writer.writeheader()
+    for run in raw_runs:
+        writer.writerow({field: run.get(field, "") for field in GOLDEN_REPORT_CSV_FIELDS})
+    return buffer.getvalue()
+
+
+def write_golden_report_csv(path: Path, raw_runs: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(build_golden_report_csv(raw_runs), encoding="utf-8", newline="")
+
+
+def _format_chart_type_distribution(distribution: dict[str, int]) -> str:
+    if not distribution:
+        return "—"
+    ordered = sorted(distribution.items(), key=lambda item: (-item[1], item[0]))
+    return ", ".join(f"{name}: {count}" for name, count in ordered)
+
+
+def build_golden_report_markdown(report: dict[str, Any]) -> str:
+    aggregates = report.get("aggregates", [])
+    by_question: dict[str, list[dict[str, Any]]] = {}
+    for row in aggregates:
+        by_question.setdefault(str(row.get("question_id", "")), []).append(row)
+
+    lines = [
+        f"# Golden-Report — {report.get('scenario', '')}",
+        "",
+        f"- Läufe pro Frage und Bedingung: **{report.get('repetitions', 0)}**",
+        f"- Backend: {report.get('backend', '')}",
+        f"- Batch: `{report.get('batch_run_id', '')}`",
+        f"- Erstellt: {datetime.now().isoformat(timespec='seconds')}",
+        "",
+    ]
+
+    for question_id in sorted(by_question):
+        rows = sorted(by_question[question_id], key=lambda item: bool(item.get("condition_memory")))
+        title = str(rows[0].get("title", "")) if rows else ""
+        lines.append(f"## {question_id} — {title}".rstrip())
+        lines.append("")
+        lines.append("| Bedingung | SQL korrekt | Inhaltlich korrekt | Chart erzeugt | Chart-Typen | Ø Laufzeit |")
+        lines.append("|---|---|---|---|---|---|")
+        for row in rows:
+            label_key = str(row.get("condition_label", ""))
+            label = CONDITION_DISPLAY_LABELS.get(label_key, label_key)
+            sql_cell = f"{float(row.get('sql_correct_pct', 0.0)):.1f}% ({row.get('sql_correct', 0)}/{row.get('runs', 0)})"
+            content_cell = (
+                f"{float(row.get('content_correct_pct', 0.0)):.1f}% "
+                f"({row.get('content_correct', 0)}/{row.get('runs', 0)})"
+            )
+            chart_cell = (
+                f"{float(row.get('chart_rendered_pct', 0.0)):.1f}% "
+                f"({row.get('chart_rendered', 0)}/{row.get('runs', 0)})"
+            )
+            types_cell = _format_chart_type_distribution(row.get("chart_type_distribution", {}))
+            runtime_cell = f"{float(row.get('average_runtime', 0.0)):.2f}s"
+            lines.append(f"| {label} | {sql_cell} | {content_cell} | {chart_cell} | {types_cell} | {runtime_cell} |")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def append_golden_report_runs(raw_runs: list[dict[str, Any]]) -> None:
+    path = golden_report_runs_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as file:
+        for run in raw_runs:
+            file.write(json.dumps(to_jsonable(run), sort_keys=True) + "\n")
+
+
+def save_golden_report(report: dict[str, Any], out_dir: Path | None = None) -> dict[str, Path]:
+    """Persist a golden report as CSV + Markdown and return the written paths."""
+    target_dir = out_dir or golden_report_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = target_dir / f"golden_report_{timestamp}.csv"
+    markdown_path = target_dir / f"golden_report_{timestamp}_summary.md"
+
+    write_golden_report_csv(csv_path, report.get("raw_runs", []))
+    markdown_path.write_text(build_golden_report_markdown(report), encoding="utf-8")
+    append_golden_report_runs(report.get("raw_runs", []))
+    return {"csv": csv_path, "markdown": markdown_path}

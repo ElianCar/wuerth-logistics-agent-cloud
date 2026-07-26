@@ -11,11 +11,16 @@ import yaml
 from src.agent.access_control import TemplateAction, can
 from src.agent.db import get_active_backend_metadata
 from src.agent.golden_test_runner import (
+    CONDITION_DISPLAY_LABELS,
     DEFAULT_GOLDEN_RUNTIME_MODE,
     GOLDEN_RUNTIME_MODES,
     GoldenRuntimeMode,
+    build_golden_report_csv,
+    build_golden_report_markdown,
     load_golden_questions,
+    run_golden_report,
     run_golden_tests,
+    save_golden_report,
 )
 from src.agent.langgraph_sql_agent import SQLAgentConfig
 from src.agent.orchestrator import run_orchestrator
@@ -822,6 +827,7 @@ def initialize_state() -> None:
     st.session_state.setdefault("last_errored_question_ids", [])
     st.session_state.setdefault("last_golden_result_summary", {})
     st.session_state.setdefault("last_golden_results", [])
+    st.session_state.setdefault("last_golden_report", {})
     presentation_exports_state()
     initialize_memory_files()
 
@@ -1137,6 +1143,7 @@ def render_sidebar() -> tuple[str, SQLAgentConfig, UserProfile]:
             st.session_state.last_errored_question_ids = []
             st.session_state.last_golden_result_summary = {}
             st.session_state.last_golden_results = []
+            st.session_state.last_golden_report = {}
             st.session_state.presentation_exports = {}
         set_active_scenario_id(selected_scenario_id)
         initialize_memory_files()
@@ -2227,6 +2234,251 @@ def render_golden_results(results: list[dict]) -> None:
                     st.markdown(f"- {step}")
 
 
+def golden_report_checkbox_key(question_id: str) -> str:
+    return f"golden_report_select_{question_id}"
+
+
+def selected_report_question_ids(questions: list[dict]) -> list[str]:
+    return [
+        question["question_id"]
+        for question in questions
+        if st.session_state.get(golden_report_checkbox_key(question["question_id"]), False)
+    ]
+
+
+def golden_report_aggregate_rows(report: dict) -> list[dict]:
+    rows = []
+    for row in report.get("aggregates", []):
+        label = str(row.get("condition_label", ""))
+        rows.append(
+            {
+                "Frage": row.get("question_id", ""),
+                "Titel": row.get("title", ""),
+                "Bedingung": CONDITION_DISPLAY_LABELS.get(label, label),
+                "Läufe": row.get("runs", 0),
+                "SQL korrekt": f"{float(row.get('sql_correct_pct', 0.0)):.1f}% "
+                f"({row.get('sql_correct', 0)}/{row.get('runs', 0)})",
+                "Inhaltlich korrekt": f"{float(row.get('content_correct_pct', 0.0)):.1f}% "
+                f"({row.get('content_correct', 0)}/{row.get('runs', 0)})",
+                "Chart erzeugt": f"{float(row.get('chart_rendered_pct', 0.0)):.1f}% "
+                f"({row.get('chart_rendered', 0)}/{row.get('runs', 0)})",
+                "Chart-Typen": ", ".join(
+                    f"{name}: {count}"
+                    for name, count in sorted(
+                        row.get("chart_type_distribution", {}).items(),
+                        key=lambda item: (-item[1], item[0]),
+                    )
+                )
+                or "—",
+                "Ø Laufzeit": f"{float(row.get('average_runtime', 0.0)):.2f}s",
+            }
+        )
+    return rows
+
+
+def render_golden_report_chart(report: dict) -> None:
+    """Grouped bars: SQL-correct %, content-correct %, and chart-rendered % per
+    question, split by condition.
+
+    All three measures share the same 0-100 percent scale, so they are faceted onto
+    one axis rather than plotted against two scales.
+    """
+    records = []
+    for row in report.get("aggregates", []):
+        label = str(row.get("condition_label", ""))
+        condition = CONDITION_DISPLAY_LABELS.get(label, label)
+        for measure, value in (
+            ("SQL korrekt", float(row.get("sql_correct_pct", 0.0))),
+            ("Inhaltlich korrekt", float(row.get("content_correct_pct", 0.0))),
+            ("Chart erzeugt", float(row.get("chart_rendered_pct", 0.0))),
+        ):
+            records.append(
+                {
+                    "Frage": str(row.get("question_id", "")),
+                    "Bedingung": condition,
+                    "Kennzahl": measure,
+                    "Prozent": value,
+                }
+            )
+    if not records:
+        return
+
+    frame = pd.DataFrame(records)
+    condition_order = [
+        CONDITION_DISPLAY_LABELS["without_template"],
+        CONDITION_DISPLAY_LABELS["with_template"],
+    ]
+    present_order = [name for name in condition_order if name in set(frame["Bedingung"])]
+    plot_width = max(320, min(900, 120 * frame["Frage"].nunique() * max(len(present_order), 1)))
+
+    chart = (
+        alt.Chart(frame)
+        .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+        .encode(
+            x=alt.X("Frage:N", title=None, axis=alt.Axis(labelAngle=0)),
+            xOffset=alt.XOffset("Bedingung:N", sort=present_order),
+            y=alt.Y(
+                "Prozent:Q",
+                title="Anteil der Läufe (%)",
+                scale=alt.Scale(domain=[0, 100]),
+            ),
+            color=alt.Color(
+                "Bedingung:N",
+                sort=present_order,
+                scale=alt.Scale(domain=present_order, range=[WUERTH_RED, WUERTH_BLUE][: len(present_order)]),
+                legend=alt.Legend(title="Bedingung", orient="top"),
+            ),
+            tooltip=[
+                alt.Tooltip("Frage:N"),
+                alt.Tooltip("Kennzahl:N"),
+                alt.Tooltip("Bedingung:N"),
+                alt.Tooltip("Prozent:Q", format=".1f", title="Prozent"),
+            ],
+        )
+        .properties(height=200, width=plot_width)
+        .facet(row=alt.Row("Kennzahl:N", title=None, header=alt.Header(labelFontWeight="bold")))
+        .resolve_scale(y="shared")
+    )
+    st.altair_chart(chart, use_container_width=False)
+
+
+def render_golden_report_tab(config: SQLAgentConfig) -> None:
+    scenario = get_active_scenario()
+    st.caption(
+        "Führt die ausgewählten Fragen mehrfach aus — je einmal ohne und mit freigegebenen "
+        "Templates — und misst zwei Korrektheits-Kennzahlen: **SQL korrekt** (streng: "
+        "gleiche Spalten- und Zeilenanzahl, spaltenpositionsgenauer Vergleich mit der "
+        "Referenz-SQL) und **Inhaltlich korrekt** (locker: jede gelieferte Zeile muss in "
+        "der Referenz vorkommen — Spaltenreihenfolge egal, gekappte Ergebnisse z. B. durch "
+        "LIMIT werden akzeptiert), sowie ob ein Diagramm erzeugt wurde."
+    )
+
+    try:
+        questions = load_golden_questions()
+    except Exception as error:
+        st.error(f"Golden-Testfragen konnten nicht geladen werden: {error}")
+        return
+
+    for question in questions:
+        st.session_state.setdefault(golden_report_checkbox_key(question["question_id"]), True)
+
+    select_cols = st.columns(2)
+    with select_cols[0]:
+        if st.button("Alle auswählen", key="golden_report_select_all"):
+            for question in questions:
+                st.session_state[golden_report_checkbox_key(question["question_id"])] = True
+            st.rerun()
+    with select_cols[1]:
+        if st.button("Alle abwählen", key="golden_report_deselect_all"):
+            for question in questions:
+                st.session_state[golden_report_checkbox_key(question["question_id"])] = False
+            st.rerun()
+
+    for question in questions:
+        st.checkbox(
+            f"{question['question_id']} - {question.get('title', '')}",
+            key=golden_report_checkbox_key(question["question_id"]),
+        )
+
+    selected_ids = selected_report_question_ids(questions)
+    repetitions = int(
+        st.number_input(
+            "Wiederholungen je Bedingung",
+            min_value=1,
+            max_value=200,
+            value=30,
+            step=1,
+            key="golden_report_repetitions",
+        )
+    )
+    conditions_choice = st.radio(
+        "Bedingungen",
+        ("both", "off", "on"),
+        format_func=lambda value: {
+            "both": "Ohne und mit Templates (Vergleich)",
+            "off": "Nur ohne Templates",
+            "on": "Nur mit Templates",
+        }[value],
+        key="golden_report_conditions",
+        horizontal=True,
+    )
+    conditions = {"both": (False, True), "off": (False,), "on": (True,)}[conditions_choice]
+
+    total_runs = len(selected_ids) * repetitions * len(conditions)
+    st.info(
+        f"Geplant: {len(selected_ids)} Fragen × {repetitions} Wiederholungen × "
+        f"{len(conditions)} Bedingung(en) = **{total_runs} Agent-Läufe** gegen {scenario.label}."
+    )
+
+    if st.button("Report starten", type="primary", disabled=not selected_ids, key="golden_report_start"):
+        progress_bar = st.progress(0.0)
+        status_slot = st.empty()
+
+        def _on_progress(step: int, steps: int, result: dict) -> None:
+            progress_bar.progress(min(step / steps, 1.0) if steps else 1.0)
+            label = str(result.get("condition_label", ""))
+            status_slot.caption(
+                f"Lauf {step}/{steps} — {result.get('question_id', '')} "
+                f"({CONDITION_DISPLAY_LABELS.get(label, label)}): "
+                f"{'OK' if result.get('passed') else format_failure_reason(str(result.get('failure_type') or 'fehlgeschlagen'))}"
+            )
+
+        try:
+            report = run_golden_report(
+                selected_ids,
+                repetitions=repetitions,
+                conditions=conditions,
+                config=config,
+                progress_callback=_on_progress,
+            )
+        except Exception as error:
+            st.error(f"Report konnte nicht ausgeführt werden: {error}")
+            return
+
+        progress_bar.progress(1.0)
+        status_slot.caption(f"Fertig — {len(report.get('raw_runs', []))} Läufe abgeschlossen.")
+        try:
+            paths = save_golden_report(report)
+            report["saved_paths"] = {key: str(value) for key, value in paths.items()}
+        except Exception as error:
+            st.warning(f"Report-Dateien konnten nicht geschrieben werden: {error}")
+        st.session_state.last_golden_report = report
+
+    report = st.session_state.get("last_golden_report")
+    if not report:
+        return
+
+    st.subheader("Ergebnis")
+    st.caption(
+        f"Batch `{report.get('batch_run_id', '')}` — {report.get('repetitions', 0)} Wiederholungen "
+        f"je Bedingung, Backend {report.get('backend', '')}."
+    )
+    saved_paths = report.get("saved_paths", {})
+    if saved_paths:
+        st.caption(f"Gespeichert unter: `{saved_paths.get('csv', '')}`")
+
+    st.dataframe(pd.DataFrame(golden_report_aggregate_rows(report)), width="stretch", hide_index=True)
+    render_golden_report_chart(report)
+
+    download_cols = st.columns(2)
+    with download_cols[0]:
+        st.download_button(
+            "Roh-Läufe als CSV",
+            data=build_golden_report_csv(report.get("raw_runs", [])),
+            file_name=f"{report.get('batch_run_id', 'golden_report')}.csv",
+            mime="text/csv",
+            width="stretch",
+        )
+    with download_cols[1]:
+        st.download_button(
+            "Zusammenfassung als Markdown",
+            data=build_golden_report_markdown(report),
+            file_name=f"{report.get('batch_run_id', 'golden_report')}_summary.md",
+            mime="text/markdown",
+            width="stretch",
+        )
+
+
 def render_golden_test_mode_view(config: SQLAgentConfig) -> None:
     st.title("Golden-Testmodus")
     scenario = get_active_scenario()
@@ -2236,6 +2488,14 @@ def render_golden_test_mode_view(config: SQLAgentConfig) -> None:
     )
     render_flash()
 
+    single_tab, report_tab = st.tabs(["Einzeltests", "Mehrfach-Report"])
+    with report_tab:
+        render_golden_report_tab(config)
+    with single_tab:
+        render_golden_single_test_tab(config)
+
+
+def render_golden_single_test_tab(config: SQLAgentConfig) -> None:
     try:
         questions = load_golden_questions()
     except Exception as error:
@@ -2406,9 +2666,6 @@ def render_step_log(record: dict) -> None:
             with st.expander("Ablaufschritte", expanded=False):
                 for step in trace:
                     st.markdown(f"- {step}")
-                token_line = _format_token_usage(record.get("token_usage"))
-                if token_line:
-                    st.markdown(f"- {token_line}")
         return
 
     with st.expander("Ablaufschritte", expanded=False):
@@ -2436,11 +2693,6 @@ def render_step_log(record: dict) -> None:
                 if primary:
                     suffix = f" ({tier})" if tier else ""
                     st.caption(f"Modell: {primary}{suffix}")
-
-        token_line = _format_token_usage(record.get("token_usage"))
-        if token_line:
-            st.markdown("---")
-            st.markdown(f"**{token_line}**")
 
 
 def render_record(record: dict, index: int, config: SQLAgentConfig, profile: UserProfile) -> None:
@@ -2639,9 +2891,6 @@ def main() -> None:
                 step_callback=_on_step,
                 response_profile=current_profile().response_profile.value,
             )
-            token_line = _format_token_usage(record.get("token_usage"))
-            if token_line:
-                status.write(token_line)
             status.update(label="Fertig ✓", state="complete", expanded=False)
         record["agent_step_log"] = _steps_log
         record["user_question"] = question

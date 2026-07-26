@@ -137,6 +137,125 @@ class GoldenResultComparisonTests(unittest.TestCase):
 
         self.assertTrue(comparison["passed"])
 
+    def test_identical_result_is_both_passed_and_content_correct(self) -> None:
+        expected = result(["id", "name"], [(1, "A")])
+        actual = result(["id", "name"], [(1, "A")])
+
+        comparison = compare_query_results(expected, actual, {})
+
+        self.assertTrue(comparison["passed"])
+        self.assertTrue(comparison["content_correct"])
+
+    def test_reordered_columns_fail_strict_but_are_content_correct(self) -> None:
+        # Mirrors the observed Q02 case: the agent leads with "plant" instead of
+        # "metric" — same values, different column order. Strict positional
+        # comparison must still fail (it does not realign columns), but the
+        # looser content check should recognize the values as equivalent.
+        expected = result(
+            ["metric", "plant", "product", "value", "rank"],
+            [("Lieferpositionen", "1012", "ABC", 5.0, 1)],
+        )
+        actual = result(
+            ["plant", "metrik", "product", "wert", "rang"],
+            [("1012", "Lieferpositionen", "ABC", 5.0, 1)],
+        )
+
+        comparison = compare_query_results(expected, actual, {"compare": {"numeric_tolerance": 0.01}})
+
+        self.assertFalse(comparison["passed"])
+        self.assertIn("value mismatch", comparison["issues"])
+        self.assertTrue(comparison["content_correct"])
+
+    def test_genuinely_wrong_values_fail_both_metrics(self) -> None:
+        expected = result(["a", "b"], [(1, 2)])
+        actual = result(["a", "b"], [(9, 9)])
+
+        comparison = compare_query_results(expected, actual, {})
+
+        self.assertFalse(comparison["passed"])
+        self.assertFalse(comparison["content_correct"])
+
+    def test_column_count_mismatch_is_not_content_correct(self) -> None:
+        expected = result(["id", "name"], [(1, "A")])
+        actual = result(["id"], [(1,)])
+
+        comparison = compare_query_results(expected, actual, {})
+
+        self.assertFalse(comparison["passed"])
+        self.assertFalse(comparison["content_correct"])
+
+    def test_truncated_but_correct_rows_are_content_correct(self) -> None:
+        # The agent returned fewer rows than the reference (e.g. it appended LIMIT),
+        # but every row it did return is genuinely in the reference.
+        expected = result(["id"], [(1,), (2,)])
+        actual = result(["id"], [(1,)])
+
+        comparison = compare_query_results(expected, actual, {})
+
+        self.assertFalse(comparison["passed"])
+        self.assertTrue(comparison["content_correct"])
+
+    def test_truncated_with_reordered_columns_is_content_correct(self) -> None:
+        # Mirrors the observed Q02 case: agent truncates to fewer rows AND leads with a
+        # different column than the reference.
+        expected = result(
+            ["metric", "plant", "value"],
+            [("Lieferpositionen", "1012", 5.0), ("Umsatz", "1012", 99.0), ("Umsatz", "1013", 7.0)],
+        )
+        actual = result(["plant", "metrik", "wert"], [("1012", "Lieferpositionen", 5.0)])
+
+        comparison = compare_query_results(expected, actual, {"compare": {"numeric_tolerance": 0.01}})
+
+        self.assertFalse(comparison["passed"])
+        self.assertTrue(comparison["content_correct"])
+
+    def test_truncated_with_one_wrong_row_is_not_content_correct(self) -> None:
+        expected = result(["id"], [(1,), (2,), (3,)])
+        actual = result(["id"], [(1,), (99,)])
+
+        comparison = compare_query_results(expected, actual, {})
+
+        self.assertFalse(comparison["passed"])
+        self.assertFalse(comparison["content_correct"])
+
+    def test_empty_actual_result_is_not_content_correct(self) -> None:
+        expected = result(["id"], [(1,), (2,)])
+        actual = result(["id"], [])
+
+        comparison = compare_query_results(expected, actual, {})
+
+        self.assertFalse(comparison["passed"])
+        self.assertFalse(comparison["content_correct"])
+
+    def test_more_rows_than_reference_is_not_content_correct(self) -> None:
+        expected = result(["id"], [(1,)])
+        actual = result(["id"], [(1,), (2,)])
+
+        comparison = compare_query_results(expected, actual, {})
+
+        self.assertFalse(comparison["passed"])
+        self.assertFalse(comparison["content_correct"])
+
+    def test_duplicate_actual_rows_need_matching_reference_duplicates(self) -> None:
+        expected = result(["id"], [(1,), (2,)])
+        actual = result(["id"], [(1,), (1,)])
+
+        comparison = compare_query_results(expected, actual, {})
+
+        self.assertFalse(comparison["content_correct"])
+
+    def test_multiset_match_does_not_reuse_a_value_twice(self) -> None:
+        # Expected row has two distinct values (1, 2). An actual row of (1, 1) must
+        # not be treated as a multiset match just because "1" appears in both.
+        from src.agent.golden_test_runner import row_values_match_as_multiset
+
+        self.assertFalse(
+            row_values_match_as_multiset((1, 2), (1, 1), numeric_tolerance=0.01)
+        )
+        self.assertTrue(
+            row_values_match_as_multiset((1, 2), (2, 1), numeric_tolerance=0.01)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
